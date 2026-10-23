@@ -1,0 +1,45 @@
+--- a/FEXCore/Source/Common/JitSymbols.cpp
++++ b/FEXCore/Source/Common/JitSymbols.cpp
+@@ -3,7 +3,9 @@
+ 
+ #include "Common/JitSymbols.h"
+ 
++#include <cstdlib>
+ #include <fcntl.h>
++#include <sys/stat.h>
+ #include <unistd.h>
+ 
+ namespace FEXCore {
+@@ -18,6 +20,19 @@
+ void JITSymbols::InitFile() {
+   // We can't use FILE here since we must be robust against forking processes closing our FD from under us.
+ #ifdef __ANDROID__
++  // Embedded Android apps use an app-owned data directory. Keep the
++  // standalone default when the embedding runtime has not opted in.
++  const char* Directory = std::getenv("LUMEN_FEX_JIT_SYMBOL_DIRECTORY");
++  if (Directory && Directory[0]) {
++    struct stat DirectoryInfo {};
++    if (Directory[0] != '/' || stat(Directory, &DirectoryInfo) != 0 ||
++        !S_ISDIR(DirectoryInfo.st_mode) || DirectoryInfo.st_uid != geteuid()) {
++      return;
++    }
++    const auto PerfMap = fextl::fmt::format("{}/perf-{}.map", Directory, getpid());
++    fd = open(PerfMap.c_str(), O_CREAT | O_TRUNC | O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0600);
++    return;
++  }
+   // Android simpleperf looks in /data/local/tmp instead of /tmp
+   const auto PerfMap = fextl::fmt::format("/data/local/tmp/perf-{}.map", getpid());
+ #else
+@@ -129,6 +144,12 @@
+ }
+ 
+ void JITSymbols::WriteBuffer(FEXCore::JITSymbolBuffer* Buffer, bool ForceWrite) {
++#ifdef __ANDROID__
++  // The explicit app diagnostic needs every compiled block available to
++  // simpleperf, including a partial final buffer while the process is live.
++  const char* Directory = std::getenv("LUMEN_FEX_JIT_SYMBOL_DIRECTORY");
++  ForceWrite = ForceWrite || (Directory && Directory[0]);
++#endif
+   auto Now = std::chrono::steady_clock::now();
+   if (!ForceWrite) {
+     if (((Buffer->LastWrite - Now) < Buffer->MAXIMUM_THRESHOLD) && Buffer->Offset < Buffer->NEEDS_WRITE_DISTANCE) {

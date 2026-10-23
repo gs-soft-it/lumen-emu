@@ -1,0 +1,40 @@
+{
+  "notices": [
+    {
+      "component": "glib",
+      "declaredLicense": "LGPL-2.1-or-later",
+      "distributionReview": "NOT_VERIFIED",
+      "file": "glib-2.88.3/LGPL-2.1-or-later.txt",
+      "retrievedOn": "2026-09-08",
+      "sha256": "fa6f36630bb1e0c571d34b2bbdf188d08495c9dbf58f28cac112f303fc1f58fb",
+      "sourceFile": "LICENSES/LGPL-2.1-or-later.txt",
+      "url": "https://gitlab.gnome.org/GNOME/glib/-/raw/2.88.3/LICENSES/LGPL-2.1-or-later.txt",
+      "version": "2.88.3"
+    },
+    {
+      "component": "freetype",
+      "declaredLicense": "FTL",
+      "distributionReview": "NOT_VERIFIED",
+      "file": "freetype-2.14.3/FTL.TXT",
+      "retrievedOn": "2026-09-08",
+      "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f",
+      "sourceFile": "docs/FTL.TXT",
+      "url": "https://gitlab.freedesktop.org/freetype/freetype/-/raw/VER-2-14-3/docs/FTL.TXT",
+      "version": "2.14.3"
+    },
+    {
+      "archiveSha256": "85d99b79c981a404874c02e0342176cf75c7698e2b51fe41031cf6526d974f1a",
+      "component": "gettext",
+      "declaredLicense": "LGPL-2.1-or-later (intl library)",
+      "distributionReview": "NOT_VERIFIED",
+      "file": "gettext-1.0/COPYING.LIB",
+      "retrievedOn": "2026-09-08",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "sourceFile": "gettext-1.0/gettext-runtime/intl/COPYING.LIB",
+      "url": "https://ftp.gnu.org/gnu/gettext/gettext-1.0.tar.gz",
+      "version": "1.0"
+    }
+  ],
+  "schema": "LUMEN_MACOS_SUPPLEMENTAL_NOTICES_V1",
+  "scope": "License texts only; no implementation imported or consulted. License choice and distribution approval remain separate."
+}

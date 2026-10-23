@@ -1,0 +1,4 @@
+# Preserve exact upstream license bytes; scope whitespace exceptions to these files.
+Zycore/LICENSE whitespace=-blank-at-eof
+Zydis/LICENSE whitespace=-blank-at-eof
+xbyak/LICENSE whitespace=cr-at-eol

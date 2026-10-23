@@ -1,0 +1,394 @@
+{
+  "schema": 1,
+  "source_revision": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c",
+  "dependencies": [
+    {
+      "name": "CLI11",
+      "commit": "12ba4ac4dbaa6489cb07e01be796e2bc074ef4f4",
+      "url": "https://github.com/shadexternals/CLI11.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "ImGuiFileDialog",
+      "commit": "6e3ddeb485e8804beefae6e6d690b7709084bacd",
+      "url": "https://github.com/shadexternals/ImGuiFileDialog.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "aacdec/fdk-aac",
+      "commit": "ee76460efbdb147e26d804c798949c23f174460b",
+      "url": "https://android.googlesource.com/platform/external/aac",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "cpp-httplib",
+      "commit": "28f8264d134a576422cd0f99f19719c2749d9e47",
+      "url": "https://github.com/shadexternals/cpp-httplib.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "date",
+      "commit": "a45ea7c17b4a7f320e199b71436074bd624c9e15",
+      "url": "https://github.com/HowardHinnant/date.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "dear_imgui",
+      "commit": "f4d9359095eff3eb03f685921edc1cf0e37b1687",
+      "url": "https://github.com/shadps4-emu/ext-imgui.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "epoll-shim",
+      "commit": "18159584bb3d17e601b9315a7398ace018251bdc",
+      "url": "https://github.com/jiixyj/epoll-shim.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "ext-boost",
+      "commit": "ca6f230e67be7cc45fc919057f07b2aee64dadc1",
+      "url": "https://github.com/shadps4-emu/ext-boost.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "ext-wepoll",
+      "commit": "d3bb81035304a0dc6a5ca48ebf0f8cee1fe269e4",
+      "url": "https://github.com/shadps4-emu/ext-wepoll.git",
+      "platforms": [
+        "windows"
+      ]
+    },
+    {
+      "name": "fmt",
+      "commit": "ec73fb72477d80926c758894a3ab2cb3994fd051",
+      "url": "https://github.com/shadps4-emu/ext-fmt.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "freetype",
+      "commit": "b91f75bd02db43b06d634591eb286d3eb0ce3b65",
+      "url": "https://github.com/freetype/freetype.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "glslang",
+      "commit": "ba1640446f3826a518721d1f083f3a8cca1120c3",
+      "url": "https://github.com/KhronosGroup/glslang.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "half",
+      "commit": "1ddada225144cac0de8f6b5c0dd9acffd99a2e68",
+      "url": "https://github.com/ROCm/half.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "hwinfo",
+      "commit": "8660006e0ca4aae5dda7a29e585968b50b0273b7",
+      "url": "https://github.com/shadps4-emu/ext-hwinfo",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "json",
+      "commit": "55f93686c01528224f448c19128836e7df245f72",
+      "url": "https://github.com/nlohmann/json.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "libpng",
+      "commit": "c1cc0f3f4c3d4abd11ca68c59446a29ff6f95003",
+      "url": "https://github.com/pnggroup/libpng",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "libressl",
+      "commit": "b0504086dbbc186724b0cc92e6ba1832c245de0b",
+      "url": "https://github.com/shadexternals/libressl",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "libusb",
+      "commit": "d087ea86539ab1f1ec42faf86e2357e2fad126a6",
+      "url": "https://github.com/shadexternals/libusb.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "magic_enum",
+      "commit": "a413fcc9c46a020a746907136a384c227f3cd095",
+      "url": "https://github.com/Neargye/magic_enum.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "minimp3",
+      "commit": "7b590fdcfa5a79c033e76eacc05d0c3e4c79f536",
+      "url": "https://github.com/lieff/minimp3",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "miniupnp",
+      "commit": "bf4215a7574f88aa55859db9db00e3ae58cf42d6",
+      "url": "https://github.com/miniupnp/miniupnp.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "miniz",
+      "commit": "174573d60290f447c13a2b1b3405de2b96e27d6c",
+      "url": "https://github.com/richgel999/miniz",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "openal-soft",
+      "commit": "83ea7236c6f23fc98e2b62eb9c5b3abfd4b2be86",
+      "url": "https://github.com/shadexternals/openal-soft.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "pugixml",
+      "commit": "caade5a28aad86b92a4b5337a9dc70c4ba73c5eb",
+      "url": "https://github.com/zeux/pugixml.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "robin-map",
+      "commit": "4ec1bf19c6a96125ea22062f38c2cf5b958e448e",
+      "url": "https://github.com/Tessil/robin-map.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "sdl3",
+      "commit": "d5af35e3fbb5bb6555ed00e69740d52af2a4e877",
+      "url": "https://github.com/shadexternals/sdl3.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "sirit",
+      "commit": "c58f4d441cfdb6905d011a906704716833485486",
+      "url": "https://github.com/shadps4-emu/sirit.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ],
+      "repository_path": "source/3rdparty/sirit-gen4"
+    },
+    {
+      "name": "spdlog",
+      "commit": "b8944a4bcd478ee03375c9c50dc8d6c741f43f7b",
+      "url": "https://github.com/gabime/spdlog.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "toml11",
+      "commit": "a01fe3b4c14c6d7b99ee3f07c9e80058c6403097",
+      "url": "https://github.com/ToruNiina/toml11.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "tracy",
+      "commit": "143a53d1985b8e52a7590a0daca30a0a7c653b42",
+      "url": "https://github.com/shadps4-emu/tracy.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "vma",
+      "commit": "f378e7b3f18f6e2b06b957f6ba7b1c7207d2a536",
+      "url": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "vulkan-headers",
+      "commit": "ee3b5caaa7e372715873c7b9c390ee1c3ca5db25",
+      "url": "https://github.com/KhronosGroup/Vulkan-Headers.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "xbyak",
+      "commit": "44a72f369268f7d552650891b296693e91db86bb",
+      "url": "https://github.com/herumi/xbyak.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "xxhash",
+      "commit": "953a09abc39096da9e216b6eb0002c681cdc1199",
+      "url": "https://github.com/Cyan4973/xxHash.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "zarchive",
+      "commit": "965b66c8d67b6b7e30fd63b3b75aa91a99ff303b",
+      "url": "https://github.com/shadexternals/ZArchive.git",
+      "platforms": [
+        "android"
+      ]
+    },
+    {
+      "name": "zlib-ng",
+      "commit": "fd0d263cedab1a136f40d65199987e3eaeecfcbd",
+      "url": "https://github.com/shadps4-emu/ext-zlib-ng.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    },
+    {
+      "name": "zstd",
+      "commit": "5c7b7bad26808e6b40ac3b3d0075466e27738a9d",
+      "url": "https://github.com/shadexternals/zstd.git",
+      "platforms": [
+        "android"
+      ]
+    },
+    {
+      "name": "zydis",
+      "commit": "120e0e705f8e3b507dc49377ac2879979f0d545c",
+      "url": "https://github.com/zyantific/zydis.git",
+      "platforms": [
+        "macos",
+        "android",
+        "windows"
+      ]
+    }
+  ],
+  "in_tree_dependencies": [
+    {
+      "name": "LibAtrac9",
+      "path": "source/3rdparty/libatrac9",
+      "provenance": "source/3rdparty/libatrac9/UPSTREAM.md",
+      "license": "source/3rdparty/libatrac9/LICENSE",
+      "platforms": [
+        "android",
+        "macos",
+        "windows"
+      ]
+    }
+  ]
+}

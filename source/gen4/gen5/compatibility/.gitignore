@@ -1,0 +1,8 @@
+# Visual Studio 2015 cache/options directory
+.vs/
+.idea/
+build/
+_Build/vscode-clang/
+_Build/
+cmake-build-debug/
+_PipelineCache/

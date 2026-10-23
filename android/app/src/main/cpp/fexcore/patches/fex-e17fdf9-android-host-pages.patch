@@ -1,0 +1,700 @@
+diff --git a/FEXCore/Source/Interface/Core/CodeCache.cpp b/FEXCore/Source/Interface/Core/CodeCache.cpp
+index b3982e4..843bce4 100644
+--- a/FEXCore/Source/Interface/Core/CodeCache.cpp
++++ b/FEXCore/Source/Interface/Core/CodeCache.cpp
+@@ -297,7 +297,12 @@ struct CodeCacheHeader {
+   uint64_t SerializedBaseAddress;
+   // TODO: Consider including information from LookupCache.BlockLinks
+ 
++#ifdef __ANDROID__
++  // Reject unported cache files whose host code section is only 4-KiB aligned.
++  static constexpr std::array<char, 4> ExpectedMagic = {'F', 'X', 'C', 'A'};
++#else
+   static constexpr std::array<char, 4> ExpectedMagic = {'F', 'X', 'C', 'C'};
++#endif
+ };
+ 
+ template<typename T>
+@@ -314,7 +319,7 @@ bool CodeCache::SaveData(Core::InternalThreadState& Thread, int fd, const Execut
+   std::ranges::copy(GIT_HASH, header.FEXVersion);
+   header.NumBlocks = LookupCache.BlockList.size();
+   header.NumCodePages = LookupCache.CodePages.size();
+-  header.CodeBufferSize = FEXCore::AlignUp(CodeBuffer->AllocatedSpaceUsed(), Utils::FEX_PAGE_SIZE);
++  header.CodeBufferSize = FEXCore::AlignUp(CodeBuffer->AllocatedSpaceUsed(), Utils::FEX_HOST_PAGE_ALIGNMENT);
+   header.NumRelocations = Relocations.size();
+   header.SerializedBaseAddress = SerializedBaseAddress;
+   ::write(fd, &header, sizeof(header));
+@@ -355,7 +360,7 @@ bool CodeCache::SaveData(Core::InternalThreadState& Thread, int fd, const Execut
+ 
+   // Pad to next page in file so that the CodeBuffer can be mmap'ed into process on load
+   {
+-    auto AlignedSize = AlignUp(lseek(fd, 0, SEEK_CUR), Utils::FEX_PAGE_SIZE);
++    auto AlignedSize = AlignUp(lseek(fd, 0, SEEK_CUR), Utils::FEX_HOST_PAGE_ALIGNMENT);
+     ::ftruncate(fd, AlignedSize);
+     lseek(fd, AlignedSize, SEEK_SET);
+   }
+@@ -370,7 +375,7 @@ bool CodeCache::SaveData(Core::InternalThreadState& Thread, int fd, const Execut
+   ::write(fd, CodeBufferData.data(), CodeBufferData.size());
+   // Pad to next page in file for mmap
+   {
+-    auto PaddedSize = AlignUp(lseek(fd, 0, SEEK_CUR), Utils::FEX_PAGE_SIZE);
++    auto PaddedSize = AlignUp(lseek(fd, 0, SEEK_CUR), Utils::FEX_HOST_PAGE_ALIGNMENT);
+     ::ftruncate(fd, PaddedSize);
+     lseek(fd, PaddedSize, SEEK_SET);
+   }
+@@ -652,7 +657,7 @@ CodeCache::LoadCache(std::span<std::byte> CacheFile, const ExecutableFileInfo& F
+   Cursor += Relocations.size_bytes();
+ 
+   // Pad to next page to get the code buffer data
+-  Cursor = reinterpret_cast<std::byte*>(AlignUp(reinterpret_cast<uintptr_t>(Cursor), Utils::FEX_PAGE_SIZE));
++  Cursor = CacheFile.data() + AlignUp(static_cast<size_t>(Cursor - CacheFile.data()), Utils::FEX_HOST_PAGE_ALIGNMENT);
+   auto CodeDataInFile = std::span {Cursor, header.CodeBufferSize};
+ 
+ #ifndef _WIN32
+@@ -680,13 +685,13 @@ CodeCache::LoadCache(std::span<std::byte> CacheFile, const ExecutableFileInfo& F
+ #endif
+ 
+   // Group relocations by page
+-  size_t NumPages = header.CodeBufferSize / Utils::FEX_PAGE_SIZE;
++  size_t NumPages = header.CodeBufferSize / Utils::FEX_HOST_PAGE_SIZE;
+   fextl::vector<MappedCodeCacheFile::PageRelocationRange> PageRelocationRanges(NumPages, {0, 0});
+   auto RelocBaseOffset = std::as_bytes(Relocations).data() - CacheFile.data();
+   auto RelocIt = Relocations.begin();
+   for (size_t Page = 0; Page < NumPages; ++Page) {
+     auto EndRelocIt = std::upper_bound(RelocIt, Relocations.end(), Page,
+-                                       [](auto& Page, auto& Reloc) { return Page < Reloc.Header.Offset / Utils::FEX_PAGE_SIZE; });
++                                       [](auto& Page, auto& Reloc) { return Page < Reloc.Header.Offset / Utils::FEX_HOST_PAGE_SIZE; });
+     PageRelocationRanges.at(Page) = {static_cast<uint32_t>(RelocBaseOffset + (RelocIt - Relocations.begin()) * sizeof(CPU::Relocation)),
+                                      static_cast<uint32_t>(EndRelocIt - RelocIt)};
+     RelocIt = EndRelocIt;
+@@ -799,7 +804,7 @@ bool CodeCache::EnableLoadedSection(Core::InternalThreadState* Thread, MappedCod
+   // TODO: Implement lazy mapping on Windows
+   if (true) {
+ #endif
+-    auto Range = SelectCodeRangeToFinalize(Code, 0, Code.CodeBuffer.size_bytes() / Utils::FEX_PAGE_SIZE);
++    auto Range = SelectCodeRangeToFinalize(Code, 0, Code.CodeBuffer.size_bytes() / Utils::FEX_HOST_PAGE_SIZE);
+     FinalizeCodePages(Code, Range);
+   }
+ 
+@@ -843,7 +848,7 @@ std::span<std::byte> AbstractCodeCache::SelectCodeRangeToFinalize(MappedCodeCach
+     if (!PageRelocs.empty()) {
+       auto It = std::prev(PageRelocs.end());
+       size_t RelocEnd = It->Header.Offset + 16 /* Upper bound for relocation size */;
+-      if (RelocEnd > EndPage * Utils::FEX_PAGE_SIZE) {
++      if (RelocEnd > EndPage * Utils::FEX_HOST_PAGE_SIZE) {
+         ++EndPage;
+         continue;
+       }
+@@ -852,7 +857,7 @@ std::span<std::byte> AbstractCodeCache::SelectCodeRangeToFinalize(MappedCodeCach
+     // Check for trailing block link
+     {
+       auto PageRelocs = SpanPageRelocations(Code, EndPage);
+-      if (!PageRelocs.empty() && PageRelocs.begin()->Header.Offset < EndPage * Utils::FEX_PAGE_SIZE + 0x18) {
++      if (!PageRelocs.empty() && PageRelocs.begin()->Header.Offset < EndPage * Utils::FEX_HOST_PAGE_SIZE + 0x18) {
+         ++EndPage;
+         continue;
+       }
+@@ -864,7 +869,7 @@ std::span<std::byte> AbstractCodeCache::SelectCodeRangeToFinalize(MappedCodeCach
+     if (!PageRelocs.empty()) {
+       auto It = std::prev(PageRelocs.end());
+       size_t RelocEnd = It->Header.Offset + 16 /* Upper bound for relocation size */;
+-      if (RelocEnd > StartPage * Utils::FEX_PAGE_SIZE) {
++      if (RelocEnd > StartPage * Utils::FEX_HOST_PAGE_SIZE) {
+         --StartPage;
+         continue;
+       }
+@@ -873,7 +878,7 @@ std::span<std::byte> AbstractCodeCache::SelectCodeRangeToFinalize(MappedCodeCach
+     // Check for trailing block link
+     {
+       auto PageRelocs = SpanPageRelocations(Code, StartPage);
+-      if (!PageRelocs.empty() && PageRelocs.begin()->Header.Offset < StartPage * Utils::FEX_PAGE_SIZE + 0x18) {
++      if (!PageRelocs.empty() && PageRelocs.begin()->Header.Offset < StartPage * Utils::FEX_HOST_PAGE_SIZE + 0x18) {
+         --StartPage;
+         continue;
+       }
+@@ -881,7 +886,7 @@ std::span<std::byte> AbstractCodeCache::SelectCodeRangeToFinalize(MappedCodeCach
+     break;
+   };
+ 
+-  return Code.CodeBuffer.subspan(StartPage * Utils::FEX_PAGE_SIZE, (EndPage - StartPage) * Utils::FEX_PAGE_SIZE);
++  return Code.CodeBuffer.subspan(StartPage * Utils::FEX_HOST_PAGE_SIZE, (EndPage - StartPage) * Utils::FEX_HOST_PAGE_SIZE);
+ }
+ } // namespace FEXCore
+ 
+@@ -889,8 +894,8 @@ namespace FEXCore::Context {
+ 
+ void CodeCache::FinalizeCodePages(MappedCodeCacheFile& Code, std::span<std::byte> CodeRange) {
+   const size_t StartOffset = CodeRange.data() - Code.CodeBuffer.data();
+-  const auto StartPage = StartOffset / Utils::FEX_PAGE_SIZE;
+-  const auto EndPage = StartPage + CodeRange.size_bytes() / Utils::FEX_PAGE_SIZE;
++  const auto StartPage = StartOffset / Utils::FEX_HOST_PAGE_SIZE;
++  const auto EndPage = StartPage + CodeRange.size_bytes() / Utils::FEX_HOST_PAGE_SIZE;
+   const size_t Size = CodeRange.size_bytes();
+ 
+   // None of the selected pages should be loaded at all; otherwise, SelectCodeRangeToFinalize returned inconsistent ranges
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index b174dab..a145b24 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -275,9 +275,19 @@ void Dispatcher::EmitDispatcher() {
+     sub(ARMEmitter::Size::i64Bit, TMP2, TMP2, 1);
+     str(TMP2, STATE, offsetof(FEXCore::Core::CPUState, DeferredSignalRefCount));
+ 
+-    // Trigger segfault if any deferred signals are pending
+-    strb(ARMEmitter::XReg::zr, STATE,
+-         offsetof(FEXCore::Core::InternalThreadState, InterruptFaultPage) - offsetof(FEXCore::Core::InternalThreadState, BaseFrameState));
++    // Trigger segfault if any deferred signals are pending. The separately
++    // protected interrupt page can be farther than a byte-store immediate on
++    // hosts with 16-KiB pages. A wider store has scaled reach and needs no
++    // scratch register, preserving the guarded region's return values.
++    constexpr size_t InterruptPageOffset =
++      offsetof(FEXCore::Core::InternalThreadState, InterruptFaultPage) - offsetof(FEXCore::Core::InternalThreadState, BaseFrameState);
++    if constexpr (InterruptPageOffset <= 4095) {
++      strb(ARMEmitter::XReg::zr, STATE, InterruptPageOffset);
++    } else if constexpr (InterruptPageOffset <= 32760) {
++      str(ARMEmitter::XReg::zr, STATE, InterruptPageOffset);
++    } else {
++      str(ARMEmitter::QReg::q0, STATE, InterruptPageOffset);
++    }
+ #endif
+   };
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+index d555e06..6dcb2e1 100644
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -243,9 +243,13 @@ DEF_OP(CondJump) {
+   auto Op = IROp->C<IR::IROp_CondJump>();
+ 
+   auto TrueTargetLabel = JumpTarget(Op->TrueBlock);
++  const bool CheckTakenBackedge = CTX->Config.NeedsPendingInterruptFaultCheck && TrueTargetLabel->Backward.Location;
++  ARMEmitter::BiDirectionalLabel SkipBackedge;
++  auto ConditionalTargetLabel = CheckTakenBackedge ? &SkipBackedge : TrueTargetLabel;
+ 
+   if (Op->FromNZCV) {
+-    b_OrRestart(MapCC(Op->Cond), TrueTargetLabel);
++    const auto Condition = MapCC(Op->Cond);
++    b_OrRestart(CheckTakenBackedge ? InvertCondition(Condition) : Condition, ConditionalTargetLabel);
+   } else {
+     uint64_t Const;
+     const bool isConst = IsInlineConstant(Op->Cmp2, &Const);
+@@ -256,23 +260,35 @@ DEF_OP(CondJump) {
+     LOGMAN_THROW_A_FMT(IsGPR(Op->Cmp1), "CondJump: Expected GPR");
+     LOGMAN_THROW_A_FMT(isConst, "CondJump: Expected constant source");
+ 
+-    if (Op->Cond == IR::CondClass::EQ) {
++    if (Op->Cond == IR::CondClass::EQ || Op->Cond == IR::CondClass::NEQ) {
+       LOGMAN_THROW_A_FMT(Const == 0, "CondJump: Expected 0 source");
+-      cbz_OrRestart(Size, Reg, TrueTargetLabel);
+-    } else if (Op->Cond == IR::CondClass::NEQ) {
+-      LOGMAN_THROW_A_FMT(Const == 0, "CondJump: Expected 0 source");
+-      cbnz_OrRestart(Size, Reg, TrueTargetLabel);
+-    } else if (Op->Cond == IR::CondClass::TSTZ) {
+-      LOGMAN_THROW_A_FMT(Const < 64, "CondJump: Expected valid bit source");
+-      tbz_OrRestart(Reg, Const, TrueTargetLabel);
+-    } else if (Op->Cond == IR::CondClass::TSTNZ) {
++      if ((Op->Cond == IR::CondClass::EQ) != CheckTakenBackedge) {
++        cbz_OrRestart(Size, Reg, ConditionalTargetLabel);
++      } else {
++        cbnz_OrRestart(Size, Reg, ConditionalTargetLabel);
++      }
++    } else if (Op->Cond == IR::CondClass::TSTZ || Op->Cond == IR::CondClass::TSTNZ) {
+       LOGMAN_THROW_A_FMT(Const < 64, "CondJump: Expected valid bit source");
+-      tbnz_OrRestart(Reg, Const, TrueTargetLabel);
++      if ((Op->Cond == IR::CondClass::TSTZ) != CheckTakenBackedge) {
++        tbz_OrRestart(Reg, Const, ConditionalTargetLabel);
++      } else {
++        tbnz_OrRestart(Reg, Const, ConditionalTargetLabel);
++      }
+     } else {
+       LOGMAN_THROW_A_FMT(false, "CondJump expected simple condition");
+     }
+   }
+ 
++  if (CheckTakenBackedge) {
++    // The condition has already selected this edge. Keep the interrupt store
++    // immediately followed by an unconditional backward branch so a frontend
++    // can resume at the target without replaying the completed guest work.
++    // The inverted forward branch skips both instructions on the false edge.
++    EmitSuspendInterruptCheck();
++    b_OrRestart(TrueTargetLabel);
++    BindOrRestart(&SkipBackedge);
++  }
++
+   PendingTargetLabel = JumpTarget(Op->FalseBlock);
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index 7330e40..14eb7c5 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -878,13 +878,13 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+ 
+   // Fairly excessive buffer range to make sure we don't overflow
+   // One page baseline, plus SSANodeMultipler bytes, plus another page for guard page.
+-  const uint32_t DesiredBufferRange = AlignUp(FEXCore::Utils::FEX_PAGE_SIZE * 2 + SSACount * SSANodeMultiplier, FEXCore::Utils::FEX_PAGE_SIZE);
++  const uint32_t DesiredBufferRange = AlignUp(FEXCore::Utils::FEX_HOST_PAGE_SIZE * 2 + SSACount * SSANodeMultiplier, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+ 
+   // JIT output is first written to a temporary buffer and later relocated to the CodeBuffer.
+   // This minimizes lock contention of CodeBufferWriteMutex.
+   auto TempCodeBufferInfo = TempCodeBufferAllocator.ReownOrClaimBufferWithSize(DesiredBufferRange);
+   auto TempCodeBuffer = TempCodeBufferInfo.Ptr;
+-  const uint32_t UsableBufferRange = TempCodeBufferInfo.Size - FEXCore::Utils::FEX_PAGE_SIZE;
++  const uint32_t UsableBufferRange = TempCodeBufferInfo.Size - FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+ 
+   SetBuffer(TempCodeBuffer, UsableBufferRange);
+ 
+diff --git a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+index d63ec3e..42ba4bd 100644
+--- a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
++++ b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+@@ -22,8 +22,8 @@ CodeBuffer::CodeBuffer(size_t Size)
+   LOGMAN_THROW_A_FMT(!!Ptr, "Couldn't allocate code buffer");
+ 
+   // Protect the last page of the allocated buffer to trigger SIGSEGV on write access
+-  uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_PAGE_SIZE);
+-  if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_PAGE_SIZE,
++  uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
++  if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_HOST_PAGE_SIZE,
+                                           FEXCore::Allocator::ProtectOptions::None)) {
+     LogMan::Msg::EFmt("Failed to mprotect last page of code buffer.");
+   }
+diff --git a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.h b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.h
+index c047eb8..6ca33d5 100644
+--- a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.h
++++ b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.h
+@@ -68,7 +68,7 @@ struct CodeBuffer {
+ 
+   // Returns the total number of bytes available for storing code
+   size_t UsableSize() const {
+-    return AllocatedSize - FEXCore::Utils::FEX_PAGE_SIZE;
++    return AllocatedSize - FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+   }
+ 
+   // Returns the full size of the buffer, including the guard page.
+diff --git a/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp b/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
+index b136ec5..db8f084 100644
+--- a/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
++++ b/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
+@@ -65,8 +65,8 @@ private:
+   // Lower bound is the starting of the range just past the lower 32bits
+   constexpr static uintptr_t LOWER_BOUND = 0x1'0000'0000ULL;
+ 
+-  uintptr_t UPPER_BOUND_PAGE = UPPER_BOUND / FEXCore::Utils::FEX_PAGE_SIZE;
+-  constexpr static uintptr_t LOWER_BOUND_PAGE = LOWER_BOUND / FEXCore::Utils::FEX_PAGE_SIZE;
++  uintptr_t UPPER_BOUND_PAGE = UPPER_BOUND / FEXCore::Utils::FEX_HOST_PAGE_SIZE;
++  const uintptr_t LOWER_BOUND_PAGE = LOWER_BOUND / FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+ 
+   struct ReservedVMARegion {
+     uintptr_t Base;
+@@ -96,7 +96,12 @@ private:
+     // Align UsedPages so it pads to the next page.
+     // Necessary to take advantage of madvise zero page pooling.
+     using FlexBitElementType = uint64_t;
+-    alignas(FEXCore::Utils::FEX_PAGE_SIZE) FEXCore::FlexBitSet<FlexBitElementType> UsedPages;
++#ifdef __ANDROID__
++    // A slab can start at a 4-KiB boundary. Keep the type's minimum alignment
++    // while moving the independently advised bitset past a full 16-KiB page.
++    alignas(4096) uint8_t HostPagePadding[FEXCore::Utils::FEX_HOST_PAGE_ALIGNMENT - 4096];
++#endif
++    alignas(4096) FEXCore::FlexBitSet<FlexBitElementType> UsedPages;
+ 
+     // This returns the size of the LiveVMARegion in addition to the flex set that tracks the used data
+     // The LiveVMARegion lives at the start of the VMA region which means on initialization we need to set that
+@@ -108,24 +113,24 @@ private:
+       // 0x100'0000 Pages
+       // 1 bit per page for tracking means 0x20'0000 (Pages / 8) bytes of flex space
+       // Which is 2MB of tracking
+-      const uint64_t NumElements = Size >> FEXCore::Utils::FEX_PAGE_SHIFT;
++      const uint64_t NumElements = Size >> FEXCore::Utils::FEX_HOST_PAGE_SHIFT;
+       return sizeof(LiveVMARegion) + FEXCore::FlexBitSet<FlexBitElementType>::SizeInBytes(NumElements);
+     }
+ 
+     static void InitializeVMARegionUsed(LiveVMARegion* Region) {
+       const size_t SizeOfLiveRegion =
+-        FEXCore::AlignUp(LiveVMARegion::GetFEXManagedVMARegionSize(Region->SlabInfo->RegionSize), FEXCore::Utils::FEX_PAGE_SIZE);
++        FEXCore::AlignUp(LiveVMARegion::GetFEXManagedVMARegionSize(Region->SlabInfo->RegionSize), FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+ 
+       Region->FreeSpace = Region->SlabInfo->RegionSize - SizeOfLiveRegion;
+ 
+-      size_t NumManagedPages = SizeOfLiveRegion >> FEXCore::Utils::FEX_PAGE_SHIFT;
+-      size_t ManagedSize = NumManagedPages << FEXCore::Utils::FEX_PAGE_SHIFT;
++      size_t NumManagedPages = SizeOfLiveRegion >> FEXCore::Utils::FEX_HOST_PAGE_SHIFT;
++      size_t ManagedSize = NumManagedPages << FEXCore::Utils::FEX_HOST_PAGE_SHIFT;
+ 
+       // Use madvise to set the full tracking region to zero.
+       // This ensures unused pages are zero, while not having the backing pages consuming memory.
+       auto* MemoryAsBytes = reinterpret_cast<uint8_t*>(Region->UsedPages.Memory);
+       const auto TrackingRegionSize = Region->SlabInfo->RegionSize - ManagedSize;
+-      ::madvise(MemoryAsBytes + ManagedSize, TrackingRegionSize, MADV_DONTNEED);
++      ::madvise(reinterpret_cast<uint8_t*>(Region) + ManagedSize, TrackingRegionSize, MADV_DONTNEED);
+ 
+       // Use madvise to claim WILLNEED on the beginning pages for initial state tracking.
+       // Improves performance of the following MemClear by not doing a page level fault dance for data necessary to track >170TB of used pages.
+@@ -138,7 +143,7 @@ private:
+     }
+   };
+ 
+-  static_assert(sizeof(LiveVMARegion) == FEXCore::Utils::FEX_PAGE_SIZE, "Needs to be the size of a page");
++  static_assert(sizeof(LiveVMARegion) == FEXCore::Utils::FEX_HOST_PAGE_ALIGNMENT, "Needs to be the size of a page");
+ 
+   static_assert(std::is_trivially_copyable<LiveVMARegion>::value, "Needs to be trivially copyable");
+   static_assert(offsetof(LiveVMARegion, UsedPages) == sizeof(LiveVMARegion), "FlexBitSet needs to be at the end");
+@@ -159,7 +164,7 @@ private:
+ 
+     // mprotect the new region we've allocated
+     const size_t SizeOfLiveRegion =
+-      FEXCore::AlignUp(LiveVMARegion::GetFEXManagedVMARegionSize(ReservedRegion->RegionSize), FEXCore::Utils::FEX_PAGE_SIZE);
++      FEXCore::AlignUp(LiveVMARegion::GetFEXManagedVMARegionSize(ReservedRegion->RegionSize), FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+ 
+     auto Res = mprotect(reinterpret_cast<void*>(ReservedRegion->Base), SizeOfLiveRegion, PROT_READ | PROT_WRITE);
+     LOGMAN_THROW_A_FMT(Res != -1, "Couldn't mprotect region: {} '{}' Likely occurs when running out of memory or Maximum VMAs", errno,
+@@ -190,10 +195,10 @@ void OSAllocator_64Bit::DetermineVASize() {
+   UPPER_BOUND = Size;
+ 
+ #if ARCHITECTURE_x86_64 // Last page cannot be allocated on x86
+-  UPPER_BOUND -= FEXCore::Utils::FEX_PAGE_SIZE;
++  UPPER_BOUND -= FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+ #endif
+ 
+-  UPPER_BOUND_PAGE = UPPER_BOUND / FEXCore::Utils::FEX_PAGE_SIZE;
++  UPPER_BOUND_PAGE = UPPER_BOUND / FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+ }
+ 
+ OSAllocator_64Bit::LiveVMARegion* OSAllocator_64Bit::FindLiveRegionForAddress(uintptr_t Addr, uintptr_t AddrEnd) {
+@@ -239,12 +244,12 @@ void* OSAllocator_64Bit::Mmap(void* addr, size_t length, int prot, int flags, in
+ 
+   uint64_t Addr = reinterpret_cast<uint64_t>(addr);
+   // Addr must be page aligned
+-  if (Addr & ~FEXCore::Utils::FEX_PAGE_MASK) {
++  if (Addr & ~FEXCore::Utils::FEX_HOST_PAGE_MASK) {
+     return reinterpret_cast<void*>(-EINVAL);
+   }
+ 
+   // If FD is provided then offset must also be page aligned
+-  if (fd != -1 && offset & ~FEXCore::Utils::FEX_PAGE_MASK) {
++  if (fd != -1 && offset & ~FEXCore::Utils::FEX_HOST_PAGE_MASK) {
+     return reinterpret_cast<void*>(-EINVAL);
+   }
+ 
+@@ -254,10 +259,10 @@ void* OSAllocator_64Bit::Mmap(void* addr, size_t length, int prot, int flags, in
+   }
+ 
+   bool Fixed = (flags & MAP_FIXED) || (flags & MAP_FIXED_NOREPLACE);
+-  length = FEXCore::AlignUp(length, FEXCore::Utils::FEX_PAGE_SIZE);
++  length = FEXCore::AlignUp(length, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+ 
+   uint64_t AddrEnd = Addr + length;
+-  size_t NumberOfPages = length / FEXCore::Utils::FEX_PAGE_SIZE;
++  size_t NumberOfPages = length / FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+ 
+   // This needs a mutex to be thread safe
+   auto lk = FEXCore::GuardSignalDeferringSectionWithFallback(AllocationMutex, TLSThread);
+@@ -279,12 +284,12 @@ again:
+   auto CheckIfRangeFits = [&AllocatedOffset](LiveVMARegion* Region, uint64_t length, int prot, int flags, int fd, off_t offset,
+                                              uint64_t StartingPosition = 0) -> RangeResult {
+     uint64_t AllocatedPage {~0ULL};
+-    uint64_t NumberOfPages = length >> FEXCore::Utils::FEX_PAGE_SHIFT;
++    uint64_t NumberOfPages = length >> FEXCore::Utils::FEX_HOST_PAGE_SHIFT;
+ 
+     if (Region->FreeSpace >= length) {
+       uint64_t LastAllocation =
+-        StartingPosition ? (StartingPosition - Region->SlabInfo->Base) >> FEXCore::Utils::FEX_PAGE_SHIFT : Region->LastPageAllocation;
+-      size_t RegionNumberOfPages = Region->SlabInfo->RegionSize >> FEXCore::Utils::FEX_PAGE_SHIFT;
++        StartingPosition ? (StartingPosition - Region->SlabInfo->Base) >> FEXCore::Utils::FEX_HOST_PAGE_SHIFT : Region->LastPageAllocation;
++      size_t RegionNumberOfPages = Region->SlabInfo->RegionSize >> FEXCore::Utils::FEX_HOST_PAGE_SHIFT;
+ 
+ 
+       if (Region->HadMunmap) {
+@@ -309,7 +314,7 @@ again:
+       }
+ 
+       if (AllocatedPage != ~0ULL) {
+-        AllocatedOffset = Region->SlabInfo->Base + AllocatedPage * FEXCore::Utils::FEX_PAGE_SIZE;
++        AllocatedOffset = Region->SlabInfo->Base + AllocatedPage * FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+ 
+         // We need to setup protections for this
+         void* MMapResult = ::mmap(reinterpret_cast<void*>(AllocatedOffset), length, prot, (flags & ~MAP_FIXED_NOREPLACE) | MAP_FIXED, fd, offset);
+@@ -387,7 +392,7 @@ again:
+     if (!LiveRegion) {
+       // Couldn't find a fit in the live regions
+       // Allocate a new reserved region
+-      size_t lengthOfLiveRegion = FEXCore::AlignUp(LiveVMARegion::GetFEXManagedVMARegionSize(length), FEXCore::Utils::FEX_PAGE_SIZE);
++      size_t lengthOfLiveRegion = FEXCore::AlignUp(LiveVMARegion::GetFEXManagedVMARegionSize(length), FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+       size_t lengthPlusManagedData = length + lengthOfLiveRegion;
+       for (auto it = ReservedRegions->begin(); it != ReservedRegions->end(); ++it) {
+         if ((*it)->RegionSize >= lengthPlusManagedData) {
+@@ -401,7 +406,7 @@ again:
+   if (LiveRegion) {
+     // Mark the pages as used
+     uintptr_t RegionBegin = LiveRegion->SlabInfo->Base;
+-    uintptr_t MappedBegin = (AllocatedOffset - RegionBegin) >> FEXCore::Utils::FEX_PAGE_SHIFT;
++    uintptr_t MappedBegin = (AllocatedOffset - RegionBegin) >> FEXCore::Utils::FEX_HOST_PAGE_SHIFT;
+     size_t PagesSet {};
+ 
+     for (size_t i = 0; i < NumberOfPages; ++i) {
+@@ -410,7 +415,7 @@ again:
+ 
+     // Change our last allocation region
+     LiveRegion->LastPageAllocation = MappedBegin + NumberOfPages;
+-    LiveRegion->FreeSpace -= PagesSet * FEXCore::Utils::FEX_PAGE_SIZE;
++    LiveRegion->FreeSpace -= PagesSet * FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+     LOGMAN_THROW_A_FMT(LiveRegion->FreeSpace <= LiveRegion->SlabInfo->RegionSize,
+                        "Corrupt LiveRegion free space! 0x{:x} > 0x{:x}. After allocating 0x{:x} (0x{:x} overlapped)", LiveRegion->FreeSpace,
+                        LiveRegion->SlabInfo->RegionSize, length, PagesSet);
+@@ -431,11 +436,11 @@ int OSAllocator_64Bit::Munmap(void* addr, size_t length) {
+ 
+   uint64_t Addr = reinterpret_cast<uint64_t>(addr);
+ 
+-  if (Addr & ~FEXCore::Utils::FEX_PAGE_MASK) {
++  if (Addr & ~FEXCore::Utils::FEX_HOST_PAGE_MASK) {
+     return -EINVAL;
+   }
+ 
+-  if (length & ~FEXCore::Utils::FEX_PAGE_MASK) {
++  if (length & ~FEXCore::Utils::FEX_HOST_PAGE_MASK) {
+     return -EINVAL;
+   }
+ 
+@@ -446,7 +451,7 @@ int OSAllocator_64Bit::Munmap(void* addr, size_t length) {
+   // This needs a mutex to be thread safe
+   auto lk = FEXCore::GuardSignalDeferringSectionWithFallback(AllocationMutex, TLSThread);
+ 
+-  length = FEXCore::AlignUp(length, FEXCore::Utils::FEX_PAGE_SIZE);
++  length = FEXCore::AlignUp(length, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+ 
+   uintptr_t PtrBegin = reinterpret_cast<uintptr_t>(addr);
+   uintptr_t PtrEnd = PtrBegin + length;
+@@ -459,8 +464,8 @@ int OSAllocator_64Bit::Munmap(void* addr, size_t length) {
+       // Live region fully encompasses slab range
+ 
+       uint64_t FreedPages {};
+-      uint32_t SlabPageBegin = (PtrBegin - RegionBegin) >> FEXCore::Utils::FEX_PAGE_SHIFT;
+-      uint64_t PagesToFree = length >> FEXCore::Utils::FEX_PAGE_SHIFT;
++      uint32_t SlabPageBegin = (PtrBegin - RegionBegin) >> FEXCore::Utils::FEX_HOST_PAGE_SHIFT;
++      uint64_t PagesToFree = length >> FEXCore::Utils::FEX_HOST_PAGE_SHIFT;
+ 
+       for (size_t i = 0; i < PagesToFree; ++i) {
+         FreedPages += (*it)->UsedPages.TestAndClear(SlabPageBegin + i) ? 1 : 0;
+@@ -475,7 +480,7 @@ int OSAllocator_64Bit::Munmap(void* addr, size_t length) {
+         ::mmap(addr, length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+       }
+ 
+-      (*it)->FreeSpace += FreedPages * FEXCore::Utils::FEX_PAGE_SIZE;
++      (*it)->FreeSpace += FreedPages * FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+ 
+       // Set the last allocated page to the minimum of last page allocation or this slab
+       // This will let us more quickly fill holes
+@@ -527,9 +532,10 @@ void OSAllocator_64Bit::AllocateMemoryRegions(fextl::vector<FEXCore::Allocator::
+   }
+ 
+   for (auto [Ptr, AllocationSize] : Ranges) {
+-    // Skip using any regions that are <= two pages. FEX's VMA allocator requires two pages
+-    // for tracking data. So three pages are minimum for a single page VMA allocation.
+-    if (AllocationSize <= (FEXCore::Utils::FEX_PAGE_SIZE * 2)) {
++    // The metadata header and bitset must fit before any allocatable host page.
++    // Its fixed maximum-page padding also applies when running on 4-KiB hosts.
++    if (AllocationSize <= FEXCore::AlignUp(LiveVMARegion::GetFEXManagedVMARegionSize(AllocationSize),
++                                          FEXCore::Utils::FEX_HOST_PAGE_SIZE)) {
+       continue;
+     }
+ 
+@@ -578,7 +584,7 @@ struct alloc_delete : public std::default_delete<T> {
+   void operator()(T* ptr) const {
+     if (ptr) {
+       const auto size = sizeof(T);
+-      const auto MinPage = FEXCore::AlignUp(size, FEXCore::Utils::FEX_PAGE_SIZE);
++      const auto MinPage = FEXCore::AlignUp(size, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+ 
+       std::destroy_at(ptr);
+       ::munmap(ptr, MinPage);
+@@ -596,8 +602,8 @@ template<class T, class... Args>
+ requires (!std::is_array_v<T>)
+ fextl::unique_ptr<T> make_alloc_unique(FEXCore::Allocator::MemoryRegion& Base, Args&&... args) {
+   const auto size = sizeof(T);
+-  const auto MinPage = FEXCore::AlignUp(size, FEXCore::Utils::FEX_PAGE_SIZE);
+-  if (Base.Size < size || MinPage != FEXCore::Utils::FEX_PAGE_SIZE) {
++  const auto MinPage = FEXCore::AlignUp(size, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
++  if (Base.Size < size || MinPage != FEXCore::Utils::FEX_HOST_PAGE_SIZE) {
+     ERROR_AND_DIE_FMT("Couldn't fit allocator in to page!");
+   }
+ 
+diff --git a/FEXCore/Source/Utils/Allocator.cpp b/FEXCore/Source/Utils/Allocator.cpp
+index 2060f26..6df155c 100644
+--- a/FEXCore/Source/Utils/Allocator.cpp
++++ b/FEXCore/Source/Utils/Allocator.cpp
+@@ -119,10 +119,10 @@ FEX_DEFAULT_VISIBILITY size_t GetHostVABits() {
+     // Instead, try allocating the page at the top of the range.
+     // If this succeeds OR the page is reported as already existing,
+     // we know we're in valid VA space. Otherwise, we must go lower.
+-    void* Addr = reinterpret_cast<void*>((1ULL << Bits) - FEXCore::Utils::FEX_PAGE_SIZE);
+-    void* Ptr = ::mmap(Addr, FEXCore::Utils::FEX_PAGE_SIZE, PROT_NONE, MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    void* Addr = reinterpret_cast<void*>((1ULL << Bits) - FEXCore::Utils::FEX_HOST_PAGE_SIZE);
++    void* Ptr = ::mmap(Addr, FEXCore::Utils::FEX_HOST_PAGE_SIZE, PROT_NONE, MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+     if (Ptr != (void*)~0ULL) {
+-      ::munmap(Ptr, FEXCore::Utils::FEX_PAGE_SIZE);
++      ::munmap(Ptr, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+     }
+     if (Ptr != (void*)~0ULL || errno == EEXIST) {
+       HostVABits = Bits;
+diff --git a/FEXCore/Source/Utils/atomic_segmented_bitmap_allocator.h b/FEXCore/Source/Utils/atomic_segmented_bitmap_allocator.h
+index 0547424..191a287 100644
+--- a/FEXCore/Source/Utils/atomic_segmented_bitmap_allocator.h
++++ b/FEXCore/Source/Utils/atomic_segmented_bitmap_allocator.h
+@@ -55,7 +55,7 @@ public:
+     deinit();
+ 
+     // Align up to page.
+-    arena_size = FEXCore::AlignUpPowerOf2(arena_size, FEXCore::Utils::FEX_PAGE_SIZE);
++    arena_size = FEXCore::AlignUpPowerOf2(arena_size, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+ 
+     const auto total_bitset_tracking_memory = calculate_bucket_granules_and_bitset_sizes(arena_size);
+ 
+@@ -64,7 +64,7 @@ public:
+     arena_base_size = arena_size;
+ 
+     // RW for bitset buffer
+-    const auto bitset_size_aligned_to_page = FEXCore::AlignUpPowerOf2(total_bitset_tracking_memory, FEXCore::Utils::FEX_PAGE_SIZE);
++    const auto bitset_size_aligned_to_page = FEXCore::AlignUpPowerOf2(total_bitset_tracking_memory, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+     bitset_base = reinterpret_cast<uint8_t*>(FEXCore::Allocator::VirtualAlloc(bitset_size_aligned_to_page, false));
+     bitset_base_size = bitset_size_aligned_to_page;
+ 
+@@ -341,7 +341,7 @@ private:
+     }
+ 
+     current_base_bitset =
+-      reinterpret_cast<uint8_t*>(FEXCore::AlignUpPowerOf2(reinterpret_cast<uint64_t>(current_base_bitset), FEXCore::Utils::FEX_PAGE_SIZE));
++      reinterpret_cast<uint8_t*>(FEXCore::AlignUpPowerOf2(reinterpret_cast<uint64_t>(current_base_bitset), FEXCore::Utils::FEX_HOST_PAGE_SIZE));
+     LogMan::Throw::AFmt(current_base_arena == (arena_base + arena_base_size), "Failed arena math: 0x{:x} != expected 0x{:x}",
+                         (uint64_t)current_base_arena, (uint64_t)arena_base + arena_base_size);
+     LogMan::Throw::AFmt(current_base_bitset == (bitset_base + bitset_base_size), "Failed bitset math: 0x{:x} != expected 0x{:x}",
+diff --git a/FEXCore/include/FEXCore/Core/CodeCache.h b/FEXCore/include/FEXCore/Core/CodeCache.h
+index 09b1a12..ff1f8a5 100644
+--- a/FEXCore/include/FEXCore/Core/CodeCache.h
++++ b/FEXCore/include/FEXCore/Core/CodeCache.h
+@@ -224,7 +224,7 @@ struct MappedCodeCacheFile {
+   std::atomic<int> disallow_copy_or_move;
+ 
+   size_t NumPages() const {
+-    return CodeBuffer.size_bytes() / FEXCore::Utils::FEX_PAGE_SIZE;
++    return CodeBuffer.size_bytes() / FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+   }
+ };
+ 
+diff --git a/FEXCore/include/FEXCore/Debug/InternalThreadState.h b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+index 42feabb..5290315 100644
+--- a/FEXCore/include/FEXCore/Debug/InternalThreadState.h
++++ b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+@@ -87,7 +87,7 @@ struct UnalignedExclusiveStore {
+   uint8_t Size;
+ };
+ 
+-struct alignas(FEXCore::Utils::FEX_PAGE_SIZE) InternalThreadState : public FEXCore::Allocator::FEXAllocOperators {
++struct alignas(FEXCore::Utils::FEX_HOST_PAGE_ALIGNMENT) InternalThreadState : public FEXCore::Allocator::FEXAllocOperators {
+   FEXCore::Core::CpuStateFrame* const CurrentFrame = &BaseFrameState;
+ 
+   FEXCore::Context::Context* const CTX;
+@@ -122,9 +122,11 @@ struct alignas(FEXCore::Utils::FEX_PAGE_SIZE) InternalThreadState : public FEXCo
+   FEXCore::Core::CpuStateFrame BaseFrameState {};
+ 
+   // Can be reprotected as RO to trigger an interrupt at generated code block entrypoints
+-  alignas(FEXCore::Utils::FEX_PAGE_SIZE) uint8_t InterruptFaultPage[FEXCore::Utils::FEX_PAGE_SIZE];
++  alignas(FEXCore::Utils::FEX_HOST_PAGE_ALIGNMENT) uint8_t InterruptFaultPage[FEXCore::Utils::FEX_HOST_PAGE_ALIGNMENT];
+ };
+ static_assert(std::is_standard_layout_v<FEXCore::Core::InternalThreadState>);
++static_assert(offsetof(InternalThreadState, InterruptFaultPage) % FEXCore::Utils::FEX_HOST_PAGE_ALIGNMENT == 0);
++static_assert(sizeof(InternalThreadState::InterruptFaultPage) == FEXCore::Utils::FEX_HOST_PAGE_ALIGNMENT);
+ // Maximum unsigned-offset store range for fault page.
+ static_assert(
+   (offsetof(FEXCore::Core::InternalThreadState, InterruptFaultPage) - offsetof(FEXCore::Core::InternalThreadState, BaseFrameState)) <= 65520,
+diff --git a/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h b/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
+index 1c0c8b8..11317d0 100644
+--- a/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
++++ b/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
+@@ -417,8 +417,8 @@ public:
+ private:
+   void* Alloc(size_t Size) override {
+     auto Ptr = FEXCore::Allocator::VirtualAlloc(Size);
+-    uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_PAGE_SIZE);
+-    if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_PAGE_SIZE,
++    uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
++    if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_HOST_PAGE_SIZE,
+                                             FEXCore::Allocator::ProtectOptions::None)) {
+       LogMan::Msg::EFmt("Failed to mprotect last page of code buffer.");
+     }
+diff --git a/FEXCore/include/FEXCore/Utils/TypeDefines.h b/FEXCore/include/FEXCore/Utils/TypeDefines.h
+index ec03ac6..19c387a 100644
+--- a/FEXCore/include/FEXCore/Utils/TypeDefines.h
++++ b/FEXCore/include/FEXCore/Utils/TypeDefines.h
+@@ -1,12 +1,30 @@
+ // SPDX-License-Identifier: MIT
+ #pragma once
+ #include <cstddef>
++#ifdef __ANDROID__
++#include <bit>
++#include <unistd.h>
++#endif
+ 
+ namespace FEXCore::Utils {
+-// FEX assumes an operating page size of 4096
+-// To work around build systems that build on a 16k/64k page size, define our page size here
+-// Don't use the system provided PAGE_SIZE define because of this.
++// x86 guest pages stay 4 KiB, independently of the host kernel page size.
+ constexpr size_t FEX_PAGE_SIZE = 4096;
+ constexpr size_t FEX_PAGE_SHIFT = 12;
+ constexpr size_t FEX_PAGE_MASK = ~(FEX_PAGE_SIZE - 1);
++
++// One Android binary supports 4-KiB and 16-KiB kernels. Runtime allocation,
++// protection and release use the actual page size. Objects that contain an
++// independently protected page reserve the maximum alignment and extent.
++// The embedding runtime admits the supported host sizes before SetupHooks.
++#ifdef __ANDROID__
++inline const size_t FEX_HOST_PAGE_SIZE = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
++inline const size_t FEX_HOST_PAGE_SHIFT = std::countr_zero(FEX_HOST_PAGE_SIZE);
++inline const size_t FEX_HOST_PAGE_MASK = ~(FEX_HOST_PAGE_SIZE - 1);
++constexpr size_t FEX_HOST_PAGE_ALIGNMENT = 16384;
++#else
++constexpr size_t FEX_HOST_PAGE_SIZE = FEX_PAGE_SIZE;
++constexpr size_t FEX_HOST_PAGE_SHIFT = FEX_PAGE_SHIFT;
++constexpr size_t FEX_HOST_PAGE_MASK = FEX_PAGE_MASK;
++constexpr size_t FEX_HOST_PAGE_ALIGNMENT = FEX_PAGE_SIZE;
++#endif
+ } // namespace FEXCore::Utils
+diff --git a/FEXCore/include/FEXCore/fextl/memory_resource.h b/FEXCore/include/FEXCore/fextl/memory_resource.h
+index 686feec..241ccaf 100644
+--- a/FEXCore/include/FEXCore/fextl/memory_resource.h
++++ b/FEXCore/include/FEXCore/fextl/memory_resource.h
+@@ -45,13 +45,13 @@ namespace pmr {
+       Buffers.clear();
+ 
+       CurrentBufferRemaining = 0;
+-      CurrentAllocationSize = FEXCore::Utils::FEX_PAGE_SIZE;
++      CurrentAllocationSize = FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+     }
+ 
+   protected:
+     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+       LOGMAN_THROW_A_FMT(bytes != 0, "Nope");
+-      LOGMAN_THROW_A_FMT(alignment <= FEXCore::Utils::FEX_PAGE_SIZE, "Nope");
++      LOGMAN_THROW_A_FMT(alignment <= FEXCore::Utils::FEX_HOST_PAGE_SIZE, "Nope");
+ 
+       // Wow, an actual use case of std::align in the wild.
+       void* NewPointer = std::align(alignment, bytes, CurrentBuffer, CurrentBufferRemaining);
+@@ -95,7 +95,7 @@ namespace pmr {
+ 
+       // Multiply the allocation size by 1.5 for the next allocation
+       // Avoid double math because of ugly conversions.
+-      CurrentAllocationSize = FEXCore::AlignUp(CurrentAllocationSize + (CurrentAllocationSize >> 1), FEXCore::Utils::FEX_PAGE_SIZE);
++      CurrentAllocationSize = FEXCore::AlignUp(CurrentAllocationSize + (CurrentAllocationSize >> 1), FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+     }
+ 
+     // Current buffer management.
+@@ -109,7 +109,7 @@ namespace pmr {
+ 
+     fextl::list<BufferData> Buffers {};
+ 
+-    size_t CurrentAllocationSize = FEXCore::Utils::FEX_PAGE_SIZE;
++    size_t CurrentAllocationSize = FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+   };
+ 
+   /**

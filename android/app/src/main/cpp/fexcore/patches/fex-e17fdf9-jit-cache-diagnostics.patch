@@ -1,0 +1,160 @@
+diff --git a/FEXCore/include/FEXCore/Utils/LumenJitCacheDiagnostics.h b/FEXCore/include/FEXCore/Utils/LumenJitCacheDiagnostics.h
+new file mode 100644
+--- /dev/null
++++ b/FEXCore/include/FEXCore/Utils/LumenJitCacheDiagnostics.h
+@@ -0,0 +1,18 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++#include <cstdint>
++
++// Cold embedding diagnostics only: no guest addresses, code writes, or execution
++// state are exposed. A default no-op lives in SharedCodeBufferManager.cpp.
++enum class FEXLumenJitCacheEventV1 : std::uint32_t {
++  BufferAllocate = 1, BufferClear = 2, BufferAdopt = 3,
++  BlockCompile = 4, BlockLoad = 5, InvalidateBlocks = 6,
++  InvalidateRequest = 7, RestartFar = 8, RestartBuffer = 9,
++  ExplicitClear = 10,
++};
++extern "C" void FEXLumenJitCacheActivityV1(std::uint32_t kind,
++  std::uint64_t value, std::uint64_t detail) noexcept;
++inline void FEXLumenJitCacheActivityV1(FEXLumenJitCacheEventV1 kind,
++  std::uint64_t value, std::uint64_t detail = 0) noexcept {
++  FEXLumenJitCacheActivityV1(static_cast<std::uint32_t>(kind), value, detail);
++}
+diff --git a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+--- a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
++++ b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+@@ -5,11 +5,15 @@
+ #include <FEXCore/fextl/memory.h>
+ #include <FEXCore/Utils/AllocatorHooks.h>
+ #include <FEXCore/Utils/LogManager.h>
++#include <FEXCore/Utils/LumenJitCacheDiagnostics.h>
+ #include <FEXCore/Utils/MathUtils.h>
+ 
+ #ifndef _WIN32
+ #include <FEXCore/Utils/PrctlUtils.h>
+ #endif
++
++extern "C" __attribute__((weak, noinline)) void
++FEXLumenJitCacheActivityV1(std::uint32_t, std::uint64_t, std::uint64_t) noexcept {}
+ 
+ namespace FEXCore::CPU {
+ static constexpr size_t INITIAL_CODE_SIZE = 1024 * 1024 * 16;
+@@ -71,6 +75,7 @@
+   Latest = Buffer;
+ 
+   OnCodeBufferAllocated(Buffer);
++  FEXLumenJitCacheActivityV1(FEXLumenJitCacheEventV1::BufferAllocate, Size);
+ 
+   return Buffer;
+ }
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -28,6 +28,7 @@
+ #include <FEXCore/Utils/CompilerDefs.h>
+ #include <FEXCore/Utils/EnumUtils.h>
+ #include <FEXCore/Utils/LogManager.h>
++#include <FEXCore/Utils/LumenJitCacheDiagnostics.h>
+ #include <FEXCore/Utils/LongJump.h>
+ #include <FEXCore/Utils/Profiler.h>
+ #include <FEXCore/Utils/Telemetry.h>
+@@ -680,6 +681,8 @@
+   auto PrevCodeBuffer = CurrentCodeBuffer;
+   auto lk = PrevCodeBuffer->LookupCache->AcquireWriteLock();
+ 
++  FEXLumenJitCacheActivityV1(FEXLumenJitCacheEventV1::BufferClear,
++    PrevCodeBuffer->AllocatedSpaceUsed(), PrevCodeBuffer->TotalAllocationSize());
+   auto CodeBuffer = AcquireNewSharedCodeBuffer();
+   ThreadState->LookupCache->ChangeGuestToHostMapping(*PrevCodeBuffer, *CodeBuffer->LookupCache, lk);
+ }
+@@ -825,6 +828,8 @@
+                                                                                                "doesn't match up!\n");
+   // Bring CodeBuffer up to date
+   if (auto Prev = CheckCodeBufferUpdate()) {
++    FEXLumenJitCacheActivityV1(FEXLumenJitCacheEventV1::BufferAdopt,
++      Prev->AllocatedSpaceUsed(), Prev->TotalAllocationSize());
+     Allocator::VirtualDontNeed(ThreadState->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
+     auto lk = ThreadState->LookupCache->AcquireWriteLock();
+     ThreadState->LookupCache->ChangeGuestToHostMapping(*Prev, *CurrentCodeBuffer->LookupCache, lk);
+@@ -866,12 +871,14 @@
+   case RestartOptions::Control::EnableFarARM64Jumps:
+     RequiresFarARM64Jumps = true;
+     FEXLumenJitCompilationRestartedV1(1);
++    FEXLumenJitCacheActivityV1(FEXLumenJitCacheEventV1::RestartFar, GetCursorOffset());
+     break;
+   case RestartOptions::Control::NeedsLargerJITSpace:
++    FEXLumenJitCacheActivityV1(FEXLumenJitCacheEventV1::RestartBuffer, GetCursorOffset());
+     // Get rid of the claimed buffer immediately, we can't fit in it at all.
+     TempCodeBufferAllocator.UnclaimBuffer();
+     SSANodeMultiplier *= 2;
+     FEXLumenJitCompilationRestartedV1(2);
+     break;
+   default: LOGMAN_MSG_A_FMT("Unhandled Arm64 restart condition!");
+   }
+@@ -1222,6 +1229,8 @@
+   }
+ #endif
+ 
++  FEXLumenJitCacheActivityV1(FEXLumenJitCacheEventV1::BlockCompile,
++    CodeData.Size, IR->GetHeader()->NumHostInstructions);
+   DebugData->HostCodeSize = CodeData.Size;
+   DebugData->Relocations = &Relocations;
+ 
+@@ -1234,6 +1243,7 @@
+   // we stored it aligned, better still be?
+   LOGMAN_THROW_A_FMT(HostBytes.size() % 16 == 0, "Needs to be 16B aligned!");
+   auto AllocatedInfo = AllocateCodeBufferInSharedCache(HostBytes.size());
++  FEXLumenJitCacheActivityV1(FEXLumenJitCacheEventV1::BlockLoad, HostBytes.size());
+ 
+   uint8_t* Dest = AllocatedInfo.BufferAllocationOffset;
+   memcpy(Dest, HostBytes.data(), HostBytes.size());
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.h b/FEXCore/Source/Interface/Core/LookupCache.h
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -2,6 +2,7 @@
+ #pragma once
+ #include "Interface/Context/Context.h"
+ #include <FEXCore/Utils/LogManager.h>
++#include <FEXCore/Utils/LumenJitCacheDiagnostics.h>
+ #include <FEXCore/Utils/SHMStats.h>
+ #include <FEXCore/Utils/WritePriorityMutex.h>
+ 
+@@ -128,15 +129,17 @@
+   void InvalidateRange(uint64_t Start, uint64_t Length) {
+     auto lk = AcquireWriteLock();
+ 
++    std::uint64_t Erased = 0;
+     auto lower = CodePages.lower_bound(Start >> 12);
+     auto upper = CodePages.upper_bound((Start + Length - 1) >> 12);
+ 
+     for (auto it = lower; it != upper; it++) {
+       for (const auto& Entry : it->second) {
+-        Erase(Entry, lk);
++        Erased += Erase(Entry, lk) ? 1U : 0U;
+       }
+     }
+     CodePages.erase(lower, upper);
++    FEXLumenJitCacheActivityV1(FEXLumenJitCacheEventV1::InvalidateBlocks, Erased, Length);
+   }
+ 
+   void AddBlockLink(uint64_t GuestDestination, FEXCore::Context::ExitFunctionLinkData* HostLink,
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -31,6 +31,7 @@
+ #include "Utils/Allocator.h"
+ #include "Utils/Allocator/HostAllocator.h"
+ #include <FEXCore/Utils/SpinWaitLock.h>
++#include <FEXCore/Utils/LumenJitCacheDiagnostics.h>
+ #include "Utils/variable_length_integer.h"
+ 
+ #include <FEXCore/Config/Config.h>
+@@ -490,6 +491,7 @@
+ 
+ void ContextImpl::ClearCodeCache(FEXCore::Core::InternalThreadState* Thread, bool NewCodeBuffer) {
+   FEXCORE_PROFILE_INSTANT("ClearCodeCache");
++  FEXLumenJitCacheActivityV1(FEXLumenJitCacheEventV1::ExplicitClear, NewCodeBuffer ? 1U : 0U);
+ 
+   if (NewCodeBuffer) {
+     // Allocate new CodeBuffer + L3 LookupCache and clear L1+L2 caches

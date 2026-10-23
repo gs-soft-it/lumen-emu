@@ -1,0 +1,238 @@
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -977,6 +977,103 @@
+   }
+ }
+ 
++
++// Preflight every active lane before publishing any result or masked store.
++// Spill masks/indexes to the host stack so callback clobbers and 256-bit SVE
++// lanes use the same scalar permission protocol. Inactive lanes do not query.
++void Arm64JITCore::EmitLumenMaskedMemoryCheck(IR::OpSize Size, IR::OpSize ElementSize,
++                                             ARMEmitter::Register Base, ARMEmitter::VRegister Mask,
++                                             IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
++                                             uint8_t OffsetScale, bool Write) {
++  if (!HasLumenGuestMemoryChecks()) return;
++  uint64_t Constant;
++  if (!Offset.IsInvalid() && IsInlineConstant(Offset, &Constant)) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP3, Constant);
++    add(ARMEmitter::Size::i64Bit, TMP3, Base, TMP3);
++  } else {
++    const auto Address = ApplyMemOperand(Size, Base, TMP3, Offset, OffsetType,
++                                        (HostSupportsSVE128 || HostSupportsSVE256) ? 1 : OffsetScale);
++    if (Address != TMP3) mov(ARMEmitter::Size::i64Bit, TMP3, Address);
++  }
++  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 32);
++  if (Size == IR::OpSize::i256Bit) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP4, 0);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(Mask.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP4);
++  } else {
++    str(Mask.Q(), ARMEmitter::Reg::rsp, 0);
++  }
++  const auto Bytes = IR::OpSizeToSize(ElementSize);
++  for (size_t Lane = 0; Lane < IR::NumElements(Size, ElementSize); ++Lane) {
++    switch (Bytes) {
++    case 1: ldrb(TMP1.W(), ARMEmitter::Reg::rsp, Lane); break;
++    case 2: ldrh(TMP1.W(), ARMEmitter::Reg::rsp, Lane * 2); break;
++    case 4: ldr(TMP1.W(), ARMEmitter::Reg::rsp, Lane * 4); break;
++    case 8: ldr(TMP1, ARMEmitter::Reg::rsp, Lane * 8); break;
++    default: LOGMAN_THROW_A_FMT(false, "Unsupported checked mask element size");
++    }
++    ARMEmitter::ForwardLabel Skip;
++    (void)tbz(TMP1, Bytes * 8 - 1, &Skip);
++    EmitLumenGuestMemoryCheckBytes(Bytes, TMP3, Lane * Bytes, Write);
++    BindOrRestart(&Skip);
++  }
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 32);
++}
++
++void Arm64JITCore::EmitLumenGatherMemoryCheck(IR::OpSize Size, IR::OpSize ElementSize,
++                                             std::optional<ARMEmitter::Register> BaseAddr,
++                                             ARMEmitter::VRegister VectorIndexLow,
++                                             std::optional<ARMEmitter::VRegister> VectorIndexHigh,
++                                             ARMEmitter::VRegister MaskReg, IR::OpSize VectorIndexSize,
++                                             size_t DataElementOffsetStart, size_t IndexElementOffsetStart,
++                                             uint8_t OffsetScale, IR::OpSize AddrSize) {
++  if (!HasLumenGuestMemoryChecks()) return;
++  const auto Bytes = IR::OpSizeToSize(ElementSize);
++  const auto IndexBytes = IR::OpSizeToSize(VectorIndexSize);
++  const auto IndexCount = (Size == IR::OpSize::i256Bit || VectorIndexHigh.has_value() ? 32 : 16) / IndexBytes;
++  const auto Count = std::min<size_t>(IR::OpSizeToSize(Size) / Bytes, IndexCount);
++  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 96);
++  if (Size == IR::OpSize::i256Bit) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP4, 0);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(MaskReg.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP4);
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP4, 32);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VectorIndexLow.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP4);
++  } else {
++    str(MaskReg.Q(), ARMEmitter::Reg::rsp, 0);
++    str(VectorIndexLow.Q(), ARMEmitter::Reg::rsp, 32);
++    if (VectorIndexHigh.has_value()) str(VectorIndexHigh->Q(), ARMEmitter::Reg::rsp, 48);
++  }
++  for (size_t Lane = DataElementOffsetStart, Index = IndexElementOffsetStart; Lane < Count; ++Lane, ++Index) {
++    switch (Bytes) {
++    case 1: ldrb(TMP1.W(), ARMEmitter::Reg::rsp, Lane); break;
++    case 2: ldrh(TMP1.W(), ARMEmitter::Reg::rsp, Lane * 2); break;
++    case 4: ldr(TMP1.W(), ARMEmitter::Reg::rsp, Lane * 4); break;
++    case 8: ldr(TMP1, ARMEmitter::Reg::rsp, Lane * 8); break;
++    default: LOGMAN_THROW_A_FMT(false, "Unsupported checked gather element size");
++    }
++    ARMEmitter::ForwardLabel Skip;
++    (void)tbz(TMP1, Bytes * 8 - 1, &Skip);
++    switch (IndexBytes) {
++    case 4: ldr(TMP1.W(), ARMEmitter::Reg::rsp, 32 + Index * 4); break;
++    case 8: ldr(TMP1, ARMEmitter::Reg::rsp, 32 + Index * 8); break;
++    default: LOGMAN_THROW_A_FMT(false, "Unsupported checked gather index size");
++    }
++    if (BaseAddr.has_value()) {
++      if (VectorIndexSize == IR::OpSize::i32Bit) {
++        add(ConvertSize(AddrSize), TMP2, *BaseAddr, TMP1, ARMEmitter::ExtendedType::SXTW, FEXCore::ilog2(OffsetScale));
++      } else {
++        add(ConvertSize(AddrSize), TMP2, *BaseAddr, TMP1, ARMEmitter::ShiftType::LSL, FEXCore::ilog2(OffsetScale));
++      }
++    } else if (VectorIndexSize == IR::OpSize::i32Bit) {
++      sbfiz(ConvertSize(AddrSize), TMP2, TMP1, FEXCore::ilog2(OffsetScale), 32);
++    } else {
++      lsl(ConvertSize(AddrSize), TMP2, TMP1, FEXCore::ilog2(OffsetScale));
++    }
++    EmitLumenGuestMemoryCheckBytes(Bytes, TMP2, 0, false);
++    BindOrRestart(&Skip);
++  }
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 96);
++}
++
+ DEF_OP(VLoadVectorMasked) {
+ 
+   const auto Op = IROp->C<IR::IROp_VLoadVectorMasked>();
+@@ -992,6 +1089,8 @@
+   const auto Dst = GetVReg(Node);
+   const auto MaskReg = GetVReg(Op->Mask);
+   const auto MemReg = GetReg(Op->Addr);
++  EmitLumenMaskedMemoryCheck(OpSize, IROp->ElementSize, MemReg, MaskReg,
++                             Op->Offset, Op->OffsetType, Op->OffsetScale, false);
+ 
+   if (HostSupportsSVE128 || HostSupportsSVE256) {
+     const auto MemSrc = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+@@ -1095,6 +1194,8 @@
+   const auto RegData = GetVReg(Op->Data);
+   const auto MaskReg = GetVReg(Op->Mask);
+   const auto MemReg = GetReg(Op->Addr);
++  EmitLumenMaskedMemoryCheck(OpSize, IROp->ElementSize, MemReg, MaskReg,
++                             Op->Offset, Op->OffsetType, Op->OffsetScale, true);
+   if (HostSupportsSVE128 || HostSupportsSVE256) {
+     const auto MemDst = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+ 
+@@ -1324,6 +1425,8 @@
+   const auto VectorIndexLow = GetVReg(Op->VectorIndexLow);
+   std::optional<ARMEmitter::VRegister> VectorIndexHigh =
+     !Op->VectorIndexHigh.IsInvalid() ? std::make_optional(GetVReg(Op->VectorIndexHigh)) : std::nullopt;
++  EmitLumenGatherMemoryCheck(OpSize, IROp->ElementSize, BaseAddr, VectorIndexLow, VectorIndexHigh,
++                             MaskReg, VectorIndexSize, DataElementOffsetStart, IndexElementOffsetStart, OffsetScale, Op->AddrSize);
+ 
+   ///< If the host supports SVE and the offset scale matches SVE limitations then it can do an SVE style load.
+   const bool SupportsSVELoad = (HostSupportsSVE128 || HostSupportsSVE256) &&
+@@ -1409,6 +1512,8 @@
+   const auto VectorIndexLow = GetVReg(Op->VectorIndexLow);
+   std::optional<ARMEmitter::VRegister> VectorIndexHigh =
+     !Op->VectorIndexHigh.IsInvalid() ? std::make_optional(GetVReg(Op->VectorIndexHigh)) : std::nullopt;
++  EmitLumenGatherMemoryCheck(IR::OpSize::i128Bit, IR::OpSize::i32Bit, BaseAddr, VectorIndexLow, VectorIndexHigh,
++                             MaskReg, IR::OpSize::i64Bit, 0, 0, OffsetScale, Op->AddrSize);
+ 
+   ///< If the host supports SVE and the offset scale matches SVE limitations then it can do an SVE style load.
+   const bool SupportsSVELoad = HostSupportsSVE128 && (OffsetScale == 1 || OffsetScale == 4) && Op->AddrSize == IR::OpSize::i64Bit;
+@@ -2038,6 +2143,7 @@
+   }
+ 
+   auto MemStore = [this](auto Value, uint32_t OpSize, int32_t Size) {
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     switch (OpSize) {
+     case 1: strb<ARMEmitter::IndexType::POST>(Value.W(), TMP2, Size); break;
+     case 2: strh<ARMEmitter::IndexType::POST>(Value.W(), TMP2, Size); break;
+@@ -2048,6 +2154,7 @@
+   };
+ 
+   auto MemStoreTSO = [this](auto Value, uint32_t OpSize, int32_t Size) {
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     if (OpSize == 1) {
+       // 8bit load is always aligned to natural alignment
+       stlrb(Value.W(), TMP2);
+@@ -2106,7 +2213,7 @@
+     // Early exit if zero count.
+     (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &DoneInternal);
+ 
+-    if (!IsAtomic) {
++    if (!IsAtomic && !HasLumenGuestMemoryChecks()) {
+       if (CTX->HostFeatures.SupportsMOPS) {
+         const bool Is8Bit = SubRegSize == ARMEmitter::SubRegSize::i8Bit;
+ 
+@@ -2277,6 +2384,8 @@
+   }
+ 
+   auto MemCpy = [this](uint32_t OpSize, int32_t Size) {
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     switch (OpSize) {
+     case 1:
+       ldrb<ARMEmitter::IndexType::POST>(TMP4.W(), TMP3, Size);
+@@ -2303,6 +2412,8 @@
+   };
+ 
+   auto MemCpyTSO = [this](uint32_t OpSize, int32_t Size) {
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     if (CTX->HostFeatures.SupportsRCPC) {
+       if (OpSize == 1) {
+         // 8bit load is always aligned to natural alignment
+@@ -2404,7 +2515,7 @@
+     // Early exit if zero count.
+     (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &DoneInternal);
+ 
+-    if (!IsAtomic) {
++    if (!IsAtomic && !HasLumenGuestMemoryChecks()) {
+       if (CTX->HostFeatures.SupportsMOPS) {
+         // In the event we have an overlap (gross), we need to fall back
+         // to the non-mops copy handler. Since the overlap check needs to
+@@ -2538,6 +2649,7 @@
+ }
+ 
+ DEF_OP(CacheLineClear) {
++  EmitLumenGuestMemoryCheckBytes(1, GetReg(IROp->C<IR::IROp_CacheLineClear>()->Addr), 0, false);
+   if (!CTX->HostFeatures.SupportsCacheMaintenanceOps) {
+     dmb(ARMEmitter::BarrierScope::SY);
+     return;
+@@ -2568,6 +2680,7 @@
+ }
+ 
+ DEF_OP(CacheLineClean) {
++  EmitLumenGuestMemoryCheckBytes(1, GetReg(IROp->C<IR::IROp_CacheLineClean>()->Addr), 0, false);
+   if (!CTX->HostFeatures.SupportsCacheMaintenanceOps) {
+     dmb(ARMEmitter::BarrierScope::ST);
+     return;
+@@ -2595,6 +2708,10 @@
+   auto Op = IROp->C<IR::IROp_CacheLineZero>();
+ 
+   auto MemReg = GetReg(Op->Addr);
++  if (HasLumenGuestMemoryChecks()) {
++    and_(ARMEmitter::Size::i64Bit, TMP3, MemReg, ~(CPUIDEmu::CACHELINE_SIZE - 1));
++    EmitLumenGuestMemoryCheckBytes(CPUIDEmu::CACHELINE_SIZE, TMP3, 0, true);
++  }
+ 
+   if (CTX->HostFeatures.SupportsCLZERO) {
+     // We can use this instruction directly
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -533,6 +533,14 @@
+   FEXCore::Core::DebugData* DebugData {};
+ 
+   void ResetStack();
++  void EmitLumenMaskedMemoryCheck(IR::OpSize Size, IR::OpSize ElementSize, ARMEmitter::Register Base,
++                                 ARMEmitter::VRegister Mask, IR::OrderedNodeWrapper Offset,
++                                 IR::MemOffsetType OffsetType, uint8_t OffsetScale, bool Write);
++  void EmitLumenGatherMemoryCheck(IR::OpSize Size, IR::OpSize ElementSize,
++                                 std::optional<ARMEmitter::Register> BaseAddr, ARMEmitter::VRegister VectorIndexLow,
++                                 std::optional<ARMEmitter::VRegister> VectorIndexHigh, ARMEmitter::VRegister MaskReg,
++                                 IR::OpSize VectorIndexSize, size_t DataElementOffsetStart, size_t IndexElementOffsetStart,
++                                 uint8_t OffsetScale, IR::OpSize AddrSize);
+   bool HasLumenGuestMemoryChecks() const;
+   void EmitLumenGuestMemoryCheckBytes(uint64_t Bytes, ARMEmitter::Register Base,
+                                      int64_t Displacement, bool Write);

@@ -1,0 +1,398 @@
+diff --git a/FEXCore/Source/CMakeLists.txt b/FEXCore/Source/CMakeLists.txt
+index 7db99c5a7..1a85e039c 100644
+--- a/FEXCore/Source/CMakeLists.txt
++++ b/FEXCore/Source/CMakeLists.txt
+@@ -62,6 +62,7 @@ set(SRCS
+   Interface/IR/IRDumper.cpp
+   Interface/IR/IREmitter.cpp
+   Interface/IR/PassManager.cpp
++  Interface/IR/Passes/DenormalPass.cpp
+   Interface/IR/Passes/IRDumperPass.cpp
+   Interface/IR/Passes/IRValidation.cpp
+   Interface/IR/Passes/RedundantFlagCalculationElimination.cpp
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+index 82acd5f38..5d1d0af0d 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -135,9 +135,15 @@ DEF_OP(SetRoundingMode) {
+     bfi(ARMEmitter::Size::i64Bit, TMP1, TMP2, 22, 2);
+   }
+ 
+-  // Insert the FTZ flag
+-  lsr(ARMEmitter::Size::i64Bit, TMP2, Src, 2);
+-  bfi(ARMEmitter::Size::i64Bit, TMP1, TMP2, 24, 1);
++  if (HostSupportsAFP) {
++    // AFP separates native input flushing from output flushing.
++    lsr(ARMEmitter::Size::i64Bit, TMP2, Src, 2);
++    bfi(ARMEmitter::Size::i64Bit, TMP1, TMP2, 24, 1);
++  } else {
++    // SSE/AVX denormals are legalized in IR. Native FZ would also flush inputs
++    // and affect x87 arithmetic, so it must remain clear in this profile.
++    and_(ARMEmitter::Size::i64Bit, TMP1, TMP1, ~(1ULL << 24));
++  }
+ 
+   if (Op->SetDAZ && HostSupportsAFP) {
+     // Extract DAZ from MXCSR and insert to in FPCR.FIZ
+diff --git a/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp b/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
+index 65a692354..0300e0296 100644
+--- a/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
+@@ -273,18 +273,17 @@ void Arm64JITCore::VFScalarFMAOperation(IR::OpSize OpSize, IR::OpSize ElementSiz
+                                                        ElementSize == IR::OpSize::i32Bit ? ARMEmitter::SubRegSize::i32Bit :
+                                                                                            ARMEmitter::SubRegSize::i64Bit);
+ 
+-  if (Dst != Upper) {
+-    // If destination is not tied, move the upper bits to the destination first.
+-    mov(Dst.Q(), Upper.Q());
+-  }
+-
+-  if (HostSupportsAFP && Dst == Addend) {
++  if (HostSupportsAFP && Dst == Upper && Dst == Addend) {
+     ///< Exactly matches ARM scalar FMA semantics
+     // If the host CPU supports AFP then scalar does an insert without modifying upper bits.
+     ScalarEmit(Dst, Vector1, Vector2, Addend);
+   } else {
+-    // Host doesn't support AFP, need to emit in to a temporary then insert.
++    // Compute before copying the inactive lanes: Dst can alias an arithmetic
++    // source even when it is not Upper (for example after DAZ legalization).
+     ScalarEmit(VTMP1, Vector1, Vector2, Addend);
++    if (Dst != Upper) {
++      mov(Dst.Q(), Upper.Q());
++    }
+     ins(SubRegSize.Vector, Dst.Q(), 0, VTMP1.Q(), 0);
+   }
+ }
+diff --git a/FEXCore/Source/Interface/IR/PassManager.cpp b/FEXCore/Source/Interface/IR/PassManager.cpp
+index 5d3bcec8b..33973073d 100644
+--- a/FEXCore/Source/Interface/IR/PassManager.cpp
++++ b/FEXCore/Source/Interface/IR/PassManager.cpp
+@@ -70,6 +70,10 @@ void PassManager::Finalize() {
+ void PassManager::AddDefaultPasses(Context::ContextImpl* ctx) {
+   FEX_CONFIG_OPT(DisablePasses, O0);
+ 
++  if (!ctx->HostFeatures.SupportsAFP) {
++    InsertPass(CreateDenormalPass());
++  }
++
+   // We only specifically disable optimization passes if desired, as IR output should
+   // still be well-formed regardless of the modifications made to it.
+   if (!DisablePasses()) {
+diff --git a/FEXCore/Source/Interface/IR/Passes.h b/FEXCore/Source/Interface/IR/Passes.h
+index 213967a09..a07c527e9 100644
+--- a/FEXCore/Source/Interface/IR/Passes.h
++++ b/FEXCore/Source/Interface/IR/Passes.h
+@@ -11,6 +11,7 @@ struct HostFeatures;
+ namespace FEXCore::IR {
+ class Pass;
+ 
++fextl::unique_ptr<Pass> CreateDenormalPass();
+ fextl::unique_ptr<Pass> CreateDeadFlagCalculationEliminination();
+ fextl::unique_ptr<Pass> CreateRegisterAllocationPass(const CPUIDEmu* CPUID);
+ fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures&, OpSize GPROpSize);
+diff --git a/FEXCore/Source/Interface/IR/Passes/DenormalPass.cpp b/FEXCore/Source/Interface/IR/Passes/DenormalPass.cpp
+new file mode 100644
+index 000000000..c4536e6f9
+--- /dev/null
++++ b/FEXCore/Source/Interface/IR/Passes/DenormalPass.cpp
+@@ -0,0 +1,301 @@
++// SPDX-License-Identifier: MIT
++#include "Interface/IR/IREmitter.h"
++#include "Interface/IR/PassManager.h"
++#include "Interface/IR/Passes.h"
++
++#include <FEXCore/Core/CoreState.h>
++
++namespace FEXCore::IR {
++namespace {
++// This legalization runs before x87 stack lowering. At this point native FP
++// operations belong to SSE/AVX; x87 operations still have their own IR opcodes.
++// Arm without AFP couples input/output flushing in FPCR.FZ. Keep that bit off
++// and implement the two guest controls with integer operations instead.
++class DenormalPass final : public Pass {
++  struct Shape {
++    uint8_t Inputs {};
++    OpSize InputElement {OpSize::iUnsized};
++    OpSize OutputElement {OpSize::iUnsized};
++    bool Scalar {};
++    bool Output {};
++    bool UpperOutput {};
++    bool AlwaysFlush {};
++  };
++
++  static Shape Describe(const IROp_Header* Op) {
++    Shape S {0, Op->ElementSize, Op->ElementSize, false, false, false, false};
++    switch (Op->Op) {
++    case OP_VFADDSCALARINSERT: case OP_VFSUBSCALARINSERT:
++    case OP_VFMULSCALARINSERT: case OP_VFDIVSCALARINSERT:
++      S.Inputs = 3; S.Scalar = true; S.Output = true; break;
++    case OP_VFMINSCALARINSERT: case OP_VFMAXSCALARINSERT:
++    case OP_VFCMPSCALARINSERT:
++      S.Inputs = 3; S.Scalar = true; break;
++    case OP_VFRECPSCALARINSERT: case OP_VFRSQRTSCALARINSERT:
++      S.Inputs = 2; S.Scalar = true; S.Output = true; S.AlwaysFlush = true; break;
++    case OP_VFRECP: case OP_VFRSQRT:
++      S.Inputs = 1; S.Output = true; S.AlwaysFlush = true; break;
++    case OP_VFSQRTSCALARINSERT:
++      S.Inputs = 2; S.Scalar = true; S.Output = true; break;
++    case OP_VFTOISCALARINSERT:
++      S.Inputs = 2; S.Scalar = true; break;
++    case OP_VFTOFSCALARINSERT:
++      S.Inputs = 2; S.Scalar = true; S.Output = true;
++      S.InputElement = Op->C<IROp_VFToFScalarInsert>()->SrcElementSize; break;
++    case OP_VFMLASCALARINSERT: case OP_VFMLSSCALARINSERT:
++    case OP_VFNMLASCALARINSERT: case OP_VFNMLSSCALARINSERT:
++      S.Inputs = 14; S.Scalar = true; S.Output = true; break;
++    case OP_VFADD: case OP_VFSUB: case OP_VFMUL: case OP_VFDIV:
++    case OP_VFADDP: case OP_VFCADD:
++      S.Inputs = 3; S.Output = true; break;
++    case OP_VFMLA: case OP_VFMLS: case OP_VFNMLA: case OP_VFNMLS:
++      S.Inputs = 7; S.Output = true; break;
++    case OP_VFMIN: case OP_VFMAX:
++    case OP_VFCMPEQ: case OP_VFCMPNEQ: case OP_VFCMPLT: case OP_VFCMPGT:
++    case OP_VFCMPLE: case OP_VFCMPORD: case OP_VFCMPUNO:
++      S.Inputs = 3; break;
++    case OP_VFSQRT: case OP_VFADDV:
++      S.Inputs = 1; S.Output = true; break;
++    case OP_VECTOR_FTOI: case OP_VECTOR_FTOISIZED:
++    case OP_VECTOR_FTOS: case OP_VECTOR_FTOZS:
++      S.Inputs = 1; break;
++    case OP_VECTOR_F64TOI32:
++      S.Inputs = 1; S.InputElement = OpSize::i64Bit; break;
++    case OP_FLOAT_TOGPR_S:
++      S.Inputs = 1; S.Scalar = true;
++      S.InputElement = Op->C<IROp_Float_ToGPR_S>()->SrcElementSize; break;
++    case OP_FLOAT_TOGPR_ZS:
++      S.Inputs = 1; S.Scalar = true;
++      S.InputElement = Op->C<IROp_Float_ToGPR_ZS>()->SrcElementSize; break;
++    case OP_FCMP:
++      S.Inputs = 3; S.Scalar = true;
++      S.InputElement = Op->C<IROp_FCmp>()->ElementSize; break;
++    case OP_FLOAT_FTOF:
++      S.Inputs = 1; S.Scalar = true; S.Output = true;
++      S.InputElement = Op->C<IROp_Float_FToF>()->SrcElementSize;
++      S.OutputElement = Op->Size; break;
++    case OP_VECTOR_FTOF:
++      S.Inputs = 1; S.Output = true;
++      S.InputElement = Op->C<IROp_Vector_FToF>()->SrcElementSize; break;
++    case OP_VFCVTL2:
++      S.Inputs = 1; S.InputElement = SizeToOpSize(OpSizeToSize(Op->ElementSize) / 2); break;
++    case OP_VFCVTN2:
++      S.Inputs = 2; S.Output = true; S.UpperOutput = true;
++      S.InputElement = SizeToOpSize(OpSizeToSize(Op->ElementSize) * 2); break;
++    default: break;
++    }
++    return S;
++  }
++
++  static Ref Flush(IREmitter* E, Ref Value, OpSize Element, Ref Enabled, bool Scalar, bool Upper = false) {
++    // Half inputs and half outputs do not use this SSE32/64 flush policy.
++    // Integer, move, logic,
++    // min/max outputs and compare results must not be interpreted as floats.
++    if (Element != OpSize::i32Bit && Element != OpSize::i64Bit) return Value;
++    const auto Size = std::max(E->GetOpSize(Value), OpSize::i128Bit);
++    const uint64_t Exponent = Element == OpSize::i32Bit ? 0x7f800000ULL : 0x7ff0000000000000ULL;
++    const uint64_t Fraction = Element == OpSize::i32Bit ? 0x007fffffULL : 0x000fffffffffffffULL;
++    Ref ExpMask = E->_VDupFromGPR(Size, Element, E->_Constant(Exponent));
++    Ref Exp = E->_VAnd(Size, Value, ExpMask);
++    Ref Tiny = E->_VCMPEQZ(Size, Element, Exp);
++    Ref Bits = E->_And(OpSize::i64Bit, Enabled, E->_Constant(Fraction));
++    Ref Clear = E->_VAnd(Size, Tiny, E->_VDupFromGPR(Size, Element, Bits));
++    Ref Result = E->_VAndn(Size, Value, Clear);
++    if (Scalar) {
++      // Inactive scalar lanes are architectural source bits, including denormals.
++      Result = E->_VInsElement(Size, Element, 0, 0, Value, Result);
++    } else if (Upper) {
++      Result = E->_VInsElement(Size, OpSize::i64Bit, 1, 1, Value, Result);
++    }
++    return Result;
++  }
++
++  static Ref ScaledResult(IREmitter* E, const IRListView& IR, const IROp_Header* Op, const Shape& S) {
++    // IEEE tininess is tested at destination precision with an unbounded
++    // exponent. A tiny result can therefore round to the minimum normal when
++    // stored. Recompute twice the result, where that boundary is normal, with
++    // the same precision and rounding. Doubling is exact in the relevant
++    // lanes. Only multiplication, division, FMA and narrowing can reach this
++    // boundary from representable inputs; add/sub results are multiples of
++    // the destination minimum subnormal, and sqrt cannot be this small.
++    const auto Size = std::max(Op->Size, OpSize::i128Bit);
++    const auto Element = S.InputElement;
++    const auto Input = [&](unsigned Index) { return IR.GetNode(Op->Args[Index]); };
++    const auto Twice = [&](Ref V) -> Ref {
++      return E->_VFAdd(std::max(E->GetOpSize(V), OpSize::i128Bit), Element, V, V);
++    };
++    const auto ProductInputs = [&](Ref A, Ref B) {
++      const uint64_t Magnitude = Element == OpSize::i32Bit ? 0x7fffffffULL : 0x7fffffffffffffffULL;
++      Ref Mask = E->_VDupFromGPR(Size, Element, E->_Constant(Magnitude));
++      Ref ChooseB = E->_VCMPGT(Size, Element, E->_VAnd(Size, A, Mask), E->_VAnd(Size, B, Mask));
++      // Scale the smaller factor: a large factor times a small factor may
++      // underflow, but scaling the large factor could overflow first.
++      return std::pair<Ref, Ref> {Twice(E->_VBSL(Size, ChooseB, B, A)), E->_VBSL(Size, ChooseB, A, B)};
++    };
++    switch (Op->Op) {
++    case OP_VFMUL: case OP_VFMULSCALARINSERT: {
++      auto [A, B] = ProductInputs(Input(0), Input(1));
++      return E->_VFMul(Size, Element, A, B);
++    }
++    case OP_VFDIV: case OP_VFDIVSCALARINSERT:
++      return E->_VFDiv(Size, Element, Twice(Input(0)), Input(1));
++    case OP_VFMLA: case OP_VFMLS: case OP_VFNMLA: case OP_VFNMLS:
++    case OP_VFMLASCALARINSERT: case OP_VFMLSSCALARINSERT:
++    case OP_VFNMLASCALARINSERT: case OP_VFNMLSSCALARINSERT: {
++      const unsigned First = S.Scalar ? 1 : 0;
++      auto [A, B] = ProductInputs(Input(First), Input(First + 1));
++      Ref C = Twice(Input(First + 2));
++      switch (Op->Op) {
++      case OP_VFMLA: case OP_VFMLASCALARINSERT: return E->_VFMLA(Size, Element, A, B, C);
++      case OP_VFMLS: case OP_VFMLSSCALARINSERT: return E->_VFMLS(Size, Element, A, B, C);
++      case OP_VFNMLA: case OP_VFNMLASCALARINSERT: return E->_VFNMLA(Size, Element, A, B, C);
++      default: return E->_VFNMLS(Size, Element, A, B, C);
++      }
++    }
++    case OP_VFTOFSCALARINSERT:
++      if (Element <= S.OutputElement) return nullptr;
++      return E->_VFToFScalarInsert(Size, S.OutputElement, Element, Input(0), Twice(Input(1)),
++                                  Op->C<IROp_VFToFScalarInsert>()->ZeroUpperBits);
++    case OP_FLOAT_FTOF:
++      if (Element <= S.OutputElement) return nullptr;
++      return E->_Float_FToF(S.OutputElement, Element, Twice(Input(0)));
++    case OP_VECTOR_FTOF:
++      if (Element <= S.OutputElement) return nullptr;
++      return E->_Vector_FToF(Size, S.OutputElement, Twice(Input(0)), Element);
++    case OP_VFCVTN2:
++      return E->_VFCVTN2(Size, Element, Input(0), Twice(Input(1)));
++    default: return nullptr;
++    }
++  }
++
++  static Ref FlushRoundedBoundary(IREmitter* E, const IRListView& IR, Ref Node, Ref Value,
++                                 const IROp_Header* Op, const Shape& S, Ref Enabled) {
++    Ref Scaled = ScaledResult(E, IR, Op, S);
++    if (Scaled == nullptr) return Value;
++    const auto Size = std::max(E->GetOpSize(Value), OpSize::i128Bit);
++    const auto Element = S.OutputElement;
++    const uint64_t Minimum = Element == OpSize::i32Bit ? 0x00800000ULL : 0x0010000000000000ULL;
++    const uint64_t Magnitude = Element == OpSize::i32Bit ? 0x7fffffffULL : 0x7fffffffffffffffULL;
++    Ref AbsMask = E->_VDupFromGPR(Size, Element, E->_Constant(Magnitude));
++    Ref AtBoundary = E->_VCMPEQ(Size, Element, E->_VAnd(Size, Node, AbsMask),
++                              E->_VDupFromGPR(Size, Element, E->_Constant(Minimum)));
++    Ref Tiny = E->_VCMPGT(Size, Element, E->_VDupFromGPR(Size, Element, E->_Constant(Minimum * 2)),
++                         E->_VAnd(Size, Scaled, AbsMask));
++    Ref Clear = E->_VAnd(Size, E->_VAnd(Size, AtBoundary, Tiny),
++                        E->_VDupFromGPR(Size, Element, E->_And(OpSize::i64Bit, Enabled, E->_Constant(Magnitude))));
++    Ref Result = E->_VAndn(Size, Value, Clear);
++    if (S.Scalar) Result = E->_VInsElement(Size, Element, 0, 0, Value, Result);
++    else if (S.UpperOutput) Result = E->_VInsElement(Size, OpSize::i64Bit, 1, 1, Value, Result);
++    return Result;
++  }
++
++  static bool OverlapsMXCSR(uint32_t Offset, uint64_t Size) {
++    constexpr uint64_t MXCSRBegin = offsetof(Core::CPUState, mxcsr);
++    constexpr uint64_t MXCSREnd = MXCSRBegin + sizeof(uint32_t);
++    const uint64_t WriteBegin = Offset;
++    const uint64_t WriteEnd = WriteBegin + Size;
++    return WriteBegin < MXCSREnd && MXCSRBegin < WriteEnd;
++  }
++
++  static bool StoresMXCSR(const IROp_Header* Op) {
++    switch (Op->Op) {
++    case OP_STORECONTEXT: {
++      const auto Store = Op->C<IROp_StoreContext>();
++      return OverlapsMXCSR(Store->Offset, OpSizeToSize(Op->Size));
++    }
++    case OP_STORECONTEXTPAIR: {
++      const auto Store = Op->C<IROp_StoreContextPair>();
++      return OverlapsMXCSR(Store->Offset, OpSizeToSize(Op->Size) * 2ULL);
++    }
++    case OP_STORECONTEXTINDEXED:
++      // The effective offset is dynamic. Conservatively end the reuse epoch.
++      return true;
++    default: return false;
++    }
++  }
++
++public:
++  void Run(IREmitter* E) override {
++    auto IR = E->ViewIR();
++    for (auto [Block, Header] : IR.GetBlocks()) {
++      E->SetCurrentCodeBlock(Block);
++      // Darwin uses 128-bit vectors, including split AVX. A horizontal sum
++      // contains separately rounded additions: legalize each stage, so an
++      // intermediate denormal is flushed before the following addition.
++      // Keep the zero-extended scalar result required by VFAddV.
++      fextl::vector<Ref> Reductions;
++      for (auto [Node, Op] : IR.GetCode(Block)) {
++        if (Op->Op == OP_VFADDV && Op->Size == OpSize::i128Bit &&
++            (Op->ElementSize == OpSize::i32Bit || Op->ElementSize == OpSize::i64Bit)) {
++          Reductions.push_back(Node);
++        }
++      }
++      for (auto Node : Reductions) {
++        const auto Op = Node->Op(IR.GetData());
++        const auto Element = Op->ElementSize;
++        const auto Size = Op->Size;
++        Ref Input = IR.GetNode(Op->Args[0]);
++        E->SetWriteCursorBefore(Node);
++        Ref Sum = E->_VFAddP(Size, Element, Input, Input);
++        if (Element == OpSize::i32Bit) Sum = E->_VFAddP(Size, Element, Sum, Sum);
++        Ref Zero = E->_VDupFromGPR(Size, Element, E->_Constant(0));
++        Ref Result = E->_VInsElement(Size, Element, 0, 0, Zero, Sum);
++        E->ReplaceUsesWithAfter(Node, Result, Node);
++        E->Remove(Node);
++      }
++      // Snapshot only the original nodes: inserted bitwise operations must not
++      // be revisited, and replacement must start after the newly formed result.
++      fextl::vector<Ref> Nodes;
++      for (auto [Node, Op] : IR.GetCode(Block)) Nodes.push_back(Node);
++      Ref MXCSR {};
++      Ref DAZ {};
++      Ref FTZ {};
++      for (auto Node : Nodes) {
++        auto Op = Node->Op(IR.GetData());
++        if (StoresMXCSR(Op)) {
++          MXCSR = nullptr;
++          DAZ = nullptr;
++          FTZ = nullptr;
++        }
++        const auto S = Describe(Op);
++        if (!S.Inputs) continue;
++        E->SetWriteCursorBefore(Node);
++        Ref CurrentDAZ;
++        if (S.AlwaysFlush) {
++          CurrentDAZ = E->_Constant(~0ULL);
++        } else {
++          if (MXCSR == nullptr)
++            MXCSR = E->_LoadContextGPR(OpSize::i32Bit, offsetof(Core::CPUState, mxcsr));
++          if (DAZ == nullptr)
++            DAZ = E->_Neg(OpSize::i64Bit, E->_Bfe(OpSize::i64Bit, 1, 6, MXCSR));
++          CurrentDAZ = DAZ;
++        }
++        for (uint8_t Index = 0; Index != 4; ++Index) {
++          if (!(S.Inputs & (1U << Index))) continue;
++          Ref Input = IR.GetNode(Op->Args[Index]);
++          E->ReplaceNodeArgument(Node, Index, Flush(E, Input, S.InputElement, CurrentDAZ, S.Scalar));
++        }
++        if (S.Output && S.OutputElement >= OpSize::i32Bit) {
++          E->SetWriteCursor(Node);
++          Ref CurrentFTZ;
++          if (S.AlwaysFlush) {
++            CurrentFTZ = E->_Constant(~0ULL);
++          } else {
++            if (FTZ == nullptr)
++              FTZ = E->_Neg(OpSize::i64Bit, E->_Bfe(OpSize::i64Bit, 1, 15, MXCSR));
++            CurrentFTZ = FTZ;
++          }
++          Ref Result = Flush(E, Node, S.OutputElement, CurrentFTZ, S.Scalar, S.UpperOutput);
++          Result = FlushRoundedBoundary(E, IR, Node, Result, Op, S, CurrentFTZ);
++          E->ReplaceUsesWithAfter(Node, Result, Result);
++        }
++      }
++    }
++  }
++};
++} // namespace
++
++fextl::unique_ptr<Pass> CreateDenormalPass() {
++  return fextl::make_unique<DenormalPass>();
++}
++} // namespace FEXCore::IR

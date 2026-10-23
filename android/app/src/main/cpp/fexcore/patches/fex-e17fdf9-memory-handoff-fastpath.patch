@@ -1,0 +1,47 @@
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -146,7 +146,34 @@
+     ldarb(TMP1.W(), TMP1);
+     cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP1, &Slow);
+   };
+-  if (Guards && !PreserveScratch) {
++  if (Guards && ScratchDeadAtEntry) {
++    // Only the four ordinary memory emitters prove TMP1-4 dead here. Keep
++    // the original address in TMP2 and the process-lifetime table in TMP3;
++    // neither the second-page probe nor the slow call must rebuild the EA.
++    ldr(TMP3, &GuardAddress.Loc);
++    if (ReadDirectory) {
++      ldar(TMP3, TMP3);
++      cbz_OrRestart(ARMEmitter::Size::i64Bit, TMP3, &Done);
++    }
++    EmitAddress();
++    const auto ProbeRetainedTable = [&](ARMEmitter::Register Address) {
++      ubfx(ARMEmitter::Size::i64Bit, TMP1, Address, 12, 20);
++      add(ARMEmitter::Size::i64Bit, TMP1, TMP3, TMP1);
++      ldarb(TMP1.W(), TMP1);
++      cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP1, &Slow);
++    };
++    // Use TMP1 for the index without destroying the original checked address.
++    ProbeRetainedTable(TMP2);
++    if (Bytes != 1) {
++      and_(ARMEmitter::Size::i64Bit, TMP1, TMP2, 4095);
++      add(ARMEmitter::Size::i64Bit, TMP1, TMP1, Bytes - 1);
++      tbz_OrRestart(TMP1, 12, &Done);
++      add(ARMEmitter::Size::i64Bit, TMP1, TMP2, Bytes - 1);
++      ProbeRetainedTable(TMP1);
++    }
++    b_OrRestart(&Done);
++    BindOrRestart(&Slow);
++  } else if (Guards && !PreserveScratch) {
+     // Ordinary scalar/SIMD/RMW accesses use reserved scratch registers: the
+     // hot path has no stack spill, ABI call or NZCV modification. The second
+     // guard load is required only when the <=4 KiB footprint crosses a page.
+@@ -167,7 +194,7 @@
+   // registers. Preserve those scratch values even on their inline path.
+   sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
+   if (!ScratchDeadAtEntry) stp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
+-  EmitAddress();
++  if (!Guards || !ScratchDeadAtEntry) EmitAddress();
+   str(TMP2, ARMEmitter::Reg::rsp, 32);
+   if (Guards && PreserveScratch) {
+     ARMEmitter::ForwardLabel Fast;

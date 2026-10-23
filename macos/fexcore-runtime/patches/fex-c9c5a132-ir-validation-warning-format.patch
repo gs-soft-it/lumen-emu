@@ -1,0 +1,75 @@
+--- a/FEXCore/Source/Interface/IR/Passes/IRValidation.cpp
++++ b/FEXCore/Source/Interface/IR/Passes/IRValidation.cpp
+@@ -36,11 +36,11 @@
+ void IRValidation::Run(IREmitter* IREmit) {
+   FEXCORE_PROFILE_SCOPED("PassManager::IRValidation");
+ 
++  // The admitted upstream pins suppress warnings before emitting diagnostics.
++  // Keep every hard validation check, without formatting discarded warnings.
+   bool HadError = false;
+-  bool HadWarning = false;
+ 
+   fextl::ostringstream Errors;
+-  fextl::ostringstream Warnings;
+ 
+   auto CurrentIR = IREmit->ViewIR();
+ 
+@@ -84,17 +84,10 @@
+           Errors << "%" << ID << ": Had destination but with no size" << std::endl;
+         }
+ 
+-        // Does the node have zero uses? Should have been DCE'd
+-        if (CodeNode->GetUses() == 0) {
+-          HadWarning = true;
+-          Warnings << "%" << ID << ": Destination created but had no uses" << std::endl;
+-        }
+-
+         if (CurrentIR.PostRA()) {
+           // After RA, the destination needs to be assigned a register and class
+           auto PhyReg = PhysicalRegister(CodeNode);
+ 
+-          const auto ExpectedClass = IR::GetRegClass(IROp->Op);
+           const auto AssignedClass = PhyReg.AsRegClass();
+ 
+           // If no register class was assigned
+@@ -107,13 +100,6 @@
+           if (PhyReg.IsInvalid()) {
+             HadError = true;
+             Errors << "%" << ID << ": Had destination but with no register assigned" << std::endl;
+-          }
+-
+-          // Assigned class wasn't the expected class and it is a non-complex op
+-          if (AssignedClass != ExpectedClass && ExpectedClass != IR::RegClass::Complex) {
+-            HadWarning = true;
+-            Warnings << "%" << ID << ": Destination had register class " << uint32_t(AssignedClass) << " When register class "
+-                     << uint32_t(ExpectedClass) << " Was expected" << std::endl;
+           }
+         }
+       }
+@@ -247,8 +233,7 @@
+     }
+   }
+ 
+-  HadWarning = false;
+-  if (HadError || HadWarning) {
++  if (HadError) {
+     fextl::ostringstream Out;
+     FEXCore::IR::Dump(&Out, &CurrentIR);
+ 
+@@ -256,16 +241,11 @@
+       Out << "Errors:" << std::endl << Errors.str() << std::endl;
+     }
+ 
+-    if (HadWarning) {
+-      Out << "Warnings:" << std::endl << Warnings.str() << std::endl;
+-    }
+-
+     LogMan::Msg::EFmt("{}", Out.str());
+ 
+     LOGMAN_MSG_A_FMT("Encountered IR validation Error");
+ 
+     Errors.clear();
+-    Warnings.clear();
+   }
+ }
+ 

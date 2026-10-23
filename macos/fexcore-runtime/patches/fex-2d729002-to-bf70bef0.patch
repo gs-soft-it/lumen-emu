@@ -1,0 +1,69 @@
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 95cbdd843..9ae3206cc 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -43,6 +43,7 @@ $end_info$
+ #include <FEXCore/HLE/SyscallHandler.h>
+ #include <FEXCore/HLE/SourcecodeResolver.h>
+ #include <FEXCore/Utils/Allocator.h>
++#include <FEXCore/Utils/AllocatorHooks.h>
+ #include <FEXCore/Utils/Event.h>
+ #include <FEXCore/Utils/File.h>
+ #include <FEXCore/Utils/LogManager.h>
+@@ -830,6 +831,7 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
+ }
+ 
+ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP, uint64_t MaxInst) {
++  FEXCore::Allocator::ScopedJITWriteProtection WritableJIT;
+   if constexpr (BLOCK_DEBUGGING) {
+     // Block debugging logic is hand-written and needs to be handled with care.
+     // Force MaxInst to only be one in this case.
+diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+index 98d115d79..0bfe29c7b 100644
+--- a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
++++ b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+@@ -8,6 +8,7 @@
+ #include <stdlib.h>
+ #ifdef __APPLE__
+ #include <malloc/malloc.h>
++#include <pthread.h>
+ #else
+ #include <malloc.h>
+ #endif
+@@ -36,6 +37,36 @@ enum class THPControl {
+   Disable,
+ };
+ 
++#ifdef __APPLE__
++// MAP_JIT permissions are selected per thread on Darwin. Compilation can be
++// nested through Custom-IR and cache-management paths, so only the outermost
++// scope opens and closes the write window.
++inline thread_local uint32_t JITWriteScopeDepth {};
++
++class ScopedJITWriteProtection final {
++public:
++  ScopedJITWriteProtection() {
++    if (JITWriteScopeDepth++ == 0) {
++      pthread_jit_write_protect_np(0);
++    }
++  }
++
++  ~ScopedJITWriteProtection() {
++    if (--JITWriteScopeDepth == 0) {
++      pthread_jit_write_protect_np(1);
++    }
++  }
++
++  ScopedJITWriteProtection(const ScopedJITWriteProtection&) = delete;
++  ScopedJITWriteProtection& operator=(const ScopedJITWriteProtection&) = delete;
++};
++#else
++class ScopedJITWriteProtection final {
++public:
++  ScopedJITWriteProtection() = default;
++};
++#endif
++
+ #ifndef _WIN32
+ FEX_DEFAULT_VISIBILITY void SetupHooks(size_t PageSize);
+ #else

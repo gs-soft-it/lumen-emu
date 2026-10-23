@@ -1,0 +1,11 @@
+{
+  "version": "11.1.2",
+  "url": "https://download.qemu.org/qemu-11.1.2.tar.xz",
+  "archive": "qemu-11.1.2.tar.xz",
+  "sha256": "731b5681e4bb18be313231579b8efd0296c5b015fa36dc533874b639ba838016",
+  "bytes": 141815216,
+  "excluded_members": [
+    "qemu-11.1.2/roms/edk2/EmulatorPkg/Unix/Host/X11IncludeHack"
+  ],
+  "signature_verified": false
+}

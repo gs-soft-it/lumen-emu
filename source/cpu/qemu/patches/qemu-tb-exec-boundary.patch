@@ -1,0 +1,168 @@
+--- a/include/exec/translation-block.h
++++ b/include/exec/translation-block.h
+@@ -85,6 +85,7 @@
+ #define CF_PCREL         0x00020000 /* Opcodes in TB are PC-relative */
+ #define CF_BP_PAGE       0x00040000 /* Breakpoint present in code page */
+ #define CF_STEP_ATOMIC   0x00080000 /* Running in cpu_exec_step_atomic */
++#define CF_TB_EXEC_BOUNDARY 0x00100000 /* Instrument every executed TB entry */
+ #define CF_CLUSTER_MASK  0xff000000 /* Top 8 bits are cluster ID */
+ #define CF_CLUSTER_SHIFT 24
+ 
+--- a/include/accel/tcg/cpu-ops.h
++++ b/include/accel/tcg/cpu-ops.h
+@@ -71,6 +71,26 @@
+      * Fill in all data required to select or compile a TranslationBlock.
+      */
+     TCGTBCPUState (*get_tb_cpu_state)(CPUState *cs);
++    /**
++     * @tb_exec_boundary: Optional callback before each executed TB.
++     *
++     * CF_TB_EXEC_BOUNDARY keys the instrumentation in the TB cache. The
++     * callback must be installed on every CPU using that compile flag and
++     * must remain installed while those TBs are reachable. It runs even on
++     * direct and indirect chaining, after the standard interrupt check but
++     * before guest instructions. TCG globals have been synchronized to ENV;
++     * the PC may still need @synchronize_from_tb before a cpu_loop_exit.
++     * For CF_PCREL, obtain the current virtual PC from CPU state, not tb->pc.
++     */
++    void (*tb_exec_boundary)(CPUState *cpu, const TranslationBlock *tb);
++    /**
++     * @lumen_tlb_commit_coalescing: Embedding-only optional optimization.
++     *
++     * Coalesce identical no-data TCG topology flush work only at the tail of
++     * the same CPU work queue. Preserve every kick and intervening work item.
++     * Zero keeps upstream behavior. Set before guest execution, under BQL.
++     */
++    bool lumen_tlb_commit_coalescing;
+     /**
+      * @synchronize_from_tb: Synchronize state from a TCG #TranslationBlock
+      *
+--- a/accel/tcg/tcg-runtime.h
++++ b/accel/tcg/tcg-runtime.h
+@@ -19,6 +19,9 @@
+ DEF_HELPER_FLAGS_1(clrsb_i64, TCG_CALL_NO_RWG_SE, i64, i64)
+ DEF_HELPER_FLAGS_1(ctpop_i32, TCG_CALL_NO_RWG_SE, i32, i32)
+ DEF_HELPER_FLAGS_1(ctpop_i64, TCG_CALL_NO_RWG_SE, i64, i64)
++
++/* Synchronize all TCG globals: the callback may exit to the host. */
++DEF_HELPER_2(tb_exec_boundary, void, env, ptr)
+ 
+ DEF_HELPER_FLAGS_1(lookup_tb_ptr, TCG_CALL_NO_WG_SE, cptr, env)
+ 
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -366,6 +366,16 @@
+         check_for_breakpoints_slow(cpu, pc, cflags);
+ }
+ 
++void HELPER(tb_exec_boundary)(CPUArchState *env, void *opaque)
++{
++    CPUState *cpu = env_cpu(env);
++    const TranslationBlock *tb = opaque;
++    const TCGCPUOps *ops = cpu->cc->tcg_ops;
++
++    assert(ops->tb_exec_boundary);
++    ops->tb_exec_boundary(cpu, tb);
++}
++
+ /**
+  * helper_lookup_tb_ptr: quick check for next tb
+  * @env: current cpu state
+--- a/accel/tcg/translator.c
++++ b/accel/tcg/translator.c
+@@ -16,6 +16,7 @@
+ #include "exec/target_page.h"
+ #include "exec/translator.h"
+ #include "exec/plugin-gen.h"
++#include "exec/helper-gen-common.h"
+ #include "tcg/tcg-op-common.h"
+ #include "internal-common.h"
+ #include "disas/disas.h"
+@@ -150,7 +151,14 @@
+ 
+     /* Start translating.  */
+     icount_start_insn = gen_tb_start(db, cflags);
++    if (cflags & CF_TB_EXEC_BOUNDARY) {
++        /* This helper is in generated code, so warm linked TBs cannot bypass
++         * the embedding's boundary. It deliberately precedes insn_start;
++         * callbacks exiting here synchronize PC from TB rather than unwind
++         * through an instruction that has not begun executing. */
++        gen_helper_tb_exec_boundary(tcg_env, tcg_constant_ptr(tb));
++    }
+     ops->tb_start(db, cpu);
+     tcg_debug_assert(db->is_jmp == DISAS_NEXT);  /* no early exit */
+ 
+     plugin_enabled = plugin_gen_tb_start(cpu, db);
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -928,6 +928,18 @@
+ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
+ 
+ /**
++ * lumen_async_run_on_cpu_coalesced:
++ * @cpu: The vCPU to run on.
++ * @func: Idempotent callback which ignores its data argument.
++ *
++ * Under BQL, enqueue @func with RUN_ON_CPU_NULL unless an identical free,
++ * non-exclusive, no-data work item is already at this CPU queue's tail.
++ * Never merge across intervening work or into a dequeued/running callback.
++ * Every request retains cpu_exit(). Return true when a new item was queued.
++ */
++bool lumen_async_run_on_cpu_coalesced(CPUState *cpu, run_on_cpu_func func);
++
++/**
+  * async_safe_run_on_cpu:
+  * @cpu: The vCPU to run on.
+  * @func: The function to be executed.
+--- a/cpu-common.c
++++ b/cpu-common.c
+@@ -176,6 +176,31 @@
+     wi->free = true;
+ 
+     queue_work_on_cpu(cpu, wi);
++}
++
++/* Private embedding optimization; normal work producers keep their ordering. */
++bool lumen_async_run_on_cpu_coalesced(CPUState *cpu, run_on_cpu_func func)
++{
++    struct qemu_work_item *wi;
++    bool queued;
++
++    assert(bql_locked());
++    qemu_mutex_lock(&cpu->work_mutex);
++    wi = QSIMPLEQ_LAST(&cpu->work_list, qemu_work_item, node);
++    queued = !wi || wi->func != func || !wi->free || wi->exclusive ||
++        wi->data.host_ptr != NULL;
++    if (queued) {
++        wi = g_new0(struct qemu_work_item, 1);
++        wi->func = func;
++        wi->data = RUN_ON_CPU_NULL;
++        wi->free = true;
++        QSIMPLEQ_INSERT_TAIL(&cpu->work_list, wi, node);
++    }
++    qemu_mutex_unlock(&cpu->work_mutex);
++
++    /* Keep every commit's exit request, even when its job was merged. */
++    cpu_exit(cpu);
++    return queued;
+ }
+ 
+ /* Wait for pending exclusive operations to complete.  The CPU list lock
+--- a/system/physmem.c
++++ b/system/physmem.c
+@@ -3090,7 +3090,14 @@
+      * all of the tcg machinery for run-on is initialized: thus halt_cond.
+      */
+     if (cpu->halt_cond) {
+-        async_run_on_cpu(cpu, tcg_commit_cpu, RUN_ON_CPU_HOST_PTR(cpuas));
++        if (cpu->cc->tcg_ops->lumen_tlb_commit_coalescing) {
++            /* CPU-wide full flush; cpuas is ignored by tcg_commit_cpu.
++             * Merge only consecutive identical jobs, under BQL. An
++             * intervening item keeps the next flush after that item. */
++            lumen_async_run_on_cpu_coalesced(cpu, tcg_commit_cpu);
++        } else {
++            async_run_on_cpu(cpu, tcg_commit_cpu, RUN_ON_CPU_HOST_PTR(cpuas));
++        }
+     } else {
+         tcg_commit_cpu(cpu, RUN_ON_CPU_HOST_PTR(cpuas));
+     }

@@ -1,0 +1,1214 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+@@ -11,10 +11,20 @@
+ #include <FEXCore/Core/Thunks.h>
+ 
+ namespace FEXCore::CPU {
++#if defined(__ANDROID__)
++extern "C" const uint8_t* FEXLumenGuestMemoryHandoffGuardProviderV1() noexcept;
++extern "C" uint64_t (*FEXLumenGuestMemoryCheckProviderV1() noexcept)(uint64_t, uint64_t, uint64_t, uint64_t);
++#endif
+ uint64_t GetNamedSymbolLiteral(FEXCore::Context::ContextImpl& CTX, FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol Op) {
+   switch (Op) {
+   case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_EXITFUNCTION_LINKER:
+     return CTX.Dispatcher->GetExitFunctionLinkerAddress();
++#if defined(__ANDROID__)
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS:
++    return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryHandoffGuardProviderV1());
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK:
++    return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryCheckProviderV1());
++#endif
+ 
+   default: ERROR_AND_DIE_FMT("Unknown named symbol literal: {}", static_cast<uint32_t>(Op));
+   }
+diff --git a/FEXCore/Source/Interface/Core/JIT/AtomicOps.cpp b/FEXCore/Source/Interface/Core/JIT/AtomicOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/AtomicOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/AtomicOps.cpp
+@@ -21,6 +21,7 @@
+   auto Desired0 = GetReg(Op->DesiredLo);
+   auto Desired1 = GetReg(Op->DesiredHi);
+   auto MemSrc = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(2 * IR::OpSizeToSize(IROp->ElementSize), MemSrc, 0, true);
+ 
+   const auto EmitSize = IROp->ElementSize == IR::OpSize::i64Bit ? ARMEmitter::Size::i64Bit : ARMEmitter::Size::i32Bit;
+   if (CTX->HostFeatures.SupportsAtomics) {
+@@ -100,6 +101,7 @@
+   auto Expected = GetReg(Op->Expected);
+   auto Desired = GetReg(Op->Desired);
+   auto MemSrc = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(IROp->Size), MemSrc, 0, true);
+   auto Dst = GetReg(Node);
+ 
+   if (CTX->HostFeatures.SupportsAtomics) {
+@@ -147,6 +149,7 @@
+                                                                                                                                  "size");
+ 
+   auto MemSrc = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(IROp->Size), MemSrc, 0, true);
+   auto Src = GetReg(Op->Value);
+ 
+   const auto EmitSize = ConvertSize(IROp);
+@@ -173,6 +176,7 @@
+   const auto SubEmitSize = ConvertSubRegSize8(IROp->Size);
+ 
+   auto MemSrc = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(IROp->Size), MemSrc, 0, true);
+   auto Src = GetReg(Op->Value);
+ 
+   if (CTX->HostFeatures.SupportsAtomics) {
+@@ -194,6 +198,7 @@
+   const auto SubEmitSize = ConvertSubRegSize8(IROp->Size);
+ 
+   auto MemSrc = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(IROp->Size), MemSrc, 0, true);
+   auto Src = GetReg(Op->Value);
+ 
+   if (CTX->HostFeatures.SupportsAtomics) {
+@@ -216,6 +221,7 @@
+   const auto SubEmitSize = ConvertSubRegSize8(IROp->Size);
+ 
+   auto MemSrc = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(IROp->Size), MemSrc, 0, true);
+   auto Src = GetReg(Op->Value);
+ 
+   if (CTX->HostFeatures.SupportsAtomics) {
+@@ -238,6 +244,7 @@
+   const auto SubEmitSize = ConvertSubRegSize8(IROp->Size);
+ 
+   auto MemSrc = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(IROp->Size), MemSrc, 0, true);
+   auto Src = GetReg(Op->Value);
+ 
+   if (CTX->HostFeatures.SupportsAtomics) {
+@@ -259,6 +266,7 @@
+   const auto SubEmitSize = ConvertSubRegSize8(IROp->Size);
+ 
+   auto MemSrc = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(IROp->Size), MemSrc, 0, true);
+   auto Src = GetReg(Op->Value);
+ 
+   if (CTX->HostFeatures.SupportsAtomics) {
+@@ -280,6 +288,7 @@
+   const auto SubEmitSize = ConvertSubRegSize8(IROp->Size);
+ 
+   auto MemSrc = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(IROp->Size), MemSrc, 0, true);
+   auto Src = GetReg(Op->Value);
+ 
+   if (CTX->HostFeatures.SupportsAtomics) {
+@@ -301,6 +310,7 @@
+   const auto SubEmitSize = ConvertSubRegSize8(IROp->Size);
+ 
+   auto MemSrc = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(IROp->Size), MemSrc, 0, true);
+ 
+   if (CTX->HostFeatures.SupportsAtomics) {
+     // Use a CAS loop to avoid needing to emulate unaligned LLSC atomics
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -878,7 +878,65 @@
+ 
+   // Fairly excessive buffer range to make sure we don't overflow
+   // One page baseline, plus SSANodeMultipler bytes, plus another page for guard page.
+-  const uint32_t DesiredBufferRange = AlignUp(FEXCore::Utils::FEX_HOST_PAGE_SIZE * 2 + SSACount * SSANodeMultiplier, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
++  // Ownership checks emit full ABI preservation only in cold fragments. Their
++  // code still occupies the translation buffer even when the hot guard skips
++  // them. Account for it before code emission rather than faulting into the
++  // guard page while a callback fragment is being generated.
++  uint64_t HandoffCodeBudget {};
++  if (HasLumenGuestMemoryChecks()) {
++    for (auto [BlockNode, BlockHeader] : IR->GetBlocks()) {
++      for (auto [CodeNode, Op] : IR->GetCode(BlockNode)) {
++        switch (Op->Op) {
++        case IR::OP_GUESTMEMORYCHECK:
++        case IR::OP_LOADMEM:
++        case IR::OP_LOADMEMPAIR:
++        case IR::OP_LOADMEMTSO:
++        case IR::OP_VLOADVECTORELEMENT:
++        case IR::OP_VSTOREVECTORELEMENT:
++        case IR::OP_VBROADCASTFROMMEM:
++        case IR::OP_PUSH:
++        case IR::OP_PUSHTWO:
++        case IR::OP_POP:
++        case IR::OP_POPTWO:
++        case IR::OP_STOREMEM:
++        case IR::OP_STOREMEMX87SVEOPTPREDICATE:
++        case IR::OP_LOADMEMX87SVEOPTPREDICATE:
++        case IR::OP_STOREMEMPAIR:
++        case IR::OP_STOREMEMTSO:
++        case IR::OP_CACHELINECLEAR:
++        case IR::OP_CACHELINECLEAN:
++        case IR::OP_CACHELINEZERO:
++        case IR::OP_VSTORENONTEMPORAL:
++        case IR::OP_VSTORENONTEMPORALPAIR:
++        case IR::OP_VLOADNONTEMPORAL:
++        case IR::OP_CASPAIR:
++        case IR::OP_CAS:
++        case IR::OP_ATOMICSWAP:
++        case IR::OP_ATOMICFETCHADD:
++        case IR::OP_ATOMICFETCHSUB:
++        case IR::OP_ATOMICFETCHAND:
++        case IR::OP_ATOMICFETCHCLR:
++        case IR::OP_ATOMICFETCHOR:
++        case IR::OP_ATOMICFETCHXOR:
++        case IR::OP_ATOMICFETCHNEG:
++          HandoffCodeBudget += 2048; break;
++        case IR::OP_GUESTMEMORYCHECKMASKED:
++        case IR::OP_VLOADVECTORMASKED:
++        case IR::OP_VSTOREVECTORMASKED:
++        case IR::OP_VLOADVECTORGATHERMASKED:
++        case IR::OP_VLOADVECTORGATHERMASKEDQPS:
++        case IR::OP_MEMSET:
++          HandoffCodeBudget += 32 * 2048; break;
++        case IR::OP_MEMCPY: HandoffCodeBudget += 64 * 2048; break;
++        default: break;
++        }
++      }
++    }
++  }
++  const auto WantedBufferRange = static_cast<uint64_t>(FEXCore::Utils::FEX_HOST_PAGE_SIZE) * 2 +
++    static_cast<uint64_t>(SSACount) * SSANodeMultiplier + HandoffCodeBudget;
++  LOGMAN_THROW_A_FMT(WantedBufferRange <= UINT32_MAX - FEXCore::Utils::FEX_HOST_PAGE_SIZE, "Ownership instrumentation exceeds JIT buffer range");
++  const uint32_t DesiredBufferRange = AlignUp(static_cast<uint32_t>(WantedBufferRange), FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+ 
+   // JIT output is first written to a temporary buffer and later relocated to the CodeBuffer.
+   // This minimizes lock contention of CodeBufferWriteMutex.
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -533,6 +533,21 @@
+   FEXCore::Core::DebugData* DebugData {};
+ 
+   void ResetStack();
++  void EmitLumenMaskedMemoryCheck(IR::OpSize Size, IR::OpSize ElementSize, ARMEmitter::Register Base,
++                                 ARMEmitter::VRegister Mask, IR::OrderedNodeWrapper Offset,
++                                 IR::MemOffsetType OffsetType, uint8_t OffsetScale, bool Write);
++  void EmitLumenGatherMemoryCheck(IR::OpSize Size, IR::OpSize ElementSize,
++                                 std::optional<ARMEmitter::Register> BaseAddr, ARMEmitter::VRegister VectorIndexLow,
++                                 std::optional<ARMEmitter::VRegister> VectorIndexHigh, ARMEmitter::VRegister MaskReg,
++                                 IR::OpSize VectorIndexSize, size_t DataElementOffsetStart, size_t IndexElementOffsetStart,
++                                 uint8_t OffsetScale, IR::OpSize AddrSize);
++  bool HasLumenGuestMemoryChecks() const;
++  void EmitLumenGuestMemoryCheckBytes(uint64_t Bytes, ARMEmitter::Register Base,
++                                     int64_t Displacement, bool Write);
++  void EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write, bool PreserveScratch);
++  void EmitLumenGuestMemoryCheck(IR::OpSize Size, ARMEmitter::Register Base,
++                                IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
++                                uint8_t OffsetScale, bool Write);
+   /**
+    * @name Relocations
+    * @{ */
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -11,12 +11,208 @@
+ #include "Interface/Core/ArchHelpers/Arm64Emitter.h"
+ #include "Interface/Core/CPUID.h"
+ #include "Interface/Core/JIT/JITClass.h"
++#include "Interface/Core/JIT/DebugData.h"
+ #include "Interface/IR/RegisterAllocationData.h"
+ #include <FEXCore/Utils/CompilerDefs.h>
+ #include <FEXCore/Utils/MathUtils.h>
+ 
+ namespace FEXCore::CPU {
+ 
++#if defined(__ANDROID__)
++// Embedding ownership hooks. The default provider keeps upstream embeddings
++// unchanged. Lumen supplies a process-lifetime conservative 4 KiB page table;
++// GPU ownership is acquired only after a real exclusive CPU safepoint.
++using LumenMemoryCheck = uint32_t (*)(uint64_t Address, uint64_t Bytes,
++                                     uint32_t Write, uint64_t GuestRIP) noexcept;
++extern "C" __attribute__((weak, noinline)) LumenMemoryCheck FEXLumenGuestMemoryCheckProviderV1() noexcept {
++  return nullptr;
++}
++extern "C" __attribute__((weak, noinline)) const uint8_t* FEXLumenGuestMemoryHandoffGuardProviderV1() noexcept {
++  return nullptr;
++}
++#endif
++
++extern "C" bool FEXLumenGuestMemoryChecksEnabled() noexcept {
++#if defined(__ANDROID__)
++  return FEXLumenGuestMemoryCheckProviderV1() != nullptr;
++#else
++  return false;
++#endif
++}
++
++bool Arm64JITCore::HasLumenGuestMemoryChecks() const {
++#if defined(__ANDROID__)
++  return FEXLumenGuestMemoryCheckProviderV1() != nullptr;
++#else
++  return false;
++#endif
++}
++
++DEF_OP(GuestMemoryCheck) {
++  const auto Op = IROp->C<IR::IROp_GuestMemoryCheck>();
++  EmitLumenGuestMemoryCheckBytes(Op->Bytes, GetReg(Op->Addr), 0, Op->Write);
++}
++
++DEF_OP(GuestMemoryCheckMasked) {
++  const auto Op = IROp->C<IR::IROp_GuestMemoryCheckMasked>();
++  EmitLumenMaskedMemoryCheck(IROp->Size, IROp->ElementSize, GetReg(Op->Addr), GetVReg(Op->Mask),
++                             Op->Offset, IR::MemOffsetType::SXTX, 1, Op->Write);
++}
++
++void Arm64JITCore::EmitLumenGuestMemoryCheck(IR::OpSize Size, ARMEmitter::Register Base,
++                                          IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
++                                          uint8_t OffsetScale, bool Write) {
++  EmitLumenGuestMemoryCheckImpl(IR::OpSizeToSize(Size), [=, this] {
++    uint64_t Constant;
++    if (!Offset.IsInvalid() && IsInlineConstant(Offset, &Constant)) {
++      // Immediate memory operands are byte offsets, independent of OffsetScale.
++      // Copy the base first so the helper also accepts a scratch register base.
++      mov(ARMEmitter::Size::i64Bit, TMP2, Base);
++      LoadConstant(ARMEmitter::Size::i64Bit, TMP1, Constant);
++      add(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP1);
++    } else {
++      const auto Address = ApplyMemOperand(Size, Base, TMP2, Offset, OffsetType, OffsetScale);
++      if (Address != TMP2) mov(ARMEmitter::Size::i64Bit, TMP2, Address);
++    }
++  }, Write, false);
++}
++
++void Arm64JITCore::EmitLumenGuestMemoryCheckBytes(uint64_t Bytes, ARMEmitter::Register Base,
++                                               int64_t Displacement, bool Write) {
++  EmitLumenGuestMemoryCheckImpl(Bytes, [=, this] {
++    mov(ARMEmitter::Size::i64Bit, TMP2, Base);
++    if (Displacement != 0) {
++      LoadConstant(ARMEmitter::Size::i64Bit, TMP1, static_cast<uint64_t>(Displacement));
++      add(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP1);
++    }
++  }, Write, Base.Idx() == TMP1.Idx() || Base.Idx() == TMP2.Idx() ||
++             Base.Idx() == TMP3.Idx() || Base.Idx() == TMP4.Idx());
++}
++
++void Arm64JITCore::EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write, bool PreserveScratch) {
++#if defined(__ANDROID__)
++  const auto Check = FEXLumenGuestMemoryCheckProviderV1();
++  if (Check == nullptr) return;
++  LOGMAN_THROW_A_FMT(Bytes != 0 && Bytes <= 4096, "Memory checks require a fixed footprint of at most one page");
++  constexpr auto FPSR = static_cast<ARMEmitter::SystemRegister>(
++    ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
++  constexpr uint32_t FrameSize = 160;
++  const auto Guards = FEXLumenGuestMemoryHandoffGuardProviderV1();
++  // Persist symbolic relocations, never process-local ASLR addresses, in the
++  // native translation cache. Every load resolves against this runtime.
++  auto GuardAddress = InsertNamedSymbolLiteral(RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS);
++  auto CheckAddress = InsertNamedSymbolLiteral(RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK);
++  ARMEmitter::ForwardLabel Slow, Done;
++  const auto ProbePage = [&] {
++    lsr(ARMEmitter::Size::i64Bit, TMP2, TMP2, 12);
++    and_(ARMEmitter::Size::i64Bit, TMP2, TMP2, (1U << 20) - 1);
++    ldr(TMP1, &GuardAddress.Loc);
++    add(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP2);
++    ldarb(TMP1.W(), TMP1);
++    cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP1, &Slow);
++  };
++  if (Guards && !PreserveScratch) {
++    // Ordinary scalar/SIMD/RMW accesses use reserved scratch registers: the
++    // hot path has no stack spill, ABI call or NZCV modification. The second
++    // guard load is required only when the <=4 KiB footprint crosses a page.
++    EmitAddress();
++    ProbePage();
++    if (Bytes != 1) {
++      EmitAddress();
++      and_(ARMEmitter::Size::i64Bit, TMP1, TMP2, 4095);
++      add(ARMEmitter::Size::i64Bit, TMP1, TMP1, Bytes - 1);
++      tbz_OrRestart(TMP1, 12, &Done);
++      add(ARMEmitter::Size::i64Bit, TMP2, TMP2, Bytes - 1);
++      ProbePage();
++    }
++    b_OrRestart(&Done);
++    BindOrRestart(&Slow);
++  }
++  // REP/lane helpers may carry their address, count or data in scratch
++  // registers. Preserve those scratch values even on their inline path.
++  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  stp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
++  EmitAddress();
++  str(TMP2, ARMEmitter::Reg::rsp, 32);
++  if (Guards && PreserveScratch) {
++    ARMEmitter::ForwardLabel Fast;
++    ProbePage();
++    if (Bytes != 1) {
++      ldr(TMP2, ARMEmitter::Reg::rsp, 32);
++      and_(ARMEmitter::Size::i64Bit, TMP1, TMP2, 4095);
++      add(ARMEmitter::Size::i64Bit, TMP1, TMP1, Bytes - 1);
++      tbz_OrRestart(TMP1, 12, &Fast);
++      add(ARMEmitter::Size::i64Bit, TMP2, TMP2, Bytes - 1);
++      ProbePage();
++    }
++    BindOrRestart(&Fast);
++    ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
++    add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++    b_OrRestart(&Done);
++    BindOrRestart(&Slow);
++  }
++  stp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  str(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  if (HostSupportsSVE256) {
++    mov(TMP1, 96);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++    mov(TMP1, 128);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++  } else {
++    stp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++  }
++  mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++  str(TMP1, ARMEmitter::Reg::rsp, 0);
++  mrs(TMP1, ARMEmitter::SystemRegister::FPCR);
++  str(TMP1, ARMEmitter::Reg::rsp, 8);
++  mrs(TMP1, FPSR);
++  str(TMP1, ARMEmitter::Reg::rsp, 16);
++  const auto SpillSize = SpillForABICall(false, TMP1);
++  ldr(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 32);
++  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, Bytes);
++  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r2, Write ? 1 : 0);
++  LOGMAN_THROW_A_FMT(!DebugData->GuestOpcodes.empty(), "Memory check requires a precise guest opcode");
++  InsertGuestRIPMove(ARMEmitter::Reg::r3, Entry + DebugData->GuestOpcodes.back().GuestEntryOffset);
++  ldr(ARMEmitter::XReg::x16, &CheckAddress.Loc);
++  blr(ARMEmitter::Reg::r16);
++  str(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 24);
++  FillForABICall(false);
++  if (HostSupportsSVE256) {
++    mov(TMP1, 96);
++    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++    mov(TMP1, 128);
++    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++  } else {
++    ldp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++  }
++  ldr(TMP1, ARMEmitter::Reg::rsp, 0);
++  msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 8);
++  msr(ARMEmitter::SystemRegister::FPCR, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 16);
++  msr(FPSR, TMP1);
++  ldr(TMP2, ARMEmitter::Reg::rsp, 24);
++  ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 48);
++  ldp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  ARMEmitter::ForwardLabel Allowed;
++  cbnz_OrRestart(ARMEmitter::Size::i64Bit, TMP2, &Allowed);
++  ldr(TMP2, ARMEmitter::Reg::rsp, 56);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  // All registers and status are restored before trapping. No guest memory
++  // operation in the checked IR instruction has executed.
++  brk(0x4c4d);
++  BindOrRestart(&Allowed);
++  ldr(TMP2, ARMEmitter::Reg::rsp, 56);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  b_OrRestart(&Done);
++  Align(8);
++  PlaceNamedSymbolLiteral(GuardAddress);
++  PlaceNamedSymbolLiteral(CheckAddress);
++  BindOrRestart(&Done);
++#endif
++}
++
+ DEF_OP(LoadContext) {
+   const auto Op = IROp->C<IR::IROp_LoadContext>();
+   const auto OpSize = IROp->Size;
+@@ -706,6 +902,8 @@
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheck(OpSize, MemReg, Op->Offset, Op->OffsetType,
++                           OpSize == IR::OpSize::i256Bit ? 1 : Op->OffsetScale, false);
+   const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+@@ -741,6 +939,7 @@
+ DEF_OP(LoadMemPair) {
+   const auto Op = IROp->C<IR::IROp_LoadMemPair>();
+   const auto Addr = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(2 * IR::OpSizeToSize(IROp->Size), Addr, static_cast<int32_t>(Op->Offset), false);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+     const auto Dst1 = GetReg(Op->OutValue1);
+@@ -769,6 +968,8 @@
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheck(OpSize, MemReg, Op->Offset, Op->OffsetType,
++                           OpSize == IR::OpSize::i256Bit ? 1 : Op->OffsetScale, false);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+     LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
+@@ -852,6 +1053,103 @@
+   }
+ }
+ 
++
++// Preflight every active lane before publishing any result or masked store.
++// Spill masks/indexes to the host stack so callback clobbers and 256-bit SVE
++// lanes use the same scalar permission protocol. Inactive lanes do not query.
++void Arm64JITCore::EmitLumenMaskedMemoryCheck(IR::OpSize Size, IR::OpSize ElementSize,
++                                             ARMEmitter::Register Base, ARMEmitter::VRegister Mask,
++                                             IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
++                                             uint8_t OffsetScale, bool Write) {
++  if (!HasLumenGuestMemoryChecks()) return;
++  uint64_t Constant;
++  if (!Offset.IsInvalid() && IsInlineConstant(Offset, &Constant)) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP3, Constant);
++    add(ARMEmitter::Size::i64Bit, TMP3, Base, TMP3);
++  } else {
++    const auto Address = ApplyMemOperand(Size, Base, TMP3, Offset, OffsetType,
++                                        (HostSupportsSVE128 || HostSupportsSVE256) ? 1 : OffsetScale);
++    if (Address != TMP3) mov(ARMEmitter::Size::i64Bit, TMP3, Address);
++  }
++  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 32);
++  if (Size == IR::OpSize::i256Bit) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP4, 0);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(Mask.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP4);
++  } else {
++    str(Mask.Q(), ARMEmitter::Reg::rsp, 0);
++  }
++  const auto Bytes = IR::OpSizeToSize(ElementSize);
++  for (size_t Lane = 0; Lane < IR::NumElements(Size, ElementSize); ++Lane) {
++    switch (Bytes) {
++    case 1: ldrb(TMP1.W(), ARMEmitter::Reg::rsp, Lane); break;
++    case 2: ldrh(TMP1.W(), ARMEmitter::Reg::rsp, Lane * 2); break;
++    case 4: ldr(TMP1.W(), ARMEmitter::Reg::rsp, Lane * 4); break;
++    case 8: ldr(TMP1, ARMEmitter::Reg::rsp, Lane * 8); break;
++    default: LOGMAN_THROW_A_FMT(false, "Unsupported checked mask element size");
++    }
++    ARMEmitter::ForwardLabel Skip;
++    (void)tbz(TMP1, Bytes * 8 - 1, &Skip);
++    EmitLumenGuestMemoryCheckBytes(Bytes, TMP3, Lane * Bytes, Write);
++    BindOrRestart(&Skip);
++  }
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 32);
++}
++
++void Arm64JITCore::EmitLumenGatherMemoryCheck(IR::OpSize Size, IR::OpSize ElementSize,
++                                             std::optional<ARMEmitter::Register> BaseAddr,
++                                             ARMEmitter::VRegister VectorIndexLow,
++                                             std::optional<ARMEmitter::VRegister> VectorIndexHigh,
++                                             ARMEmitter::VRegister MaskReg, IR::OpSize VectorIndexSize,
++                                             size_t DataElementOffsetStart, size_t IndexElementOffsetStart,
++                                             uint8_t OffsetScale, IR::OpSize AddrSize) {
++  if (!HasLumenGuestMemoryChecks()) return;
++  const auto Bytes = IR::OpSizeToSize(ElementSize);
++  const auto IndexBytes = IR::OpSizeToSize(VectorIndexSize);
++  const auto IndexCount = (Size == IR::OpSize::i256Bit || VectorIndexHigh.has_value() ? 32 : 16) / IndexBytes;
++  const auto Count = std::min<size_t>(IR::OpSizeToSize(Size) / Bytes, IndexCount);
++  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 96);
++  if (Size == IR::OpSize::i256Bit) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP4, 0);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(MaskReg.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP4);
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP4, 32);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VectorIndexLow.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP4);
++  } else {
++    str(MaskReg.Q(), ARMEmitter::Reg::rsp, 0);
++    str(VectorIndexLow.Q(), ARMEmitter::Reg::rsp, 32);
++    if (VectorIndexHigh.has_value()) str(VectorIndexHigh->Q(), ARMEmitter::Reg::rsp, 48);
++  }
++  for (size_t Lane = DataElementOffsetStart, Index = IndexElementOffsetStart; Lane < Count; ++Lane, ++Index) {
++    switch (Bytes) {
++    case 1: ldrb(TMP1.W(), ARMEmitter::Reg::rsp, Lane); break;
++    case 2: ldrh(TMP1.W(), ARMEmitter::Reg::rsp, Lane * 2); break;
++    case 4: ldr(TMP1.W(), ARMEmitter::Reg::rsp, Lane * 4); break;
++    case 8: ldr(TMP1, ARMEmitter::Reg::rsp, Lane * 8); break;
++    default: LOGMAN_THROW_A_FMT(false, "Unsupported checked gather element size");
++    }
++    ARMEmitter::ForwardLabel Skip;
++    (void)tbz(TMP1, Bytes * 8 - 1, &Skip);
++    switch (IndexBytes) {
++    case 4: ldr(TMP1.W(), ARMEmitter::Reg::rsp, 32 + Index * 4); break;
++    case 8: ldr(TMP1, ARMEmitter::Reg::rsp, 32 + Index * 8); break;
++    default: LOGMAN_THROW_A_FMT(false, "Unsupported checked gather index size");
++    }
++    if (BaseAddr.has_value()) {
++      if (VectorIndexSize == IR::OpSize::i32Bit) {
++        add(ConvertSize(AddrSize), TMP2, *BaseAddr, TMP1, ARMEmitter::ExtendedType::SXTW, FEXCore::ilog2(OffsetScale));
++      } else {
++        add(ConvertSize(AddrSize), TMP2, *BaseAddr, TMP1, ARMEmitter::ShiftType::LSL, FEXCore::ilog2(OffsetScale));
++      }
++    } else if (VectorIndexSize == IR::OpSize::i32Bit) {
++      sbfiz(ConvertSize(AddrSize), TMP2, TMP1, FEXCore::ilog2(OffsetScale), 32);
++    } else {
++      lsl(ConvertSize(AddrSize), TMP2, TMP1, FEXCore::ilog2(OffsetScale));
++    }
++    EmitLumenGuestMemoryCheckBytes(Bytes, TMP2, 0, false);
++    BindOrRestart(&Skip);
++  }
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 96);
++}
++
+ DEF_OP(VLoadVectorMasked) {
+ 
+   const auto Op = IROp->C<IR::IROp_VLoadVectorMasked>();
+@@ -867,6 +1165,8 @@
+   const auto Dst = GetVReg(Node);
+   const auto MaskReg = GetVReg(Op->Mask);
+   const auto MemReg = GetReg(Op->Addr);
++  EmitLumenMaskedMemoryCheck(OpSize, IROp->ElementSize, MemReg, MaskReg,
++                             Op->Offset, Op->OffsetType, Op->OffsetScale, false);
+ 
+   if (HostSupportsSVE128 || HostSupportsSVE256) {
+     const auto MemSrc = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+@@ -970,6 +1270,8 @@
+   const auto RegData = GetVReg(Op->Data);
+   const auto MaskReg = GetVReg(Op->Mask);
+   const auto MemReg = GetReg(Op->Addr);
++  EmitLumenMaskedMemoryCheck(OpSize, IROp->ElementSize, MemReg, MaskReg,
++                             Op->Offset, Op->OffsetType, Op->OffsetScale, true);
+   if (HostSupportsSVE128 || HostSupportsSVE256) {
+     const auto MemDst = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+ 
+@@ -1199,6 +1501,8 @@
+   const auto VectorIndexLow = GetVReg(Op->VectorIndexLow);
+   std::optional<ARMEmitter::VRegister> VectorIndexHigh =
+     !Op->VectorIndexHigh.IsInvalid() ? std::make_optional(GetVReg(Op->VectorIndexHigh)) : std::nullopt;
++  EmitLumenGatherMemoryCheck(OpSize, IROp->ElementSize, BaseAddr, VectorIndexLow, VectorIndexHigh,
++                             MaskReg, VectorIndexSize, DataElementOffsetStart, IndexElementOffsetStart, OffsetScale, Op->AddrSize);
+ 
+   ///< If the host supports SVE and the offset scale matches SVE limitations then it can do an SVE style load.
+   const bool SupportsSVELoad = (HostSupportsSVE128 || HostSupportsSVE256) &&
+@@ -1284,6 +1588,8 @@
+   const auto VectorIndexLow = GetVReg(Op->VectorIndexLow);
+   std::optional<ARMEmitter::VRegister> VectorIndexHigh =
+     !Op->VectorIndexHigh.IsInvalid() ? std::make_optional(GetVReg(Op->VectorIndexHigh)) : std::nullopt;
++  EmitLumenGatherMemoryCheck(IR::OpSize::i128Bit, IR::OpSize::i32Bit, BaseAddr, VectorIndexLow, VectorIndexHigh,
++                             MaskReg, IR::OpSize::i64Bit, 0, 0, OffsetScale, Op->AddrSize);
+ 
+   ///< If the host supports SVE and the offset scale matches SVE limitations then it can do an SVE style load.
+   const bool SupportsSVELoad = HostSupportsSVE128 && (OffsetScale == 1 || OffsetScale == 4) && Op->AddrSize == IR::OpSize::i64Bit;
+@@ -1356,6 +1662,7 @@
+   const auto Dst = GetVReg(Node);
+   const auto DstSrc = GetVReg(Op->DstSrc);
+   const auto MemReg = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(ElementSize), MemReg, 0, false);
+ 
+   LOGMAN_THROW_A_FMT(ElementSize == IR::OpSize::i8Bit || ElementSize == IR::OpSize::i16Bit || ElementSize == IR::OpSize::i32Bit ||
+                        ElementSize == IR::OpSize::i64Bit || ElementSize == IR::OpSize::i128Bit,
+@@ -1393,6 +1700,7 @@
+ 
+   const auto Value = GetVReg(Op->Value);
+   const auto MemReg = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(ElementSize), MemReg, 0, true);
+ 
+   LOGMAN_THROW_A_FMT(ElementSize == IR::OpSize::i8Bit || ElementSize == IR::OpSize::i16Bit || ElementSize == IR::OpSize::i32Bit ||
+                        ElementSize == IR::OpSize::i64Bit || ElementSize == IR::OpSize::i128Bit,
+@@ -1428,6 +1736,7 @@
+ 
+   const auto Dst = GetVReg(Node);
+   const auto MemReg = GetReg(Op->Address);
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(ElementSize), MemReg, 0, false);
+ 
+   LOGMAN_THROW_A_FMT(ElementSize == IR::OpSize::i8Bit || ElementSize == IR::OpSize::i16Bit || ElementSize == IR::OpSize::i32Bit ||
+                        ElementSize == IR::OpSize::i64Bit || ElementSize == IR::OpSize::i128Bit,
+@@ -1471,6 +1780,7 @@
+   auto Src = GetReg(Op->Value);
+   const auto AddrSrc = GetReg(Op->Addr);
+   const auto Dst = GetReg(Node);
++  EmitLumenGuestMemoryCheckBytes(ValueSize, AddrSrc, -static_cast<int64_t>(ValueSize), true);
+ 
+   bool NeedsMoveAfterwards = false;
+   if (Dst != AddrSrc) {
+@@ -1556,6 +1866,7 @@
+   auto Src1 = GetReg(Op->Value1);
+   auto Src2 = GetReg(Op->Value2);
+   const auto Dst = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(2 * ValueSize, Dst, -2 * static_cast<int64_t>(ValueSize), true);
+ 
+   switch (ValueSize) {
+   case 4: {
+@@ -1577,6 +1888,7 @@
+   const auto Op = IROp->C<IR::IROp_Pop>();
+   const auto Size = IR::OpSizeToSize(Op->Size);
+   const auto Addr = GetReg(Op->InoutAddr);
++  EmitLumenGuestMemoryCheckBytes(Size, Addr, 0, false);
+   const auto Dst = GetReg(Op->OutValue);
+ 
+   LOGMAN_THROW_A_FMT(Dst != Addr, "Invalid");
+@@ -1609,6 +1921,7 @@
+   const auto Op = IROp->C<IR::IROp_PopTwo>();
+   const auto Size = IR::OpSizeToSize(Op->Size);
+   const auto Addr = GetReg(Op->InoutAddr);
++  EmitLumenGuestMemoryCheckBytes(2 * Size, Addr, 0, false);
+   auto Dst1 = GetReg(Op->OutValue1);
+   const auto Dst2 = GetReg(Op->OutValue2);
+ 
+@@ -1641,6 +1954,8 @@
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheck(OpSize, MemReg, Op->Offset, Op->OffsetType,
++                           OpSize == IR::OpSize::i256Bit ? 1 : Op->OffsetScale, true);
+   const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+@@ -1689,63 +2004,35 @@
+ 
+ DEF_OP(StoreMemX87SVEOptPredicate) {
+   const auto Op = IROp->C<IR::IROp_StoreMemX87SVEOptPredicate>();
+-  const auto Predicate = PRED_X87_SVEOPT;
+-
+-  LOGMAN_THROW_A_FMT(HostSupportsSVE128 || HostSupportsSVE256, "StoreMemX87SVEOptPredicate needs SVE support");
+-
+   const auto RegData = GetVReg(Op->Value);
+   const auto MemReg = GetReg(Op->Addr);
+-  const auto MemDst = ARMEmitter::SVEMemOperand(MemReg.X(), 0);
+-
+-  switch (IROp->ElementSize) {
+-  case IR::OpSize::i8Bit: {
+-    st1b<ARMEmitter::SubRegSize::i8Bit>(RegData.Z(), Predicate, MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i16Bit: {
+-    st1h<ARMEmitter::SubRegSize::i16Bit>(RegData.Z(), Predicate, MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i32Bit: {
+-    st1w<ARMEmitter::SubRegSize::i32Bit>(RegData.Z(), Predicate, MemDst);
+-    break;
++  // Keep an 80-bit transfer in one IR operation on every host. Splitting it
++  // into independent 64/16-bit stores allows the first half to escape preflight.
++  LOGMAN_THROW_A_FMT(IROp->ElementSize == IR::OpSize::i16Bit, "Unexpected x87 memory element size");
++  EmitLumenGuestMemoryCheckBytes(10, MemReg, 0, true);
++  if (HostSupportsSVE128 || HostSupportsSVE256) {
++    const auto MemDst = ARMEmitter::SVEMemOperand(MemReg.X(), 0);
++    st1h<ARMEmitter::SubRegSize::i16Bit>(RegData.Z(), PRED_X87_SVEOPT, MemDst);
++  } else {
++    str(RegData.D(), MemReg);
++    umov<ARMEmitter::SubRegSize::i64Bit>(TMP1, RegData, 1);
++    strh(TMP1.W(), MemReg, 8);
+   }
+-  case IR::OpSize::i64Bit: {
+-    st1d(RegData.Z(), Predicate, MemDst);
+-    break;
+-  }
+-  default: LOGMAN_MSG_A_FMT("Unhandled {} element size: {}", __func__, IROp->ElementSize); break;
+-  }
+ }
+ 
+ DEF_OP(LoadMemX87SVEOptPredicate) {
+   const auto Op = IROp->C<IR::IROp_LoadMemX87SVEOptPredicate>();
+   const auto Dst = GetVReg(Node);
+-  const auto Predicate = PRED_X87_SVEOPT;
+   const auto MemReg = GetReg(Op->Addr);
+-
+-  LOGMAN_THROW_A_FMT(HostSupportsSVE128 || HostSupportsSVE256, "LoadMemX87SVEOptPredicate needs SVE support");
+-
+-  const auto MemDst = ARMEmitter::SVEMemOperand(MemReg.X(), 0);
+-
+-  switch (IROp->ElementSize) {
+-  case IR::OpSize::i8Bit: {
+-    ld1b<ARMEmitter::SubRegSize::i8Bit>(Dst.Z(), Predicate.Zeroing(), MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i16Bit: {
+-    ld1h<ARMEmitter::SubRegSize::i16Bit>(Dst.Z(), Predicate.Zeroing(), MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i32Bit: {
+-    ld1w<ARMEmitter::SubRegSize::i32Bit>(Dst.Z(), Predicate.Zeroing(), MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i64Bit: {
+-    ld1d(Dst.Z(), Predicate.Zeroing(), MemDst);
+-    break;
+-  }
+-  default: LOGMAN_MSG_A_FMT("Unhandled {} element size: {}", __func__, IROp->ElementSize); break;
++  LOGMAN_THROW_A_FMT(IROp->ElementSize == IR::OpSize::i16Bit, "Unexpected x87 memory element size");
++  EmitLumenGuestMemoryCheckBytes(10, MemReg, 0, false);
++  if (HostSupportsSVE128 || HostSupportsSVE256) {
++    const auto MemSrc = ARMEmitter::SVEMemOperand(MemReg.X(), 0);
++    ld1h<ARMEmitter::SubRegSize::i16Bit>(Dst.Z(), PRED_X87_SVEOPT.Zeroing(), MemSrc);
++  } else {
++    ldr(Dst.D(), MemReg);
++    ldrh(TMP1.W(), MemReg, 8);
++    ins(ARMEmitter::SubRegSize::i16Bit, Dst.Q(), 4, TMP1);
+   }
+ }
+ 
+@@ -1753,6 +2040,7 @@
+   const auto Op = IROp->C<IR::IROp_StoreMemPair>();
+   const auto OpSize = IROp->Size;
+   const auto Addr = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheckBytes(2 * IR::OpSizeToSize(IROp->Size), Addr, static_cast<int32_t>(Op->Offset), true);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+     const auto Src1 = GetZeroableReg(Op->Value1);
+@@ -1780,6 +2068,8 @@
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  EmitLumenGuestMemoryCheck(OpSize, MemReg, Op->Offset, Op->OffsetType,
++                           OpSize == IR::OpSize::i256Bit ? 1 : Op->OffsetScale, true);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+     LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
+@@ -1889,6 +2179,7 @@
+   }
+ 
+   auto MemStore = [this](auto Value, uint32_t OpSize, int32_t Size) {
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     switch (OpSize) {
+     case 1: strb<ARMEmitter::IndexType::POST>(Value.W(), TMP2, Size); break;
+     case 2: strh<ARMEmitter::IndexType::POST>(Value.W(), TMP2, Size); break;
+@@ -1899,6 +2190,7 @@
+   };
+ 
+   auto MemStoreTSO = [this](auto Value, uint32_t OpSize, int32_t Size) {
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     if (OpSize == 1) {
+       // 8bit load is always aligned to natural alignment
+       stlrb(Value.W(), TMP2);
+@@ -1957,7 +2249,7 @@
+     // Early exit if zero count.
+     (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &DoneInternal);
+ 
+-    if (!IsAtomic) {
++    if (!IsAtomic && !HasLumenGuestMemoryChecks()) {
+       if (CTX->HostFeatures.SupportsMOPS) {
+         const bool Is8Bit = SubRegSize == ARMEmitter::SubRegSize::i8Bit;
+ 
+@@ -2128,6 +2420,8 @@
+   }
+ 
+   auto MemCpy = [this](uint32_t OpSize, int32_t Size) {
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     switch (OpSize) {
+     case 1:
+       ldrb<ARMEmitter::IndexType::POST>(TMP4.W(), TMP3, Size);
+@@ -2154,6 +2448,8 @@
+   };
+ 
+   auto MemCpyTSO = [this](uint32_t OpSize, int32_t Size) {
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
++    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     if (CTX->HostFeatures.SupportsRCPC) {
+       if (OpSize == 1) {
+         // 8bit load is always aligned to natural alignment
+@@ -2255,7 +2551,7 @@
+     // Early exit if zero count.
+     (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &DoneInternal);
+ 
+-    if (!IsAtomic) {
++    if (!IsAtomic && !HasLumenGuestMemoryChecks()) {
+       if (CTX->HostFeatures.SupportsMOPS) {
+         // In the event we have an overlap (gross), we need to fall back
+         // to the non-mops copy handler. Since the overlap check needs to
+@@ -2389,6 +2685,7 @@
+ }
+ 
+ DEF_OP(CacheLineClear) {
++  EmitLumenGuestMemoryCheckBytes(1, GetReg(IROp->C<IR::IROp_CacheLineClear>()->Addr), 0, false);
+   if (!CTX->HostFeatures.SupportsCacheMaintenanceOps) {
+     dmb(ARMEmitter::BarrierScope::SY);
+     return;
+@@ -2419,6 +2716,7 @@
+ }
+ 
+ DEF_OP(CacheLineClean) {
++  EmitLumenGuestMemoryCheckBytes(1, GetReg(IROp->C<IR::IROp_CacheLineClean>()->Addr), 0, false);
+   if (!CTX->HostFeatures.SupportsCacheMaintenanceOps) {
+     dmb(ARMEmitter::BarrierScope::ST);
+     return;
+@@ -2446,6 +2744,10 @@
+   auto Op = IROp->C<IR::IROp_CacheLineZero>();
+ 
+   auto MemReg = GetReg(Op->Addr);
++  if (HasLumenGuestMemoryChecks()) {
++    and_(ARMEmitter::Size::i64Bit, TMP3, MemReg, ~(CPUIDEmu::CACHELINE_SIZE - 1));
++    EmitLumenGuestMemoryCheckBytes(CPUIDEmu::CACHELINE_SIZE, TMP3, 0, true);
++  }
+ 
+   if (CTX->HostFeatures.SupportsCLZERO) {
+     // We can use this instruction directly
+@@ -2512,6 +2814,7 @@
+   const auto Value = GetVReg(Op->Value);
+   const auto MemReg = GetReg(Op->Addr);
+   const auto Offset = Op->Offset;
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(OpSize), MemReg, Offset, true);
+ 
+   if (Is256Bit) {
+     const auto GoverningPredicate = PRED_TMP_32B.Zeroing();
+@@ -2539,6 +2842,7 @@
+ 
+   const auto MemReg = GetReg(Op->Addr);
+   const auto Offset = Op->Offset;
++  EmitLumenGuestMemoryCheckBytes(2 * IR::OpSizeToSize(OpSize), MemReg, Offset, true);
+ 
+   stnp(ValueLow.Q(), ValueHigh.Q(), MemReg, Offset);
+ }
+@@ -2554,6 +2858,7 @@
+   const auto Dst = GetVReg(Node);
+   const auto MemReg = GetReg(Op->Addr);
+   const auto Offset = Op->Offset;
++  EmitLumenGuestMemoryCheckBytes(IR::OpSizeToSize(OpSize), MemReg, Offset, false);
+ 
+   if (Is256Bit) {
+     const auto GoverningPredicate = PRED_TMP_32B.Zeroing();
+diff --git a/FEXCore/Source/Interface/Core/JIT/Relocations.h b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+--- a/FEXCore/Source/Interface/Core/JIT/Relocations.h
++++ b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+@@ -39,6 +39,8 @@
+     ///< Thread specific relocations
+     // JIT Literal pointers
+     SYMBOL_LITERAL_EXITFUNCTION_LINKER,
++    SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS,
++    SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK,
+   };
+ 
+   RelocationHeader Header {};
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
+@@ -1579,12 +1579,25 @@
+     auto Address = MakeAddress(Op->Dest);
+ 
+     auto Data = AVX128_LoadSource_WithOpSize(Op, DataOp, Op->Flags, !Is128Bit);
++#if defined(__ANDROID__)
++    if (!Is128Bit && FEXLumenGuestMemoryChecksEnabled()) {
++      // Preflight both halves before the first store publishes any active lane.
++      _GuestMemoryCheckMasked(OpSize::i128Bit, ElementSize, Mask.Low, Address, Invalid(), true);
++      _GuestMemoryCheckMasked(OpSize::i128Bit, ElementSize, Mask.High, Address, _InlineConstant(16), true);
++    }
++#endif
+     _VStoreVectorMasked(OpSize::i128Bit, ElementSize, Mask.Low, Data.Low, Address, Invalid(), MemOffsetType::SXTX, 1);
+     if (!Is128Bit) {
+       _VStoreVectorMasked(OpSize::i128Bit, ElementSize, Mask.High, Data.High, Address, _InlineConstant(16), MemOffsetType::SXTX, 1);
+     }
+   } else {
+     auto Address = MakeAddress(DataOp);
++#if defined(__ANDROID__)
++    if (!Is128Bit && FEXLumenGuestMemoryChecksEnabled()) {
++      _GuestMemoryCheckMasked(OpSize::i128Bit, ElementSize, Mask.Low, Address, Invalid(), false);
++      _GuestMemoryCheckMasked(OpSize::i128Bit, ElementSize, Mask.High, Address, _InlineConstant(16), false);
++    }
++#endif
+ 
+     RefPair Result {};
+     Result.Low = _VLoadVectorMasked(OpSize::i128Bit, ElementSize, Mask.Low, Address, Invalid(), MemOffsetType::SXTX, 1);
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -4445,13 +4445,9 @@
+   if (ShouldLoad) {
+     if (OpSize == OpSize::f80Bit) {
+       Ref MemSrc = LoadEffectiveAddress(this, A, GetGPROpSize(), true);
+-      if (CTX->HostFeatures.SupportsSVE()) {
+-        Result = _LoadMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, MemSrc);
+-      } else {
+-        // For X87 extended doubles, Split the load.
+-        auto Res = _LoadMem(Class, OpSize::i64Bit, MemSrc, Align == OpSize::iInvalid ? OpSize : Align);
+-        Result = _VLoadVectorElement(OpSize::i128Bit, OpSize::i16Bit, Res, 4, Add(OpSize::i64Bit, MemSrc, 8));
+-      }
++      // One 80-bit memory operation preserves the complete footprint before
++      // the backend selects SVE or a pair of native 64/16-bit accesses.
++      Result = _LoadMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, MemSrc);
+     } else {
+       Result = _LoadMemAutoTSO(Class, OpSize, A, Align == OpSize::iInvalid ? OpSize : Align);
+     }
+@@ -4584,14 +4580,7 @@
+ 
+   if (OpSize == OpSize::f80Bit) {
+     Ref MemStoreDst = LoadEffectiveAddress(this, A, GetGPROpSize(), true);
+-    if (CTX->HostFeatures.SupportsSVE()) {
+-      _StoreMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, Src, MemStoreDst);
+-    } else {
+-      // For X87 extended doubles, split before storing
+-      _StoreMemFPR(OpSize::i64Bit, MemStoreDst, Src, Align);
+-      auto Upper = _VExtractToGPR(OpSize::i128Bit, OpSize::i64Bit, Src, 1);
+-      _StoreMemGPR(OpSize::i16Bit, Upper, MemStoreDst, Constant(8), std::min(Align, OpSize::i64Bit), MemOffsetType::SXTX, 1);
+-    }
++    _StoreMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, Src, MemStoreDst);
+   } else {
+     _StoreMemAutoTSO(Class, OpSize, A, Src, Align == OpSize::iInvalid ? OpSize : Align);
+   }
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -25,6 +25,10 @@
+ #include <stddef.h>
+ #include <utility>
+ #include <xxhash.h>
++
++#if defined(__ANDROID__)
++extern "C" bool FEXLumenGuestMemoryChecksEnabled() noexcept;
++#endif
+ 
+ namespace FEXCore::IR {
+ enum class VectorCompareType {
+@@ -2521,6 +2525,12 @@
+       return LoadMemPair(Class, Size, B.Base, B.Offset);
+     }
+ 
++#if defined(__ANDROID__)
++    if (FEXLumenGuestMemoryChecksEnabled()) {
++      const auto Address = LoadEffectiveAddress(this, A, GetGPROpSize(), true, false);
++      _GuestMemoryCheck(Address, 2 * IR::OpSizeToSize(Size), false);
++    }
++#endif
+     AddressMode HighA = A;
+     HighA.Offset += 16;
+ 
+@@ -2559,6 +2569,12 @@
+       const auto B = SelectPairAddressMode(A, Size);
+       _StoreMemPair(Class, Size, Value1, Value2, B.Base, B.Offset);
+     } else {
++#if defined(__ANDROID__)
++      if (FEXLumenGuestMemoryChecksEnabled()) {
++        const auto Address = LoadEffectiveAddress(this, A, GetGPROpSize(), true, false);
++        _GuestMemoryCheck(Address, 2 * SizeInt, true);
++      }
++#endif
+       auto B = A;
+ 
+       _StoreMemAutoTSO(Class, Size, B, Value1, OpSize::i8Bit);
+diff --git a/FEXCore/Source/Interface/IR/IR.json b/FEXCore/Source/Interface/IR/IR.json
+--- a/FEXCore/Source/Interface/IR/IR.json
++++ b/FEXCore/Source/Interface/IR/IR.json
+@@ -527,6 +527,18 @@
+                   "representation for easy consumption"
+                 ],
+         "DestSize": "OpSize::i64Bit"
++      },
++
++      "GuestMemoryCheck GPR:$Addr, u32:$Bytes, i1:$Write": {
++        "Desc": ["Preflight a complete guest memory footprint before split instruction effects."],
++        "HasSideEffects": true
++      },
++
++      "GuestMemoryCheckMasked OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Mask, GPR:$Addr, GPR:$Offset, i1:$Write": {
++        "Desc": ["Preflight active lanes without publishing loads or stores."],
++        "HasSideEffects": true,
++        "DestSize": "RegisterSize",
++        "ElementSize": "ElementSize"
+       },
+ 
+       "SSA = LoadMem RegisterClass:$Class, OpSize:#Size, GPR:$Addr, GPR:$Offset, OpSize:$Align, MemOffsetType:$OffsetType, u8:$OffsetScale": {
+@@ -561,15 +573,13 @@
+       },
+ 
+       "StoreMemX87SVEOptPredicate OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Value, GPR:$Addr": {
+-        "Desc": [ "Stores a value to memory using SVE predicate mask that's designed",
+-                  "specifically for use in the X87 SVE Ldst optimization." ],
++        "Desc": [ "Stores an 80-bit x87 memory value, using the SVE predicate or a scalar fallback." ],
+         "DestSize": "RegisterSize",
+         "HasSideEffects": true,
+         "ElementSize": "ElementSize"
+       },
+       "FPR = LoadMemX87SVEOptPredicate OpSize:#RegisterSize, OpSize:#ElementSize, GPR:$Addr": {
+-        "Desc": [ "Loads a value to memory using SVE predicate mask that's designed",
+-                  "specifically for use in the X87 SVE Ldst optimization." ],
++        "Desc": [ "Loads an 80-bit x87 memory value, using the SVE predicate or a scalar fallback." ],
+         "DestSize": "RegisterSize",
+         "ElementSize": "ElementSize"
+       },
+diff --git a/FEXCore/Source/Interface/IR/Passes/RegisterAllocationPass.cpp b/FEXCore/Source/Interface/IR/Passes/RegisterAllocationPass.cpp
+--- a/FEXCore/Source/Interface/IR/Passes/RegisterAllocationPass.cpp
++++ b/FEXCore/Source/Interface/IR/Passes/RegisterAllocationPass.cpp
+@@ -18,6 +18,10 @@
+ #include <FEXCore/fextl/vector.h>
+ #include <bit>
+ #include <cstdint>
++
++#if defined(__ANDROID__)
++extern "C" bool FEXLumenGuestMemoryChecksEnabled() noexcept;
++#endif
+ 
+ using namespace FEXCore;
+ 
+@@ -667,6 +671,11 @@
+       // Since we'd be doing this check anyway for merging, do the check now so
+       // we can skip the rest of the logic too.
+       if (IROp->Op == OP_GUESTOPCODE || IROp->Op == OP_INLINECONSTANT) {
++#if defined(__ANDROID__)
++        // A checked pair may not move an earlier instruction's access under
++        // a later instruction's RIP or suppress its already permitted effects.
++        if (IROp->Op == OP_GUESTOPCODE && FEXLumenGuestMemoryChecksEnabled()) LastNode = nullptr;
++#endif
+         continue;
+       }
+ 
+diff --git a/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp b/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
+--- a/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
++++ b/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
+@@ -151,16 +151,14 @@
+ 
+ class X87StackOptimization final : public Pass {
+ public:
+-  X87StackOptimization(const FEXCore::HostFeatures& Features, OpSize GPROpSize)
+-    : Features(Features)
+-    , GPROpSize(GPROpSize) {
++  explicit X87StackOptimization(OpSize GPROpSize)
++    : GPROpSize(GPROpSize) {
+     FEX_CONFIG_OPT(ReducedPrecision, X87REDUCEDPRECISION);
+     ReducedPrecisionMode = ReducedPrecision;
+   }
+   void Run(IREmitter* Emit) override;
+ 
+ private:
+-  const FEXCore::HostFeatures& Features;
+   const OpSize GPROpSize;
+   bool ReducedPrecisionMode;
+   FEX_CONFIG_OPT(DisableVixlIndirectCalls, DISABLE_VIXL_INDIRECT_RUNTIME_CALLS);
+@@ -168,35 +166,15 @@
+   // Helpers
+   Ref RotateRight8(uint32_t V, Ref Amount);
+ 
+-  void F80SplitStore_Helper(const IROp_StoreStackMem* Op, Ref StackNode, Ref AddrNode, Ref Offset, OpSize Align, MemOffsetType OffsetType,
+-                            uint8_t OffsetScale) {
+-    IREmit->_StoreMemFPR(OpSize::i64Bit, StackNode, AddrNode, Offset, Align, OffsetType, OffsetScale);
+-    auto Upper = IREmit->_VExtractToGPR(OpSize::i128Bit, OpSize::i64Bit, StackNode, 1);
+-
+-    // Store the Upper part of the register (the remaining 2 bytes) into memory.
++  void Store80BitToMem(const IROp_StoreStackMem* Op, Ref StackNode, Ref AddrNode, Ref Offset, MemOffsetType OffsetType,
++                       uint8_t OffsetScale) {
+     AddressMode A {.Base = AddrNode,
+                    .Index = Op->Offset.IsInvalid() ? nullptr : Offset,
+-                   .Offset = 8,
+-                   .IndexType = MemOffsetType::SXTX,
++                   .IndexType = OffsetType,
+                    .IndexScale = OffsetScale,
+                    .AddrSize = OpSize::i64Bit};
+-    A = SelectAddressMode(IREmit, A, GPROpSize, Features.SupportsTSOImm9, false, false, OpSize::i16Bit);
+-    IREmit->_StoreMemGPR(OpSize::i16Bit, Upper, A.Base, A.Index, OpSize::i64Bit, MemOffsetType::SXTX, A.IndexScale);
+-  }
+-
+-  void Store80BitToMem(const IROp_StoreStackMem* Op, Ref StackNode, Ref AddrNode, Ref Offset, OpSize Align, MemOffsetType OffsetType,
+-                       uint8_t OffsetScale) {
+-    if (Features.SupportsSVE()) {
+-      AddressMode A {.Base = AddrNode,
+-                     .Index = Op->Offset.IsInvalid() ? nullptr : Offset,
+-                     .IndexType = MemOffsetType::SXTX,
+-                     .IndexScale = OffsetScale,
+-                     .AddrSize = OpSize::i64Bit};
+-      AddrNode = LoadEffectiveAddress(IREmit, A, GPROpSize, false);
+-      IREmit->_StoreMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, StackNode, AddrNode);
+-    } else {
+-      F80SplitStore_Helper(Op, StackNode, AddrNode, Offset, Align, OffsetType, OffsetScale);
+-    }
++    AddrNode = LoadEffectiveAddress(IREmit, A, GPROpSize, false);
++    IREmit->_StoreMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, StackNode, AddrNode);
+   }
+ 
+   void StoreStackMem_Helper(const IRListView& IR, const IROp_StoreStackMem* Op, Ref StackNode) {
+@@ -218,7 +196,7 @@
+     }
+ 
+     case OpSize::f80Bit: {
+-      Store80BitToMem(Op, StackNode, AddrNode, Offset, Align, OffsetType, OffsetScale);
++      Store80BitToMem(Op, StackNode, AddrNode, Offset, OffsetType, OffsetScale);
+       break;
+     }
+     default: ERROR_AND_DIE_FMT("Unsupported x87 size");
+@@ -248,7 +226,7 @@
+ 
+     case OpSize::f80Bit: {
+       StackNode = IREmit->_F80CVTTo(StackNode, OpSize::i64Bit);
+-      Store80BitToMem(Op, StackNode, AddrNode, Offset, Align, OffsetType, OffsetScale);
++      Store80BitToMem(Op, StackNode, AddrNode, Offset, OffsetType, OffsetScale);
+       break;
+     }
+     default: ERROR_AND_DIE_FMT("Unsupported x87 size");
+@@ -283,7 +261,6 @@
+   // Top Cache Management
+   Ref GetTopWithCache_Slow();
+   Ref GetOffsetTopWithCache_Slow(uint8_t Offset, bool Reverse = false);
+-  Ref GetOffsetTopAddressWithCache_Slow(uint8_t Offset);
+   void SetTopWithCache_Slow(Ref Value);
+   Ref GetX87ValidTag_Slow(uint8_t Offset);
+   // Resets fields to initial values
+@@ -344,7 +321,6 @@
+ 
+   Ref FTWCached {};
+   std::array<Ref, 8> TopOffsetCache {};
+-  std::array<Ref, 8> TopOffsetAddressCache {};
+   std::array<Ref, 8> TopValueCache {};
+   std::array<StackSlot, 8> TopValidCache {};
+ 
+@@ -371,7 +347,6 @@
+   FlushCachedRegs();
+   FTWCached = {};
+   TopOffsetCache.fill(nullptr);
+-  TopOffsetAddressCache.fill(nullptr);
+   TopValueCache.fill(nullptr);
+   TopValidCache.fill(StackSlot::UNUSED);
+ }
+@@ -428,17 +403,6 @@
+   }
+ 
+   return OffsetTop;
+-}
+-
+-inline Ref X87StackOptimization::GetOffsetTopAddressWithCache_Slow(uint8_t Offset) {
+-  if (TopOffsetAddressCache[Offset]) {
+-    return TopOffsetAddressCache[Offset];
+-  }
+-
+-  Ref OffsetRef = GetOffsetTopWithCache_Slow(Offset);
+-  TopOffsetAddressCache[Offset] = IREmit->_FormContextAddress(OpSize::i64Bit, OffsetRef, 16);
+-
+-  return TopOffsetAddressCache[Offset];
+ }
+ 
+ inline void X87StackOptimization::SetTopWithCache_Slow(Ref Value) {
+@@ -469,10 +433,11 @@
+ }
+ 
+ inline Ref X87StackOptimization::LoadStackValueAtOffset_Slow(uint8_t Offset) {
+-  OrderedNode* TopOffsetAddress = GetOffsetTopAddressWithCache_Slow(Offset);
+   auto Size = ReducedPrecisionMode ? OpSize::i64Bit : OpSize::i128Bit;
+   if (!TopValueCache[Offset]) {
+-    TopValueCache[Offset] = IREmit->_LoadMemFPR(Size, TopOffsetAddress, IREmit->_InlineConstant(MMBaseOffset()), Size, MemOffsetType::SXTX, 1);
++    // This is private CPU context, never guest memory. Keep its provenance in
++    // the IR so guest-permission checks cannot mistake it for a guest pointer.
++    TopValueCache[Offset] = IREmit->_LoadContextIndexed(GetOffsetTopWithCache_Slow(Offset), Size, MMBaseOffset(), 16, RegClass::FPR);
+   }
+   return TopValueCache[Offset];
+ }
+@@ -582,7 +547,6 @@
+   // Pop the top of the x87 stack
+   GetOffsetTopWithCache_Slow(1);
+   PopContainer(TopOffsetCache);
+-  PopContainer(TopOffsetAddressCache);
+   PopContainer(TopValueCache);
+   PopContainer(FlushValuesPending);
+   PopContainer(TopValidCache);
+@@ -598,7 +562,6 @@
+   // Push the top of the x87 stack
+   GetOffsetTopWithCache_Slow(1, true);
+   PushContainer(TopOffsetCache);
+-  PushContainer(TopOffsetAddressCache);
+   PushContainer(TopValueCache);
+   PushContainer(FlushValuesPending);
+   PushContainer(TopValidCache);
+@@ -614,8 +577,7 @@
+   auto Size = ReducedPrecisionMode ? OpSize::i64Bit : OpSize::i128Bit;
+   for (size_t i = 0; i < FlushValuesPending.size(); i++) {
+     if (FlushValuesPending[i]) {
+-      OrderedNode* TopOffsetAddress = GetOffsetTopAddressWithCache_Slow(i);
+-      IREmit->_StoreMemFPR(Size, TopValueCache[i], TopOffsetAddress, IREmit->_InlineConstant(MMBaseOffset()), Size, MemOffsetType::SXTX, 1);
++      IREmit->_StoreContextIndexed(TopValueCache[i], GetOffsetTopWithCache_Slow(i), Size, MMBaseOffset(), 16, RegClass::FPR);
+       // store
+       FlushValuesPending[i] = false;
+     }
+@@ -1017,7 +979,7 @@
+         if (!SlowPath && Value->Source && Value->Source->Size == StoreSize) {
+           Ref SourceValue = Value->Source->Node;
+           if (Op->StoreSize == OpSize::f80Bit) {
+-            Store80BitToMem(Op, SourceValue, AddrNode, Offset, Align, OffsetType, OffsetScale);
++            Store80BitToMem(Op, SourceValue, AddrNode, Offset, OffsetType, OffsetScale);
+           } else {
+             IREmit->_StoreMemFPR(StoreSize, SourceValue, AddrNode, Offset, Align, OffsetType, OffsetScale);
+           }
+@@ -1235,7 +1197,7 @@
+   }
+ }
+ 
+-fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures& Features, OpSize GPROpSize) {
+-  return fextl::make_unique<X87StackOptimization>(Features, GPROpSize);
++fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures&, OpSize GPROpSize) {
++  return fextl::make_unique<X87StackOptimization>(GPROpSize);
+ }
+ } // namespace FEXCore::IR

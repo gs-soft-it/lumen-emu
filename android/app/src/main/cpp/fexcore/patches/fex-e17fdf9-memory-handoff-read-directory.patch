@@ -1,0 +1,143 @@
+diff --git a/FEXCore/include/FEXCore/Utils/LumenMemoryHandoffAbi.h b/FEXCore/include/FEXCore/Utils/LumenMemoryHandoffAbi.h
+--- a/FEXCore/include/FEXCore/Utils/LumenMemoryHandoffAbi.h
++++ b/FEXCore/include/FEXCore/Utils/LumenMemoryHandoffAbi.h
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ #pragma once
++#include <atomic>
+ #include <cstdint>
+ 
+ // Private embedding ABI. A preserving provider is a separate symbol so a
+@@ -19,3 +20,11 @@
+   std::uint64_t, std::uint64_t, std::uint32_t, std::uint64_t) noexcept;
+ extern "C" FEXLumenMemoryCheckV1 FEXLumenGuestMemoryCheckProviderV1() noexcept;
+ extern "C" FEXLumenMemoryPreserveAllCheckV1 FEXLumenGuestMemoryPreserveAllProviderV1() noexcept;
++
++// A process-lifetime directory loaded with acquire by generated code. Null
++// table means the owner proved all GPU dirty intervals empty. Non-null table
++// retains the ordinary conservative page guards. Only Read uses this proof.
++using FEXLumenMemoryReadGuardDirectoryV1 = const std::atomic<const std::uint8_t*>*;
++static_assert(std::atomic<const std::uint8_t*>::is_always_lock_free);
++static_assert(sizeof(std::atomic<const std::uint8_t*>) == sizeof(const std::uint8_t*));
++extern "C" FEXLumenMemoryReadGuardDirectoryV1 FEXLumenGuestMemoryReadGuardProviderV1() noexcept;
+diff --git a/FEXCore/Source/Interface/Core/JIT/Relocations.h b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+--- a/FEXCore/Source/Interface/Core/JIT/Relocations.h
++++ b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+@@ -43,6 +43,7 @@
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK,
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK,
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL,
++    SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY,
+   };
+ 
+   RelocationHeader Header {};
+diff --git a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+@@ -27,6 +27,8 @@
+     return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryCheckProviderV1());
+   case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK:
+     return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryBulkProviderV1());
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY:
++    return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryReadGuardProviderV1());
+   case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL:
+ #if FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI
+     return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryPreserveAllProviderV1());
+diff --git a/FEXCore/Source/Interface/Core/CodeCache.cpp b/FEXCore/Source/Interface/Core/CodeCache.cpp
+--- a/FEXCore/Source/Interface/Core/CodeCache.cpp
++++ b/FEXCore/Source/Interface/Core/CodeCache.cpp
+@@ -517,11 +517,12 @@
+                                                 uint64_t GuestEntry, CPU::Arm64Emitter& Emitter, bool ForStorage) {
+   // Generate a literal so we can place it
+   uint64_t Pointer = ForStorage ? 0 : GetNamedSymbolLiteral(CTX, Symbol);
+-  // A reduced-spill call may only bind its exact preserving ABI. Missing
+-  // providers reject cache loading before this literal is written; storage
+-  // still emits the deterministic zero that is rebound by the next process.
+-  if (!ForStorage && Symbol == CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL &&
+-      Pointer == 0) return false;
++  // Typed preserving callbacks and read-directory references cannot bind to
++  // an ordinary callback/table. Missing providers reject loading before this
++  // literal is written; storage emits zero for process-local rebinding.
++  if (!ForStorage && Pointer == 0 &&
++      (Symbol == CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL ||
++       Symbol == CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY)) return false;
+   Emitter.dc64(Pointer);
+   return true;
+ }
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -31,6 +31,9 @@
+   return nullptr;
+ }
+ extern "C" __attribute__((weak, noinline)) const uint8_t* FEXLumenGuestMemoryHandoffGuardProviderV1() noexcept {
++  return nullptr;
++}
++extern "C" __attribute__((weak, noinline)) FEXLumenMemoryReadGuardDirectoryV1 FEXLumenGuestMemoryReadGuardProviderV1() noexcept {
+   return nullptr;
+ }
+ using LumenMemoryBulkCheck = uint32_t (*)(uint64_t Destination, uint64_t Source,
+@@ -110,16 +113,27 @@
+     ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
+   constexpr uint32_t FrameSize = 160;
+   const auto Guards = FEXLumenGuestMemoryHandoffGuardProviderV1();
++  const auto ReadDirectory = !Write && Guards ? FEXLumenGuestMemoryReadGuardProviderV1() : nullptr;
+   // Persist symbolic relocations, never process-local ASLR addresses, in the
+   // native translation cache. Every load resolves against this runtime.
+-  auto GuardAddress = InsertNamedSymbolLiteral(RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS);
++  auto GuardAddress = InsertNamedSymbolLiteral(ReadDirectory ?
++    RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY :
++    RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS);
+   auto CheckAddress = InsertNamedSymbolLiteral(PreserveAll ?
+     RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL :
+     RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK);
+   ARMEmitter::ForwardLabel Slow, Done;
+-  const auto ProbePage = [&] {
++  const auto ProbePage = [&](ARMEmitter::ForwardLabel* CleanRead) {
+     ubfx(ARMEmitter::Size::i64Bit, TMP2, TMP2, 12, 20);
+     ldr(TMP1, &GuardAddress.Loc);
++    if (ReadDirectory) {
++      // The embedding excludes new GPU ownership while this CPU admission
++      // lives. A complete empty-ledger proof skips the callback and its frame;
++      // writes and RMW always use the ordinary guard table. The scratch path
++      // branches through its restoration label, not directly out of the frame.
++      ldar(TMP1, TMP1);
++      cbz_OrRestart(ARMEmitter::Size::i64Bit, TMP1, CleanRead);
++    }
+     add(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP2);
+     ldarb(TMP1.W(), TMP1);
+     cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP1, &Slow);
+@@ -129,14 +143,14 @@
+     // hot path has no stack spill, ABI call or NZCV modification. The second
+     // guard load is required only when the <=4 KiB footprint crosses a page.
+     EmitAddress();
+-    ProbePage();
++    ProbePage(&Done);
+     if (Bytes != 1) {
+       EmitAddress();
+       and_(ARMEmitter::Size::i64Bit, TMP1, TMP2, 4095);
+       add(ARMEmitter::Size::i64Bit, TMP1, TMP1, Bytes - 1);
+       tbz_OrRestart(TMP1, 12, &Done);
+       add(ARMEmitter::Size::i64Bit, TMP2, TMP2, Bytes - 1);
+-      ProbePage();
++      ProbePage(&Done);
+     }
+     b_OrRestart(&Done);
+     BindOrRestart(&Slow);
+@@ -149,14 +163,14 @@
+   str(TMP2, ARMEmitter::Reg::rsp, 32);
+   if (Guards && PreserveScratch) {
+     ARMEmitter::ForwardLabel Fast;
+-    ProbePage();
++    ProbePage(&Fast);
+     if (Bytes != 1) {
+       ldr(TMP2, ARMEmitter::Reg::rsp, 32);
+       and_(ARMEmitter::Size::i64Bit, TMP1, TMP2, 4095);
+       add(ARMEmitter::Size::i64Bit, TMP1, TMP1, Bytes - 1);
+       tbz_OrRestart(TMP1, 12, &Fast);
+       add(ARMEmitter::Size::i64Bit, TMP2, TMP2, Bytes - 1);
+-      ProbePage();
++      ProbePage(&Fast);
+     }
+     BindOrRestart(&Fast);
+     ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);

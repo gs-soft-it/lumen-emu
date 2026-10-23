@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/KhronosGroup/SPIRV-Cross",
+  "revision": "d8e3e2b141b8c8a167b2e3984736a6baacff316c",
+  "verified_on": "2026-10-22",
+  "modules": [
+    "core",
+    "glsl",
+    "msl"
+  ],
+  "scope": "Selected CMake target sources and headers only; does not relicense other repository files or qualify the complete Lumen distribution.",
+  "files": [
+    {
+      "path": "spirv_cross.cpp",
+      "sha256": "f9495eb4a48d3a9fa1c3736d4226e5e06a8d102f56a7a8cee9aedd4436f290bf",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_parser.cpp",
+      "sha256": "99a4159c02a0834fbbaad423a7a9f591e8ab3e80b143fff584c0693de8ffb241",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_cross_parsed_ir.cpp",
+      "sha256": "85f21ce34b8a13aead6aba90fb028a869630bdaf34a298e41a03222f7a757213",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_cfg.cpp",
+      "sha256": "1d78aca00910131df0bb840d5e0ba4a023ff26360ebc02b36bdbb97434876b3a",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_cross.hpp",
+      "sha256": "bc5946067d0b3f7326c291d21d4402e6972b4adef040e582864b778d88081c29",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_parser.hpp",
+      "sha256": "e5cc214ad1d87bd78183f2e72a902c0fb994dc18e7aa6e83e86cb2875708c2f2",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_cross_parsed_ir.hpp",
+      "sha256": "d9900f3a03def50ca556a8429316d7884f87f728dfd831335d27433ae19b69f2",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_cfg.hpp",
+      "sha256": "21ba44fc8703e30d468c894616eefd6e2aa53e4a50fa6363f50dd178f26f0204",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_common.hpp",
+      "sha256": "8d73a919eec1f5b4510711c055502ec554a3d3325be5ce1438d7c72900233b00",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_cross_containers.hpp",
+      "sha256": "81c28e562046fc518a57be4e7eb9af836d3b05a6d9fb3f766a671638c275441f",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_cross_error_handling.hpp",
+      "sha256": "af7ceaa02741ed3cb9a8c8dd347d428f7a27f82d41ac57dbc5ad0dbaab8a368f",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_glsl.cpp",
+      "sha256": "2eb5062efc0fd2575f28695b71b5168505c91d07f654a285bf378473a2ea64e6",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_glsl.hpp",
+      "sha256": "9dd71b7a65c0ec11178a3d8f8cda864fbaa534d85242ba00d39d87d08f366897",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_msl.cpp",
+      "sha256": "3feb652cfefe56cbf609dfb7bce3b972ebfdd521397389f97c2cf5b812fb5aa5",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv_msl.hpp",
+      "sha256": "e55ac8bd8fe34976d7bbaac8c740beee9e35b067c5acad79744c0eaf3d6e9321",
+      "license": "Apache-2.0 OR MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "GLSL.std.450.h",
+      "sha256": "6f56e094663fded4435ab1d3d8c24d72adb3bf82832fc002ecf0a0d4d96543e9",
+      "license": "MIT",
+      "selected_license": "MIT"
+    },
+    {
+      "path": "spirv.hpp",
+      "sha256": "b00492b60db6516f45a965553e5937ebd556cb524f7558a5072897bf15b5ab16",
+      "license": "MIT",
+      "selected_license": "MIT"
+    }
+  ],
+  "notices": {
+    "SPIRV-Cross-MIT.txt": {
+      "sha256": "d78040227f3f14faeee0147f5aeb29b61cfd1c7468e99ce9343df3ced8f3873f"
+    },
+    "SPIRV-Cross-Khronos-Headers.txt": {
+      "sha256": "b3746f68a676e43c7fe1e0cca6cf15aa32215a7a79b9fcc67e8c12c23091fcb3"
+    }
+  }
+}

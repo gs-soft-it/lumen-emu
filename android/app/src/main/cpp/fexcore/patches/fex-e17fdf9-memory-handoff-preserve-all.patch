@@ -1,0 +1,246 @@
+diff --git a/FEXCore/include/FEXCore/Utils/LumenMemoryHandoffAbi.h b/FEXCore/include/FEXCore/Utils/LumenMemoryHandoffAbi.h
+new file mode 100644
+--- /dev/null
++++ b/FEXCore/include/FEXCore/Utils/LumenMemoryHandoffAbi.h
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++#include <cstdint>
++
++// Private embedding ABI. A preserving provider is a separate symbol so a
++// native cache can never rebind a reduced-spill call to an ordinary ABI callee.
++#if defined(__ANDROID__) && defined(__clang__) && __has_attribute(preserve_all) && \
++    defined(FEX_HAS_PRESERVE_ALL_ATTR) && FEX_HAS_PRESERVE_ALL_ATTR && defined(FEX_PRESERVE_ALL_ATTR)
++#define FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI 1
++#define FEX_LUMEN_MEMORY_PRESERVE_ALL_ABI FEX_PRESERVE_ALL_ATTR
++#else
++#define FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI 0
++#define FEX_LUMEN_MEMORY_PRESERVE_ALL_ABI
++#endif
++
++using FEXLumenMemoryCheckV1 = std::uint32_t (*)(std::uint64_t, std::uint64_t,
++  std::uint32_t, std::uint64_t) noexcept;
++using FEXLumenMemoryPreserveAllCheckV1 = std::uint32_t (FEX_LUMEN_MEMORY_PRESERVE_ALL_ABI *)(
++  std::uint64_t, std::uint64_t, std::uint32_t, std::uint64_t) noexcept;
++extern "C" FEXLumenMemoryCheckV1 FEXLumenGuestMemoryCheckProviderV1() noexcept;
++extern "C" FEXLumenMemoryPreserveAllCheckV1 FEXLumenGuestMemoryPreserveAllProviderV1() noexcept;
+diff --git a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+@@ -9,11 +9,11 @@
+ #include "Interface/Core/JIT/JITClass.h"
+ 
+ #include <FEXCore/Core/Thunks.h>
++#include <FEXCore/Utils/LumenMemoryHandoffAbi.h>
+ 
+ namespace FEXCore::CPU {
+ #if defined(__ANDROID__)
+ extern "C" const uint8_t* FEXLumenGuestMemoryHandoffGuardProviderV1() noexcept;
+-extern "C" uint64_t (*FEXLumenGuestMemoryCheckProviderV1() noexcept)(uint64_t, uint64_t, uint64_t, uint64_t);
+ extern "C" uint32_t (*FEXLumenGuestMemoryBulkProviderV1() noexcept)(uint64_t, uint64_t, uint64_t, uint64_t) noexcept;
+ #endif
+ uint64_t GetNamedSymbolLiteral(FEXCore::Context::ContextImpl& CTX, FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol Op) {
+@@ -27,6 +27,12 @@
+     return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryCheckProviderV1());
+   case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK:
+     return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryBulkProviderV1());
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL:
++#if FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI
++    return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryPreserveAllProviderV1());
++#else
++    return 0;
++#endif
+ #endif
+ 
+   default: ERROR_AND_DIE_FMT("Unknown named symbol literal: {}", static_cast<uint32_t>(Op));
+diff --git a/FEXCore/Source/Interface/Core/JIT/Relocations.h b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+--- a/FEXCore/Source/Interface/Core/JIT/Relocations.h
++++ b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+@@ -42,6 +42,7 @@
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS,
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK,
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK,
++    SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL,
+   };
+ 
+   RelocationHeader Header {};
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -12,6 +12,7 @@
+ #include "Interface/Core/CPUID.h"
+ #include "Interface/Core/JIT/JITClass.h"
+ #include "Interface/Core/JIT/DebugData.h"
++#include <FEXCore/Utils/LumenMemoryHandoffAbi.h>
+ #include "Interface/IR/RegisterAllocationData.h"
+ #include <FEXCore/Utils/CompilerDefs.h>
+ #include <FEXCore/Utils/MathUtils.h>
+@@ -22,9 +23,11 @@
+ // Embedding ownership hooks. The default provider keeps upstream embeddings
+ // unchanged. Lumen supplies a process-lifetime conservative 4 KiB page table;
+ // GPU ownership is acquired only after a real exclusive CPU safepoint.
+-using LumenMemoryCheck = uint32_t (*)(uint64_t Address, uint64_t Bytes,
+-                                     uint32_t Write, uint64_t GuestRIP) noexcept;
++using LumenMemoryCheck = FEXLumenMemoryCheckV1;
+ extern "C" __attribute__((weak, noinline)) LumenMemoryCheck FEXLumenGuestMemoryCheckProviderV1() noexcept {
++  return nullptr;
++}
++extern "C" __attribute__((weak, noinline)) FEXLumenMemoryPreserveAllCheckV1 FEXLumenGuestMemoryPreserveAllProviderV1() noexcept {
+   return nullptr;
+ }
+ extern "C" __attribute__((weak, noinline)) const uint8_t* FEXLumenGuestMemoryHandoffGuardProviderV1() noexcept {
+@@ -39,7 +42,8 @@
+ 
+ extern "C" bool FEXLumenGuestMemoryChecksEnabled() noexcept {
+ #if defined(__ANDROID__)
+-  return FEXLumenGuestMemoryCheckProviderV1() != nullptr;
++  return FEXLumenGuestMemoryCheckProviderV1() != nullptr ||
++    (FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI && FEXLumenGuestMemoryPreserveAllProviderV1() != nullptr);
+ #else
+   return false;
+ #endif
+@@ -47,7 +51,8 @@
+ 
+ bool Arm64JITCore::HasLumenGuestMemoryChecks() const {
+ #if defined(__ANDROID__)
+-  return FEXLumenGuestMemoryCheckProviderV1() != nullptr;
++  return FEXLumenGuestMemoryCheckProviderV1() != nullptr ||
++    (FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI && FEXLumenGuestMemoryPreserveAllProviderV1() != nullptr);
+ #else
+   return false;
+ #endif
+@@ -97,7 +102,9 @@
+ void Arm64JITCore::EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write, bool PreserveScratch) {
+ #if defined(__ANDROID__)
+   const auto Check = FEXLumenGuestMemoryCheckProviderV1();
+-  if (Check == nullptr) return;
++  const auto PreservedCheck = FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI ? FEXLumenGuestMemoryPreserveAllProviderV1() : nullptr;
++  if (Check == nullptr && PreservedCheck == nullptr) return;
++  const bool PreserveAll = PreservedCheck != nullptr;
+   LOGMAN_THROW_A_FMT(Bytes != 0 && Bytes <= 4096, "Memory checks require a fixed footprint of at most one page");
+   constexpr auto FPSR = static_cast<ARMEmitter::SystemRegister>(
+     ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
+@@ -106,11 +113,12 @@
+   // Persist symbolic relocations, never process-local ASLR addresses, in the
+   // native translation cache. Every load resolves against this runtime.
+   auto GuardAddress = InsertNamedSymbolLiteral(RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS);
+-  auto CheckAddress = InsertNamedSymbolLiteral(RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK);
++  auto CheckAddress = InsertNamedSymbolLiteral(PreserveAll ?
++    RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL :
++    RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK);
+   ARMEmitter::ForwardLabel Slow, Done;
+   const auto ProbePage = [&] {
+-    lsr(ARMEmitter::Size::i64Bit, TMP2, TMP2, 12);
+-    and_(ARMEmitter::Size::i64Bit, TMP2, TMP2, (1U << 20) - 1);
++    ubfx(ARMEmitter::Size::i64Bit, TMP2, TMP2, 12, 20);
+     ldr(TMP1, &GuardAddress.Loc);
+     add(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP2);
+     ldarb(TMP1.W(), TMP1);
+@@ -172,7 +180,7 @@
+   str(TMP1, ARMEmitter::Reg::rsp, 8);
+   mrs(TMP1, FPSR);
+   str(TMP1, ARMEmitter::Reg::rsp, 16);
+-  const auto SpillSize = SpillForABICall(false, TMP1);
++  const auto SpillSize = SpillForABICall(PreserveAll, TMP1);
+   ldr(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 32);
+   LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, Bytes);
+   LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r2, Write ? 1 : 0);
+@@ -180,8 +188,11 @@
+   InsertGuestRIPMove(ARMEmitter::Reg::r3, Entry + DebugData->GuestOpcodes.back().GuestEntryOffset);
+   ldr(ARMEmitter::XReg::x16, &CheckAddress.Loc);
+   blr(ARMEmitter::Reg::r16);
+-  str(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 24);
+-  FillForABICall(false);
++  str(ARMEmitter::XReg::x0.W(), ARMEmitter::Reg::rsp, SpillSize + 24);
++  // Both ABIs can clobber predicate registers. Base-ABI dynamic pops precede
++  // FillStaticRegs, so reestablish the 32-byte predicate before any SVE load.
++  if (HostSupportsSVE256) ptrue(ARMEmitter::SubRegSize::i8Bit, PRED_TMP_32B, ARMEmitter::PredicatePattern::SVE_VL32);
++  FillForABICall(PreserveAll);
+   if (HostSupportsSVE256) {
+     mov(TMP1, 96);
+     ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
+@@ -196,12 +207,12 @@
+   msr(ARMEmitter::SystemRegister::FPCR, TMP1);
+   ldr(TMP1, ARMEmitter::Reg::rsp, 16);
+   msr(FPSR, TMP1);
+-  ldr(TMP2, ARMEmitter::Reg::rsp, 24);
++  ldr(TMP2.W(), ARMEmitter::Reg::rsp, 24);
+   ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
+   ldr(TMP1, ARMEmitter::Reg::rsp, 48);
+   ldp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
+   ARMEmitter::ForwardLabel Allowed;
+-  cbnz_OrRestart(ARMEmitter::Size::i64Bit, TMP2, &Allowed);
++  cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP2, &Allowed);
+   ldr(TMP2, ARMEmitter::Reg::rsp, 56);
+   add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
+   // All registers and status are restored before trapping. No guest memory
+diff --git a/FEXCore/Source/Interface/Core/CodeCache.cpp b/FEXCore/Source/Interface/Core/CodeCache.cpp
+--- a/FEXCore/Source/Interface/Core/CodeCache.cpp
++++ b/FEXCore/Source/Interface/Core/CodeCache.cpp
+@@ -451,7 +451,8 @@
+   NewRelocations.erase(std::remove_if(NewRelocations.begin(), NewRelocations.end(), [](const CPU::Relocation& Reloc) {
+     return Reloc.Header.Type != CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL && Reloc.Header.Type != CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE;
+   }));
+-  (void)ApplyCodeRelocations(Section.FileStartVA, CodeBufferRangeRef, NewRelocations, false);
++  if (!ApplyCodeRelocations(Section.FileStartVA, CodeBufferRangeRef, NewRelocations, false))
++    ERROR_AND_DIE_FMT("Unsupported native code-cache binding during validation");
+ 
+   if (NewCodeBuffer->AllocatedSpaceUsed() <= CodeBufferRangeRef.size()) {
+     // Reference compilation produced fewer bytes than our cache, so validation is going to fail.
+@@ -512,11 +513,17 @@
+   LogMan::Msg::IFmt("            successfully validated cache");
+ }
+ 
+-static inline void ApplySymbolLiteralRelocation(ContextImpl& CTX, const CPU::RelocNamedSymbolLiteral::NamedSymbol Symbol,
++static inline bool ApplySymbolLiteralRelocation(ContextImpl& CTX, const CPU::RelocNamedSymbolLiteral::NamedSymbol Symbol,
+                                                 uint64_t GuestEntry, CPU::Arm64Emitter& Emitter, bool ForStorage) {
+   // Generate a literal so we can place it
+   uint64_t Pointer = ForStorage ? 0 : GetNamedSymbolLiteral(CTX, Symbol);
++  // A reduced-spill call may only bind its exact preserving ABI. Missing
++  // providers reject cache loading before this literal is written; storage
++  // still emits the deterministic zero that is rebound by the next process.
++  if (!ForStorage && Symbol == CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL &&
++      Pointer == 0) return false;
+   Emitter.dc64(Pointer);
++  return true;
+ }
+ 
+ static inline bool
+@@ -552,7 +559,7 @@
+     Emitter.SetCursorOffset(Reloc.Offset);
+     switch ((CPU::RelocationTypes)Reloc.Type) {
+     case FEXCore::CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL: {
+-      ApplySymbolLiteralRelocation(CTX, (CPU::RelocNamedSymbolLiteral::NamedSymbol)Reloc.Named.Symbol, GuestEntry, Emitter, ForStorage);
++      if (!ApplySymbolLiteralRelocation(CTX, (CPU::RelocNamedSymbolLiteral::NamedSymbol)Reloc.Named.Symbol, GuestEntry, Emitter, ForStorage)) return false;
+       break;
+     }
+     case FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL: {
+@@ -586,7 +593,7 @@
+ 
+     switch (Reloc.Header.Type) {
+     case FEXCore::CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL: {
+-      ApplySymbolLiteralRelocation(CTX, Reloc.NamedSymbolLiteral.Symbol, GuestEntry, Emitter, ForStorage);
++      if (!ApplySymbolLiteralRelocation(CTX, Reloc.NamedSymbolLiteral.Symbol, GuestEntry, Emitter, ForStorage)) return false;
+       break;
+     }
+     case FEXCore::CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE: {
+@@ -931,7 +938,8 @@
+   auto StagingSpan = std::span {Staging, Size};
+   for (size_t i = StartPage; i < EndPage; ++i) {
+     auto PageRelocations = SpanPageRelocations(Code, i);
+-    (void)ApplyCodeRelocations(Code.GuestBase, StagingSpan, PageRelocations, false);
++    if (!ApplyCodeRelocations(Code.GuestBase, StagingSpan, PageRelocations, false))
++      ERROR_AND_DIE_FMT("Unsupported native code-cache binding; pages remain unpublished");
+     Code.LoadedPages[i] = true;
+   }
+ 
+@@ -954,7 +962,8 @@
+ #endif
+   for (size_t i = StartPage; i < EndPage; ++i) {
+     auto PageRelocations = SpanPageRelocations(Code, i);
+-    (void)ApplyCodeRelocations(Code.GuestBase, Code.CodeBuffer, PageRelocations, false);
++    if (!ApplyCodeRelocations(Code.GuestBase, Code.CodeBuffer, PageRelocations, false))
++      ERROR_AND_DIE_FMT("Unsupported native code-cache binding; pages remain unpublished");
+     Code.LoadedPages[i] = true;
+   }
+ #endif

@@ -1,0 +1,10 @@
+#message("${GIT_EXECUTABLE}")
+if(GIT_EXECUTABLE)
+	execute_process(COMMAND ${GIT_EXECUTABLE} describe --tags --always
+		WORKING_DIRECTORY ${GIT_WORK_TREE}
+		OUTPUT_VARIABLE LUMEN_GIT_VERSION)
+else()
+	set(LUMEN_GIT_VERSION "unknown")
+endif()
+string(STRIP ${LUMEN_GIT_VERSION} LUMEN_GIT_VERSION)
+configure_file(${INPUT_FILE} ${OUTPUT_FILE})

@@ -1,0 +1,69 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -243,9 +243,18 @@ DEF_OP(CondJump) {
+   auto Op = IROp->C<IR::IROp_CondJump>();
+ 
+   auto TrueTargetLabel = JumpTarget(Op->TrueBlock);
++  // A taken conditional branch to an earlier address is also a safepoint
++  // boundary for the Lumen mutation barrier: the completed guest work stays
++  // behind and execution can resume at the branch target. Emit the interrupt
++  // doorbell on that edge only, followed by an unconditional backward branch
++  // the signal path resumes from.
++  const bool CheckTakenBackedge = CTX->Config.NeedsPendingInterruptFaultCheck && TrueTargetLabel->Backward.Location;
++  ARMEmitter::BiDirectionalLabel SkipBackedge;
++  auto ConditionalTargetLabel = CheckTakenBackedge ? &SkipBackedge : TrueTargetLabel;
+ 
+   if (Op->FromNZCV) {
+-    b_OrRestart(MapCC(Op->Cond), TrueTargetLabel);
++    const auto Condition = MapCC(Op->Cond);
++    b_OrRestart(CheckTakenBackedge ? InvertCondition(Condition) : Condition, ConditionalTargetLabel);
+   } else {
+     uint64_t Const;
+     const bool isConst = IsInlineConstant(Op->Cmp2, &Const);
+@@ -256,23 +265,35 @@ DEF_OP(CondJump) {
+     LOGMAN_THROW_A_FMT(IsGPR(Op->Cmp1), "CondJump: Expected GPR");
+     LOGMAN_THROW_A_FMT(isConst, "CondJump: Expected constant source");
+ 
+-    if (Op->Cond == IR::CondClass::EQ) {
++    if (Op->Cond == IR::CondClass::EQ || Op->Cond == IR::CondClass::NEQ) {
+       LOGMAN_THROW_A_FMT(Const == 0, "CondJump: Expected 0 source");
+-      cbz_OrRestart(Size, Reg, TrueTargetLabel);
+-    } else if (Op->Cond == IR::CondClass::NEQ) {
+-      LOGMAN_THROW_A_FMT(Const == 0, "CondJump: Expected 0 source");
+-      cbnz_OrRestart(Size, Reg, TrueTargetLabel);
+-    } else if (Op->Cond == IR::CondClass::TSTZ) {
+-      LOGMAN_THROW_A_FMT(Const < 64, "CondJump: Expected valid bit source");
+-      tbz_OrRestart(Reg, Const, TrueTargetLabel);
+-    } else if (Op->Cond == IR::CondClass::TSTNZ) {
++      if ((Op->Cond == IR::CondClass::EQ) != CheckTakenBackedge) {
++        cbz_OrRestart(Size, Reg, ConditionalTargetLabel);
++      } else {
++        cbnz_OrRestart(Size, Reg, ConditionalTargetLabel);
++      }
++    } else if (Op->Cond == IR::CondClass::TSTZ || Op->Cond == IR::CondClass::TSTNZ) {
+       LOGMAN_THROW_A_FMT(Const < 64, "CondJump: Expected valid bit source");
+-      tbnz_OrRestart(Reg, Const, TrueTargetLabel);
++      if ((Op->Cond == IR::CondClass::TSTZ) != CheckTakenBackedge) {
++        tbz_OrRestart(Reg, Const, ConditionalTargetLabel);
++      } else {
++        tbnz_OrRestart(Reg, Const, ConditionalTargetLabel);
++      }
+     } else {
+       LOGMAN_THROW_A_FMT(false, "CondJump expected simple condition");
+     }
+   }
+ 
++  if (CheckTakenBackedge) {
++    // The condition has already selected this edge. Keep the interrupt store
++    // immediately followed by an unconditional backward branch so a frontend
++    // can resume at the target without replaying the completed guest work.
++    // The inverted forward branch skips both instructions on the false edge.
++    EmitSuspendInterruptCheck();
++    b_OrRestart(TrueTargetLabel);
++    BindOrRestart(&SkipBackedge);
++  }
++
+   PendingTargetLabel = JumpTarget(Op->FalseBlock);
+ }
+ 

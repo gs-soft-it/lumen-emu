@@ -1,0 +1,35 @@
+--- a/include/accel/tcg/cpu-ops.h
++++ b/include/accel/tcg/cpu-ops.h
+@@ -226,6 +226,18 @@
+     bool (*tlb_fill)(CPUState *cpu, vaddr address, int size,
+                      MMUAccessType access_type, int mmu_idx,
+                      bool probe, uintptr_t retaddr);
++    /**
++     * @code_ram_offset: Optional proven code host-to-RAM translation.
++     *
++     * Called after the executable-page probe, with its resolved full entry
++     * and native host pointer, while the CPU holds the normal RCU protection.
++     * Return true only for the physical RAM owner offset selected by the
++     * resolved softmmu mapping. An embedding may resolve its own borrowed
++     * memory regions, even when native host aliases select another RAMBlock.
++     * False preserves the original host-to-RAM lookup without alteration.
++     */
++    bool (*code_ram_offset)(CPUState *cpu, const CPUTLBEntryFull *full,
++                            vaddr addr, void *host, uint64_t *ram_offset);
+     /**
+      * @pointer_wrap:
+      *
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -1554,5 +1554,11 @@
+         return -1;
+     }
+ 
++    CPUState *cpu = env_cpu(env);
++    uint64_t ram_offset;
++    if (cpu->cc->tcg_ops->code_ram_offset &&
++        cpu->cc->tcg_ops->code_ram_offset(cpu, full, addr, p, &ram_offset)) {
++        return ram_offset;
++    }
+     return qemu_ram_addr_from_host_nofail(p);
+ }

@@ -1,0 +1,133 @@
+Lumen Emu - PS4/PS5 emulator port optimised for Android, iOS and Mac (Apple Silicon)
+License and provenance notice, updated 2026-10-22
+
+Lumen builds on shadPS4, Kyty and KytyPS5. GS-Soft supplies the Android
+integration and platform optimisations. Original authors and contributors
+retain their copyright; Lumen is an independent derivative, not an official
+release of or a project endorsed by these upstream teams.
+Mac (Apple Silicon) and iOS versions are coming soon; the platform scope is
+not a declaration of public availability or equal compatibility.
+
+SPDX-License-Identifier: GPL-2.0-only
+
+Lumen's new integration code and original adapters are licensed under the
+GNU General Public License, version 2 only. See LICENSE for the complete
+license text. The example about "any later version" at the end of that
+standard text does not change this project's GPL-2.0-only declaration.
+
+This notice does not relicense pre-existing files or third-party components,
+replace their copyright notices, or grant rights to contributions whose
+ownership or license has not been established. Their own license and
+attribution notices remain applicable. FEX modifications retain the MIT
+license of the FEX source files in which they are made.
+
+Source provenance:
+  - FEX: https://github.com/FEX-Emu/FEX.git, commit
+    e17fdf9e90a49614e16ac8414a687477fb9e4f7c, at source/3rdparty/fex.
+    The complete upstream source tree is pinned as a submodule. The runtime
+    initializes fmt, xxHash, unordered_dense and rpmalloc; unused upstream
+    test corpora are not required. Host ports retain their reviewed patches
+    and component licenses. FEXCore remains MIT licensed.
+  - shadPS4: https://github.com/shadps4-emu/shadPS4.
+    Active PS4 core imported through
+    https://github.com/zenithblue-oss/shadps4-arm64, commit
+    be6bc2e9c60799e071dd2fafa6216e8d80ec619c, adapted in source/gen4.
+    Original shadPS4 Emulator Project and per-file contributor copyrights
+    are preserved. Source provenance is recorded in
+    source/gen4/UPSTREAM.json.
+    The upstream GPL-2.0-or-later files retain their original notices;
+    GPL version 2 is selected for this integration. Host entrypoints, CPU
+    adapters and memory handoffs are modified for Lumen. The existing
+    dashboard routes PS4 and PS5 sessions through the unified source/gen4 tree,
+    retaining generation-specific guest interfaces and shared host controls.
+    Dependency pins and preserved notices are in source/licenses/gen4.
+  - Legacy PS4 source retained for regression work: lumen-emu, commit
+    71a801c343336a194d196a498b9a4c3676082a37.
+  - Kyty: https://github.com/InoriRus/Kyty. Original emulator work and
+    inherited source portions use MIT, Copyright (c) 2021 InoriRus. The
+    full text is preserved in
+    source/gen4/gen5/compatibility/LICENSES/Kyty-MIT.txt.
+  - KytyPS5: https://github.com/KytyPS5/KytyPS5,
+    commit b3e419ff1101999525fa2d061ada1d102cf788b1, imported into source/gen4/gen5/compatibility.
+    KytyPS5 declares GPL-2.0-only. Its original Kyty MIT notice,
+    Copyright (c) 2021 InoriRus, is preserved in
+    source/gen4/gen5/compatibility/LICENSES/Kyty-MIT.txt (packaged as Legal/kyty/Kyty-MIT.txt).
+
+The active Android PS5 direct engine additionally uses KytyPS5 revision
+fe3857a1715551e4f554b2ec29cc1ca3286287a1, with Lumen host adaptations
+recorded in source/gen4/gen5/engine/UPSTREAM.json and its NOTICE.txt.
+Original per-file copyright notices are preserved. The original PS5 import
+and selected updates are recorded in source/gen4/gen5/UPSTREAM.json.
+The current Dev/lumen-emu checkout contains this combined derivative; older
+references to a separate clean-room repository describe historical scope.
+
+Active Gen4 and Android direct Gen5 CPU translation uses FEX at
+f2b679f6028ce1c38875233aecfcf5d3f8ebecec in source/3rdparty/fex-gen4,
+under MIT with its dependency notices in source/licenses/gen4/cpu.
+The e17fdf9 FEX pin above applies to the retained legacy/facade paths.
+
+PS4 text dialog adapter, 2026-10-03:
+  source/emulator/src/Libs/LibSceImeDialog.cpp adapts the host editor and
+  lifecycle in source/gen4/gen5/compatibility/src/libs/imeCommon.cpp and imeDialog.cpp.
+  The imported implementation remains GPL-2.0-only at the PS5 pin above.
+  The original PS4 adapter validates guest memory and uses host-owned text;
+  the historical import was made in the derivative, now held in this checkout.
+  The desktop panel links the imported Dear ImGui SDL2/SDLRenderer2 backends
+  (MIT, copyright 2014-2026 Omar Cornut). Their pin and complete license are
+  preserved in source/gen4/gen5/UPSTREAM.json and
+  source/gen4/gen5/compatibility/3rdparty/imgui/LICENSE.txt. The panel layout is original
+  Lumen code; no PS5 graphics engine or controller implementation is linked.
+
+Android SDL text bridge, 2026-10-03:
+  SDL_androidtext.h and SDLTextInputCommit.java are original Lumen additions
+  licensed GPL-2.0-only. Modified SDL Android C/Java files retain their
+  original SDL zlib notices and identify the local changes. These additions
+  validate Unicode and preserve text/Return ordering for the shared editor.
+
+Shared host keyboard panels, 2026-10-03:
+  source/shared/ime/KeyboardPanel and RuntimeImeDialogUi.java are original
+  Lumen GPL-2.0-only UI code shared by the PS4 and PS5 frontends. They use
+  owned host snapshots and typed host actions, never guest memory pointers.
+  PS5 keeps its existing SDL3/ImGui presentation and IME owner arbitration;
+  the PS4 desktop keeps its separate SDL2 software window. Core PS5 full
+  text replacements remain queued until the guest invokes ImeUpdate.
+  Dear ImGui and SDL retain the component notices and licenses above.
+
+The software is provided WITHOUT ANY WARRANTY, including the implied
+warranties of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE, as
+described in LICENSE and the applicable component licenses.
+
+Component notices: source/licenses/THIRD_PARTY_NOTICES.txt (packaged as
+Legal/lumen/THIRD_PARTY_NOTICES.txt).
+Known release issues include the GPL-2.0-only / Apache-2.0 combination in
+the PS5 SPIRV-Tools linkage and the GPL compatibility of Gen4 FDK AAC.
+Their original licence texts remain in place; this update does not grant
+an exception or resolve those conflicts. See LICENSES.md for the current
+licence map, component obligations and source-release requirements.
+
+The core source is planned for publication soon in a new public repository
+with a single initial snapshot commit. No public repository URL is available
+yet. A new Git history does not replace upstream authorship, per-file
+notices, licence texts, provenance records or applicable corresponding-
+source obligations. Binary distribution cannot rely on a promise to publish
+source later. No new public core repository is published by this licence-documentation update.
+
+Selectable QEMU TCG CPU provider, 2026-10-04:
+  The original common provider, C execution boundary, build recipes and
+  selector are Lumen GPL-2.0-only additions under source/cpu. They embed the
+  CPU/TCG closure of QEMU 11.1.2, choosing GPL version 2 where upstream
+  offers that choice. QEMU's per-file licenses, including LGPL and permissive
+  components, remain applicable. The official archive pin and its SHA-256
+  are recorded in source/cpu/qemu/source-lock.json; dependency archive and
+  checked local patch pins are in dependency-lock.json. Local QEMU patches
+  retain the licenses of their upstream files. No firmware, ROM, guest OS
+  or third-party machine image is included in this provider.
+  The native build recipes retain QEMU, GLib, PCRE2 and libintl notices.
+  Android additionally retains toolchain notices and actual compiled/header
+  source preambles. Android builds containing the provider package these
+  materials under Legal/QEMU-TCG
+  and verify their manifest against the selected native binary. Static
+  dependency linkage does not remove the applicable corresponding-source
+  and relinking obligations. These pins and notices do not certify a public
+  binary distribution; the actual closure must be assessed with the rest
+  of Lumen before a release.

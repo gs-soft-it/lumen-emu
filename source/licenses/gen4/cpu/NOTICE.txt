@@ -1,0 +1,25 @@
+Direct Gen4 CPU runtime
+
+The Gen4 runtime links the official FEX project at revision
+f2b679f6028ce1c38875233aecfcf5d3f8ebecec from the pinned repository submodule
+source/3rdparty/fex-gen4. Source: https://github.com/FEX-Emu/FEX
+The pinned translator source is unmodified. The embedding, signal integration
+and host entry points are provided by this project. Android requires 4096-byte
+host pages. The macOS build applies a separate Darwin host overlay for
+MAP_JIT, per-thread write protection, host system APIs and Apple Silicon's
+16384-byte pages. The overlay is built separately from the pinned source.
+The separate PS5 process retains its own CPU build and host adaptation.
+
+Direct runtime dependency revisions:
+fmt: 407c905e45ad75fc29bf0f9bb7c5c2fd3475976f
+xxHash: e626a72bc2321cd320e953a0ccf1584cad60f363
+unordered_dense: 3234af2c03549bc85656bfd3a86993bf1cd8aef1
+rpmalloc: 1d85c246cd827ead6865f4f880d4fef53f2b1864
+range-v3: ca1388fb9da8e69314dda222dc7b139ca84e092f
+
+FEX, FEXHeaderUtils and CodeEmitter use the upstream MIT license. Complete
+license texts for these dependencies accompany this notice. The in-tree
+cephes and SoftFloat-3e sources are linked as well. The cephes license is at
+Legal/gen4/cpu/cephes/LICENSE. The SoftFloat-3e license is at
+Legal/SoftFloat-3e/LICENSE on Android and
+Legal/fexcore/SoftFloat-3e/LICENSE on macOS.

@@ -1,0 +1,35 @@
+{
+  "scope": "Pinned external PS5 dependency license texts for local Android packaging; no distribution qualification",
+  "components": [
+    {
+      "name": "xbyak",
+      "commit": "44a72f369268f7d552650891b296693e91db86bb",
+      "source": "xbyak-src/COPYRIGHT",
+      "sha256": "7e411d5c5d38501a504843f58afb6824439c828872b35d2ff1e892e73fd1a30d"
+    },
+    {
+      "name": "Zydis",
+      "commit": "120e0e705f8e3b507dc49377ac2879979f0d545c",
+      "source": "zydis-src/LICENSE",
+      "sha256": "e5e99718209e94baaf3e9cbf6f64aa3329c9e73c63b1ab47e10f29d81974e6f3"
+    },
+    {
+      "name": "Zycore",
+      "commit": "38d4f0285e6157ee840ea82a9b90aba71c8a705d",
+      "source": "zydis-src/dependencies/zycore/LICENSE",
+      "sha256": "7991ec4481a82c51d196f7440fda34c578aab51f8b9c7023935c6e03b57638bd"
+    },
+    {
+      "name": "Zstd",
+      "commit": "f8745da6ff1ad1e7bab384bd1f9d742439278e99",
+      "source": "zstd-src/LICENSE",
+      "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+    },
+    {
+      "name": "ZArchive",
+      "commit": "d2c717730092c7bf8cbb033b12fd4001b7c4d932",
+      "source": "zarchive_source-src/LICENSE",
+      "sha256": "efe6b7a9113e0dbe3a8922026fc72ae3ee835c163d182967a015783f7d72e562"
+    }
+  ]
+}

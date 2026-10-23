@@ -1,0 +1,118 @@
+{
+  "repository": "https://github.com/KytyPS5/KytyPS5.git",
+  "commit": "b3e419ff1101999525fa2d061ada1d102cf788b1",
+  "tree": "0d1c98034b949b5bc57589259ed9f5c24d396abf",
+  "license": "GPL-2.0-only",
+  "license_sha256": "f9c375a1be4a41f7b70301dd83c91cb89e41567478859b77eef375a52d782505",
+  "lumen_ps4_commit": "71a801c343336a194d196a498b9a4c3676082a37",
+  "import": "vendored upstream sources; gitlinks materialized at recorded submodule pins",
+  "submodules": [
+    {
+      "path": "3rdparty/LibAtrac9",
+      "commit": "ec8899dadf393f655f2871a94e0fe4b3d6220c9a"
+    },
+    {
+      "path": "3rdparty/SDL3",
+      "commit": "fa2c02bb6e21974a89ea9824bc53c9932abe5f9c"
+    },
+    {
+      "path": "3rdparty/SPIRV-Headers",
+      "commit": "01e0577914a75a2569c846778c2f93aa8e6feddd"
+    },
+    {
+      "path": "3rdparty/SPIRV-Tools",
+      "commit": "7f2d9ee926f98fc77a3ed1e1e0f113b8c9c49458"
+    },
+    {
+      "path": "3rdparty/Vulkan-Headers",
+      "commit": "2fa203425eb4af9dfc6b03f97ef72b0b5bcb8350"
+    },
+    {
+      "path": "3rdparty/VulkanMemoryAllocator",
+      "commit": "a1d434708c217b2a6c7b365f1fe41fa03a562e59"
+    },
+    {
+      "path": "3rdparty/ffmpeg-core",
+      "commit": "9ac4cfd195f192ed8b08566f49c28dbb48d08341"
+    },
+    {
+      "path": "3rdparty/fmt",
+      "commit": "11ddbcb7898d2d3445d431a54814367b21dee6ad"
+    },
+    {
+      "path": "3rdparty/imgui",
+      "commit": "f1cc2ae15e53a861a874c3034aae6798fde194ab"
+    },
+    {
+      "path": "3rdparty/magic_enum",
+      "commit": "1384769c66bd16ec9bb1353f45fe8ec8ccc12dbd"
+    },
+    {
+      "path": "3rdparty/nlohmann_json",
+      "commit": "272411c5e6ea45919af7673524e74e60c62116df"
+    },
+    {
+      "path": "3rdparty/spdlog",
+      "commit": "8671ca4d492c8ee1cdfd3dd88afb9f88dd268178"
+    },
+    {
+      "path": "3rdparty/tracy",
+      "commit": "30997d5ca6bb632cc10807a1da8a6d3de0aeeb3c"
+    },
+    {
+      "path": "3rdparty/xxHash",
+      "commit": "e573d4d2aaeaba0f3e5a0a9a54144a1f2b4b56e7"
+    }
+  ],
+  "selected_updates": [
+    {
+      "upstream_commit": "1cfb9522a338661bb72e45af40792688522485ba",
+      "upstream_tree": "6a72149ad90b4dc91078f7487f2cf33413b47f65",
+      "retrieved_on": "2026-10-10",
+      "scope": "Selected graphics/shader optimizations and supporting AGC/memory changes, merged against the original import; not a complete upstream revision bump.",
+      "paths": [
+        "src/graphics/shader/",
+        "src/graphics/guest_gpu/",
+        "src/graphics/host_gpu/",
+        "src/graphics/presentation/videoOut.cpp",
+        "src/libs/agc.cpp",
+        "src/libs/agc.h",
+        "src/libs/libAgcDriver.cpp",
+        "src/kernel/memoryAddressSpace.inc",
+        "src/graphics/presentation/window/vulkanWindow.cpp (shader capabilities only)",
+        "src/graphics/presentation/window/windowInternal.h (shader capabilities only)",
+        "src/kernel/memory.cpp",
+        "src/kernel/memory.h",
+        "tests/ (graphics and memory fixtures only)"
+      ],
+      "preserved_local_contracts": [
+        "ARM64 FEX/QEMU typed HLE and guest memory publication",
+        "physical backing identity, alias validation and CPU/GPU handoff",
+        "typed MoltenVK render-target exports",
+        "legacy FP32 MAD denormal flushing",
+        "no page-fault GPU dirty tracking"
+      ],
+      "excluded_areas": [
+        "controller and window input",
+        "launcher, self-updater and splash screen",
+        "unrelated services",
+        "upstream MAD denormal performance experiment 77d7722",
+        "AGC fixed-address function table feature 165cd884: required 0xfe0000000 overlaps macOS reserved VA; pre-feature AGC initialization retained across platforms"
+      ],
+      "dependencies": "Original submodule pins and license hashes unchanged."
+    }
+  ],
+  "opt_in_updates": [
+    {
+      "upstream_commit": "fe3857a1715551e4f554b2ec29cc1ca3286287a1",
+      "upstream_tree": "9ecce47919ed57efcf7d1505688968da3630eb02",
+      "retrieved_on": "2026-10-18",
+      "build_selector": "LUMEN_PS5_UPSTREAM_20261018",
+      "default": false,
+      "manifest": "updates/20261018/manifest.json",
+      "scope": "Adapted shader, descriptor and renderer updates. Original engine sources remain the default; generated candidate sources are verified against per-file hashes.",
+      "dependencies": "Original vendored dependency pins and license bytes unchanged.",
+      "runtime_qualification": "See local Android candidate receipt; source integration alone does not qualify games."
+    }
+  ]
+}

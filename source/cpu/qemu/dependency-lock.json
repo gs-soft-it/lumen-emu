@@ -1,0 +1,157 @@
+{
+  "ndk_version": "29.0.14206865",
+  "android_api": 35,
+  "abi": "arm64-v8a",
+  "elf_load_alignment": 16384,
+  "dependencies": {
+    "glib": {
+      "version": "2.88.3",
+      "url": "https://download.gnome.org/sources/glib/2.88/glib-2.88.3.tar.xz",
+      "archive": "glib-2.88.3.tar.xz",
+      "sha256": "ab24d24e698dfa1e408b7bcdb508f4aafc906185a8b8ce72fdf79bbbdc9b383b",
+      "bytes": 5794356,
+      "prefix": "glib-2.88.3",
+      "signature_verified": false
+    },
+    "pcre2": {
+      "version": "10.47",
+      "url": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.bz2",
+      "archive": "pcre2-10.47.tar.bz2",
+      "sha256": "47fe8c99461250d42f89e6e8fdaeba9da057855d06eb7fc08d9ca03fd08d7bc7",
+      "bytes": 2145789,
+      "prefix": "pcre2-10.47",
+      "signature_verified": false
+    },
+    "gettext": {
+      "version": "1.0",
+      "url": "https://ftp.gnu.org/pub/gnu/gettext/gettext-1.0.tar.gz",
+      "archive": "gettext-1.0.tar.gz",
+      "sha256": "85d99b79c981a404874c02e0342176cf75c7698e2b51fe41031cf6526d974f1a",
+      "bytes": 32694085,
+      "prefix": "gettext-1.0",
+      "signature_verified": false
+    }
+  },
+  "patches": {
+    "glib-core-only.patch": {
+      "sha256": "8e32c3ce362aaa49824ed2f5dbcc0b282e7a5ce4a764424a0201a693a092db49",
+      "files": {
+        "meson.build": {
+          "before_sha256": "9f2257c80dc2ca205ae83a5719585fbb8701cd011d2c87bb5de6c2e9bd6d5b6d",
+          "after_sha256": "3ff483127f57d2463fb9ded672cfcde8f52131ce73c1a6672333e5bb2b5cb67a"
+        }
+      }
+    },
+    "qemu-android-bionic.patch": {
+      "sha256": "001dd36085647c791f75b86c61d8842c5bf06a40df391c157fabbc5689eb3366",
+      "files": {
+        "meson.build": {
+          "before_sha256": "7d45b715ca8e740d787eee6d4a1e8ae4a7456aecfe16dda2a7d32a0f2cc10591",
+          "after_sha256": "f05533f7b6f304b0a5a09de606351d75aab2f60cafc29cdf1a9cb6fc63be5ff8"
+        },
+        "util/oslib-posix.c": {
+          "before_sha256": "ad7bc820a4ab61fa0b00502a0a04540228a7cc60da5cb8908fcbc2af2419b869",
+          "after_sha256": "78e3eafd5f6e298815c0c701ab3bb190bf1b55d4732e4f762a4753668a821d7f"
+        }
+      }
+    },
+    "qemu-virtual-tsc-clock.patch": {
+      "sha256": "10b8fe243176aee4be1599ad4c2460d059d0925679929fef645758adfb43f577",
+      "files": {
+        "target/i386/cpu.c": {
+          "before_sha256": "fb20acebe01b7c46a214921bdd768eadb0798607e6c49d7864c457eec3ea0755",
+          "after_sha256": "a9740943f7f4232790ad4b9fa8c37bb8cbc3d80d3d7820838993950bf4af1f49"
+        }
+      }
+    },
+    "qemu-code-ram-offset.patch": {
+      "sha256": "ddcf5ddf215550bf72c08b50b075326591a185b49649690a468645cc0c30c168",
+      "files": {
+        "include/accel/tcg/cpu-ops.h": {
+          "before_sha256": "bfefc723edb1b8eb45b978073aa2237595946d80fe58880ea7443b1a704a11f4",
+          "after_sha256": "4a1a2dbcc8e647ef81e5e29aa98a635e2a46425d0b606a23a816cbc1ad720068"
+        },
+        "accel/tcg/cputlb.c": {
+          "before_sha256": "f5aa5cc4d5752aa179cac7344b58164ebbdf1c0451154fe75dc73f2dcf1a3a37",
+          "after_sha256": "301d1b1e1200a1df2ea58293c0422fa271c424942e97b54cd1837b3bc27323c1"
+        }
+      }
+    },
+    "qemu-jit-execute-scope.patch": {
+      "sha256": "de3ae7fd4a15f627d1b7c44a3cdee59c73304d1b9116c198c77c3cb319f1ece0",
+      "files": {
+        "include/qemu/osdep.h": {
+          "before_sha256": "b0fd70a4fff2de70aca226e8bd1cf4c53903b3ea9d761cff1b1455730e773b34",
+          "after_sha256": "720fb6780ec76beeef66c9c1520660767910dbde22cc36bf4504a42d7a4f7946"
+        },
+        "util/cacheflush.c": {
+          "before_sha256": "ef242ca60298bc0721d96c33402703cbf8e1f13dbbe217af2928df7b2bc7dfe6",
+          "after_sha256": "62e7225a34b6487e87b939e3336bcff2ad220bef422861cd16be2e75e276782e"
+        }
+      }
+    },
+    "qemu-tb-exec-boundary.patch": {
+      "sha256": "b69ce038c6b29dd6bd8d8a677b1f2d025b774cbb6651147c516c5abcc15703f8",
+      "files": {
+        "include/exec/translation-block.h": {
+          "before_sha256": "8a5673e361ac01d3e6566b17e069c2ed7c8a5c2d3786d826f1c3d71ad9fed3b2",
+          "after_sha256": "10289fee541f5d8874f6b41ac19c4b22781da5aca3abad49de16ff3f759454c3"
+        },
+        "include/accel/tcg/cpu-ops.h": {
+          "before_sha256": "4a1a2dbcc8e647ef81e5e29aa98a635e2a46425d0b606a23a816cbc1ad720068",
+          "after_sha256": "5ca7372f694737d65f4578ee61efcd8b038054abf2e30755e000f96e9b2f874e"
+        },
+        "accel/tcg/tcg-runtime.h": {
+          "before_sha256": "d9b5d26acee9f003023ec8b6cfe3347f3015bec3b0b3211448bea44f99a71e5b",
+          "after_sha256": "13efe6b053e5e0dc3faa7c4f8569746763bd6b8030093d2ab013aaede993521b"
+        },
+        "accel/tcg/cpu-exec.c": {
+          "before_sha256": "a659c9afd23e665296ce565773c90d969157e3b891cdbf48325b977df176351a",
+          "after_sha256": "4f88181a0833376a7c471c7d635002a0a057d9fe5d68d29a3a5f65c0049f4091"
+        },
+        "accel/tcg/translator.c": {
+          "before_sha256": "e2c38ad6f4e583f5bab3777c6ca8c25be8c3a7550c13a0949842a2f97ca39fa0",
+          "after_sha256": "10574ae80eb42e449942c408ac7e8005068de5bfe6236d211719ee3c89532b53"
+        },
+        "include/hw/core/cpu.h": {
+          "before_sha256": "90d57f645d810418fa93ea44921d472b7cb44efa6190ef7a3c6249f081bcf598",
+          "after_sha256": "dd7e963634ec1e8abd44b4851ee42dc8fcf31de7f176b21d020a4134c491a918"
+        },
+        "cpu-common.c": {
+          "before_sha256": "4c5677ed737f98cb2e1d2a4afd4ea0d5620a282d9b909d6cb1086b3d1641d595",
+          "after_sha256": "0fd75b6a96f070c807aa60072d2556a5f37040fbe86e7cec1be8dd5aa7432b9e"
+        },
+        "system/physmem.c": {
+          "before_sha256": "3210a543353b435a146f7ae4a33608ea849aad038cd9e889ddb3a30c104c063f",
+          "after_sha256": "e556c3a74a98febb175202b00dcbc9df2b68ff12f99f1e45f512fa1c780189fc"
+        }
+      }
+    },
+    "qemu-persistent-ir-cache.patch": {
+      "sha256": "727a2f71c23839070dedc0e005810e9123b565cc20062d66d6fbf62233c1cd96",
+      "abi_version": 1,
+      "files": {
+        "tcg/tcg.c": {
+          "before_sha256": "1dbcc86c7937f6b9251556cda93c53d112741d43da1e3c6f25ba8ba8f2540050",
+          "after_sha256": "9ac15842de789f63cd83c1fa07269dd8781eeed73928f6aeb01703e1bb8d73e3"
+        },
+        "include/accel/tcg/cpu-ops.h": {
+          "before_sha256": "5ca7372f694737d65f4578ee61efcd8b038054abf2e30755e000f96e9b2f874e",
+          "after_sha256": "6805a6895ed3e77bf56b23d1350170dbbff715287c1f33cc3fe154722e58b126"
+        },
+        "accel/tcg/translate-all.c": {
+          "before_sha256": "132ddc434a4c1a0ccb1ed6ba061c737ec1d21774407347729a4ddc73cd17d3ce",
+          "after_sha256": "b83c57ca4c0703312d8084b51c09a23da333e3774c40ad4cd9e67bfef48c9d37"
+        },
+        "include/tcg/lumen-ir-cache.h": {
+          "before_sha256": null,
+          "after_sha256": "e6d72529f63401e9ec5147e6a6bca1de5b9be7822b26a3de6904a971f80865b3"
+        },
+        "tcg/lumen-ir-cache.c.inc": {
+          "before_sha256": null,
+          "after_sha256": "cf12876fd908d2c0b4b4d8f097d053ef979ec64fe9e92450ce3f50e5e5246e2d"
+        }
+      }
+    }
+  }
+}

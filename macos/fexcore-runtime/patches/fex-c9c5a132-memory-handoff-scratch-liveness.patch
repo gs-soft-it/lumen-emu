@@ -1,0 +1,193 @@
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -192,6 +192,10 @@
+ void Arm64JITCore::EmitLumenGuestMemoryCheck(IR::OpSize Size, ARMEmitter::Register Base,
+                                           IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
+                                           uint8_t OffsetScale, bool Write) {
++  // The four ordinary LoadMem/StoreMem entry points call this before using
++  // emitter scratch. Their base, offset and value are allocated guest registers;
++  // TMP1-4 and VTMP1-2 are outside both static and dynamic allocation banks.
++  // Do not enable this for byte/lane/REP/RMW helpers: their scratch may be live.
+   EmitLumenGuestMemoryCheckImpl(IR::OpSizeToSize(Size), [=, this] {
+     uint64_t Constant;
+     if (!Offset.IsInvalid() && IsInlineConstant(Offset, &Constant)) {
+@@ -204,7 +208,7 @@
+       const auto Address = ApplyMemOperand(Size, Base, TMP2, Offset, OffsetType, OffsetScale);
+       if (Address != TMP2) mov(ARMEmitter::Size::i64Bit, TMP2, Address);
+     }
+-  }, Write, false);
++  }, Write, false, true);
+ }
+ 
+ void Arm64JITCore::EmitLumenGuestMemoryCheckBytes(uint64_t Bytes, ARMEmitter::Register Base,
+@@ -219,7 +223,8 @@
+              Base.Idx() == TMP3.Idx() || Base.Idx() == TMP4.Idx());
+ }
+ 
+-void Arm64JITCore::EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write, bool PreserveScratch) {
++void Arm64JITCore::EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write,
++                                               bool PreserveScratch, bool ScratchDeadAtEntry) {
+ #ifdef __APPLE__
+   const auto Check = FEXLumenGuestMemoryCheckProviderV1();
+   const auto PreservedCheck = FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI ? FEXLumenGuestMemoryPreserveAllProviderV1() : nullptr;
+@@ -229,7 +234,10 @@
+   LOGMAN_THROW_A_FMT(Bytes != 0 && Bytes <= 4096, "Memory checks require a fixed footprint of at most one page");
+   constexpr auto FPSR = static_cast<ARMEmitter::SystemRegister>(
+     ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
+-  constexpr uint32_t FrameSize = 160;
++  // Keep the original frame and scratch restoration for nested IR helpers.
++  // Ordinary memory operations only need status, address, flags and original LR.
++  const uint32_t FrameSize = ScratchDeadAtEntry ? 48 : 160;
++  LOGMAN_THROW_A_FMT(!ScratchDeadAtEntry || !PreserveScratch, "Dead scratch cannot require inline preservation");
+   const auto Guards = FEXLumenGuestMemoryHandoffGuardProviderV1();
+   const auto ReadDirectory = !Write && Guards ? FEXLumenGuestMemoryReadGuardProviderV1() : nullptr;
+   // Persist symbolic relocations, never process-local ASLR addresses, in the
+@@ -276,7 +284,7 @@
+   // REP/lane helpers may carry their address, count or data in scratch
+   // registers. Preserve those scratch values even on their inline path.
+   sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
+-  stp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
++  if (!ScratchDeadAtEntry) stp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
+   EmitAddress();
+   str(TMP2, ARMEmitter::Reg::rsp, 32);
+   if (Guards && PreserveScratch) {
+@@ -296,22 +304,32 @@
+     b_OrRestart(&Done);
+     BindOrRestart(&Slow);
+   }
+-  stp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  if (!ScratchDeadAtEntry) stp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
+   str(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
+-  if (HostSupportsSVE256) {
+-    mov(TMP1, 96);
+-    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
+-    mov(TMP1, 128);
+-    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
+-  } else {
+-    stp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
+-  }
+-  mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
+-  str(TMP1, ARMEmitter::Reg::rsp, 0);
+-  mrs(TMP1, ARMEmitter::SystemRegister::FPCR);
+-  str(TMP1, ARMEmitter::Reg::rsp, 8);
+-  mrs(TMP1, FPSR);
+-  str(TMP1, ARMEmitter::Reg::rsp, 16);
++  if (!ScratchDeadAtEntry) {
++    if (HostSupportsSVE256) {
++      mov(TMP1, 96);
++      st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++      mov(TMP1, 128);
++      st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++    } else {
++      stp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++    }
++  }
++  if (ScratchDeadAtEntry) {
++    mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++    mrs(TMP3, ARMEmitter::SystemRegister::FPCR);
++    mrs(TMP4, FPSR);
++    stp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP3, ARMEmitter::Reg::rsp, 0);
++    str(TMP4, ARMEmitter::Reg::rsp, 16);
++  } else {
++    mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++    str(TMP1, ARMEmitter::Reg::rsp, 0);
++    mrs(TMP1, ARMEmitter::SystemRegister::FPCR);
++    str(TMP1, ARMEmitter::Reg::rsp, 8);
++    mrs(TMP1, FPSR);
++    str(TMP1, ARMEmitter::Reg::rsp, 16);
++  }
+   const auto SpillSize = SpillForABICall(PreserveAll, TMP1);
+   ldr(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 32);
+   LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, Bytes);
+@@ -325,34 +343,51 @@
+   // FillStaticRegs, so reestablish the 32-byte predicate before any SVE load.
+   if (HostSupportsSVE256) ptrue(ARMEmitter::SubRegSize::i8Bit, PRED_TMP_32B, ARMEmitter::PredicatePattern::SVE_VL32);
+   FillForABICall(PreserveAll);
+-  if (HostSupportsSVE256) {
+-    mov(TMP1, 96);
+-    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
+-    mov(TMP1, 128);
+-    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
+-  } else {
+-    ldp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
+-  }
+-  ldr(TMP1, ARMEmitter::Reg::rsp, 0);
+-  msr(ARMEmitter::SystemRegister::NZCV, TMP1);
+-  ldr(TMP1, ARMEmitter::Reg::rsp, 8);
+-  msr(ARMEmitter::SystemRegister::FPCR, TMP1);
+-  ldr(TMP1, ARMEmitter::Reg::rsp, 16);
+-  msr(FPSR, TMP1);
+-  ldr(TMP2.W(), ARMEmitter::Reg::rsp, 24);
+-  ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
+-  ldr(TMP1, ARMEmitter::Reg::rsp, 48);
+-  ldp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
+-  ARMEmitter::ForwardLabel Allowed;
+-  cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP2, &Allowed);
+-  ldr(TMP2, ARMEmitter::Reg::rsp, 56);
+-  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
+-  // All registers and status are restored before trapping. No guest memory
+-  // operation in the checked IR instruction has executed.
+-  brk(0x4c4d);
+-  BindOrRestart(&Allowed);
+-  ldr(TMP2, ARMEmitter::Reg::rsp, 56);
+-  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  if (!ScratchDeadAtEntry) {
++    if (HostSupportsSVE256) {
++      mov(TMP1, 96);
++      ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++      mov(TMP1, 128);
++      ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++    } else {
++      ldp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++    }
++  }
++  if (ScratchDeadAtEntry) {
++    ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP3, ARMEmitter::Reg::rsp, 0);
++    ldr(TMP4, ARMEmitter::Reg::rsp, 16);
++    msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++    msr(ARMEmitter::SystemRegister::FPCR, TMP3);
++    msr(FPSR, TMP4);
++    ldr(TMP2.W(), ARMEmitter::Reg::rsp, 24);
++    ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++    add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++    cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP2, &Done);
++    // The exact-RIP trap remains in the checked instruction's inline body.
++    // Guest registers, LR, status and SP are restored; only dead scratch differs.
++    brk(0x4c4d);
++  } else {
++    ldr(TMP1, ARMEmitter::Reg::rsp, 0);
++    msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++    ldr(TMP1, ARMEmitter::Reg::rsp, 8);
++    msr(ARMEmitter::SystemRegister::FPCR, TMP1);
++    ldr(TMP1, ARMEmitter::Reg::rsp, 16);
++    msr(FPSR, TMP1);
++    ldr(TMP2.W(), ARMEmitter::Reg::rsp, 24);
++    ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++    ldr(TMP1, ARMEmitter::Reg::rsp, 48);
++    ldp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++    ARMEmitter::ForwardLabel Allowed;
++    cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP2, &Allowed);
++    ldr(TMP2, ARMEmitter::Reg::rsp, 56);
++    add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++    // All registers and status are restored before trapping. No guest memory
++    // operation in the checked IR instruction has executed.
++    brk(0x4c4d);
++    BindOrRestart(&Allowed);
++    ldr(TMP2, ARMEmitter::Reg::rsp, 56);
++    add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  }
+   b_OrRestart(&Done);
+   Align(8);
+   if (Guards) PlaceNamedSymbolLiteral(GuardAddress);
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -549,7 +549,8 @@
+   void EmitLumenUnwatchedBulkCheck(uint32_t ElementSize, bool Copy, ARMEmitter::ForwardLabel* Checked);
+   void EmitLumenGuestMemoryCheckBytes(uint64_t Bytes, ARMEmitter::Register Base,
+                                      int64_t Displacement, bool Write);
+-  void EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write, bool PreserveScratch);
++  void EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write,
++                                   bool PreserveScratch, bool ScratchDeadAtEntry = false);
+   void EmitLumenGuestMemoryCheck(IR::OpSize Size, ARMEmitter::Register Base,
+                                 IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
+                                 uint8_t OffsetScale, bool Write);

@@ -1,0 +1,20 @@
+add_subdirectory(cpuinfo)
+if(ANDROID)
+	# cpuinfo keeps parsers for SoC families that its Android configuration
+	# intentionally excludes from dispatch; NDK Clang otherwise rejects those
+	# internal helpers under the project's global -Werror policy.
+	target_compile_options(cpuinfo PRIVATE -Wno-unused-function)
+endif()
+add_subdirectory(lua)
+add_subdirectory(sdl2)
+add_subdirectory(rijndael)
+add_subdirectory(lzma)
+add_subdirectory(vulkan)
+add_subdirectory(sqlite)
+add_subdirectory(zstd)
+add_subdirectory(miniz)
+add_subdirectory(easy_profiler)
+add_subdirectory(libatrac9)
+if (CLANG AND MSVC)
+add_subdirectory(winpthread)
+endif()

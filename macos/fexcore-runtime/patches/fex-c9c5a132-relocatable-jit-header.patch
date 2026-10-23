@@ -1,0 +1,26 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -794,8 +794,20 @@
+ 
+ void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF) {
+   // Get the address of the JITCodeHeader and store in to the core state.
+-  // Two instruction cost, each 1 cycle.
+-  adr_OrRestart(TMP1, &HeaderLabel);
++  // Near headers cost two instructions, each one cycle.
++  const uint64_t HeaderOffset = GetCursorAddress<uint8_t*>() - HeaderLabel.Location;
++  if (!RequiresFarARM64Jumps || HeaderOffset <= (1U << 20)) {
++    adr_OrRestart(TMP1, &HeaderLabel);
++  } else {
++    // The unit is copied from page-aligned temporary storage to a buffer with
++    // only 16-byte alignment. ADRP would retain the temporary page offset and
++    // publish the wrong header after that copy. Use the exact byte distance
++    // from this instruction instead; ADR and non-flag-setting SUB relocate
++    // together and preserve the guest's NZCV at every entry/return boundary.
++    adr(TMP1, uint32_t{0});
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP2, HeaderOffset);
++    sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP2);
++  }
+   str(TMP1, STATE, offsetof(FEXCore::Core::CPUState, InlineJITBlockHeader));
+ 
+   if (CheckTF) {

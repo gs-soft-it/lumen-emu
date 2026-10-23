@@ -1,0 +1,29 @@
+--- a/meson.build
++++ b/meson.build
+@@ -2298,7 +2298,7 @@
+ gvdb_dep = dependency('gvdb')
+ 
+ libm = cc.find_library('m', required : false)
+-libffi_dep = dependency('libffi', version : '>= 3.0.0', default_options: {'werror': false})
++# Lumen CPU-only dependency profile: GObject is outside this build graph.
+ 
+ libz_dep = dependency('zlib')
+ 
+@@ -2731,12 +2731,12 @@
+ subdir('build-aux')
+ subdir('tools')
+ subdir('glib')
+-subdir('gobject')
+-subdir('gthread')
++# Lumen CPU-only dependency profile excludes gobject.
++# Lumen CPU-only dependency profile excludes gthread.
+ subdir('gmodule')
+-subdir('gio')
+-subdir('girepository')
+-subdir('fuzzing')
++# Lumen CPU-only dependency profile excludes gio.
++# Lumen CPU-only dependency profile excludes girepository.
++# Lumen CPU-only dependency profile excludes fuzzing.
+ if get_option('tests')
+   subdir('tests')
+ endif

@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+#if FLOAT_INPUT
+layout(set=0, binding=0) uniform texture2DMSArray source_image;
+#else
+layout(set=0, binding=0) uniform utexture2DMSArray source_image;
+#endif
+layout(set=0, binding=1, std430) buffer Output { uint words[]; } output_data;
+layout(push_constant) uniform Params {
+    uint offset_bytes, pitch, height, width, rows, layers, samples, image_x, image_y;
+} params;
+void store_subword(uint address, uint value, uint bits) {
+    uint shift = (address & 3u) * 8u;
+    uint mask = ((1u << bits) - 1u) << shift;
+    atomicAnd(output_data.words[address >> 2u], ~mask);
+    atomicOr(output_data.words[address >> 2u], (value << shift) & mask);
+}
+void main() {
+    uvec3 pos = gl_GlobalInvocationID;
+    if(pos.x >= params.width || pos.y >= params.rows || pos.z >= params.layers) return;
+    for(uint sample_index = 0; sample_index < params.samples; ++sample_index) {
+        ivec3 coord = ivec3(pos + uvec3(params.image_x, params.image_y, 0));
+#if FLOAT_INPUT
+        vec4 input_value = texelFetch(source_image, coord, int(sample_index));
+#if DEPTH_BITS == 32
+        uvec4 value = floatBitsToUint(input_value);
+#elif DEPTH_BITS == 16
+        uvec4 value = uvec4(round(clamp(input_value, 0.0, 1.0) * 65535.0));
+#elif DEPTH_BITS == 24
+        uvec4 value = uvec4(round(clamp(input_value, 0.0, 1.0) * 16777215.0));
+#else
+        uvec4 value = uvec4(round(clamp(input_value.bgra, 0.0, 1.0) * 255.0));
+#endif
+#else
+        uvec4 value = texelFetch(source_image, coord, int(sample_index));
+#endif
+        uint address = params.offset_bytes + (((pos.z * params.height + pos.y) * params.pitch + pos.x) * params.samples + sample_index) * TEXEL_BYTES;
+#if PACKED_10
+        output_data.words[address >> 2u] = value.x | (value.y << 10u) | (value.z << 20u) | (value.w << 30u);
+#else
+        for(uint channel=0; channel<CHANNELS; ++channel) {
+#if CHANNEL_BITS == 32
+            output_data.words[(address >> 2u) + channel] = value[channel];
+#else
+            store_subword(address + channel * (CHANNEL_BITS / 8u), value[channel], CHANNEL_BITS);
+#endif
+        }
+#endif
+    }
+}

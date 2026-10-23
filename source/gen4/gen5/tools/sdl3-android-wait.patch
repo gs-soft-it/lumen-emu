@@ -1,0 +1,21 @@
+--- a/src/events/SDL_events.c
++++ b/src/events/SDL_events.c
+@@ -1677,6 +1677,7 @@
+     return SDL_WaitEventTimeoutNS(event, timeoutNS);
+ }
+
++/* Lumen altered Android wait, 2026-10-02: avoid poll-sentinel self-wake. */
+ bool SDL_WaitEventTimeoutNS(SDL_Event *event, Sint64 timeoutNS)
+ {
+     Uint64 start, expiration;
+@@ -1737,7 +1738,9 @@
+
+ #ifdef SDL_PLATFORM_ANDROID
+     for (;;) {
+-        SDL_PumpEventsInternal(true);
++        // The initial pump above preserves the poll sentinel. Subsequent wait
++        // pumps must not queue a sentinel that wakes this same Android thread.
++        SDL_PumpEventsInternal(false);
+
+         if (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) {
+             return true;

@@ -1,0 +1,134 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+index 9d91f6503..1859ffc06 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -533,6 +533,9 @@ private:
+   FEXCore::Core::DebugData* DebugData {};
+ 
+   void ResetStack();
++  void EmitLumenGuestMemoryCheck(IR::OpSize Size, ARMEmitter::Register Base,
++                                IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
++                                uint8_t OffsetScale, bool Write);
+   /**
+    * @name Relocations
+    * @{ */
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+index 805a7312a..60de9631d 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -11,12 +11,79 @@ $end_info$
+ #include "Interface/Core/ArchHelpers/Arm64Emitter.h"
+ #include "Interface/Core/CPUID.h"
+ #include "Interface/Core/JIT/JITClass.h"
++#include "Interface/Core/JIT/DebugData.h"
+ #include "Interface/IR/RegisterAllocationData.h"
+ #include <FEXCore/Utils/CompilerDefs.h>
+ #include <FEXCore/Utils/MathUtils.h>
+ 
+ namespace FEXCore::CPU {
+ 
++#ifdef __APPLE__
++// Diagnostic-only link hook. The default provider returns no callback, keeping
++// direct code generation and the uniform-host-page VM contract in the product.
++using LumenMemoryCheck = uint32_t (*)(uint64_t Address, uint64_t Bytes,
++                                     uint32_t Write, uint64_t GuestRIP) noexcept;
++extern "C" __attribute__((weak, noinline)) LumenMemoryCheck FEXLumenGuestMemoryCheckProviderV1() noexcept {
++  return nullptr;
++}
++#endif
++
++void Arm64JITCore::EmitLumenGuestMemoryCheck(IR::OpSize Size, ARMEmitter::Register Base,
++                                          IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
++                                          uint8_t OffsetScale, bool Write) {
++#ifdef __APPLE__
++  const auto Check = FEXLumenGuestMemoryCheckProviderV1();
++  if (Check == nullptr) return;
++  constexpr auto FPSR = static_cast<ARMEmitter::SystemRegister>(
++    ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
++  // This first experimental hook covers ordinary scalar data accesses. Other
++  // memory families must be checked before mixed mappings can enter product.
++  uint64_t Constant;
++  if (!Offset.IsInvalid() && IsInlineConstant(Offset, &Constant)) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP2, Constant);
++    add(ARMEmitter::Size::i64Bit, TMP2, Base, TMP2);
++  } else {
++    const auto Address = ApplyMemOperand(Size, Base, TMP2, Offset, OffsetType, OffsetScale);
++    if (Address != TMP2) mov(ARMEmitter::Size::i64Bit, TMP2, Address);
++  }
++  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 64);
++  str(TMP2, ARMEmitter::Reg::rsp, 32);
++  str(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++  str(TMP1, ARMEmitter::Reg::rsp, 0);
++  mrs(TMP1, ARMEmitter::SystemRegister::FPCR);
++  str(TMP1, ARMEmitter::Reg::rsp, 8);
++  mrs(TMP1, FPSR);
++  str(TMP1, ARMEmitter::Reg::rsp, 16);
++  const auto SpillSize = SpillForABICall(false, TMP1);
++  ldr(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 32);
++  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, IR::OpSizeToSize(Size));
++  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r2, Write ? 1 : 0);
++  LOGMAN_THROW_A_FMT(!DebugData->GuestOpcodes.empty(), "Memory check requires a precise guest opcode");
++  InsertGuestRIPMove(ARMEmitter::Reg::r3, Entry + DebugData->GuestOpcodes.back().GuestEntryOffset);
++  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r16,
++               reinterpret_cast<uintptr_t>(Check));
++  blr(ARMEmitter::Reg::r16);
++  str(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 24);
++  FillForABICall(false);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 0);
++  msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 8);
++  msr(ARMEmitter::SystemRegister::FPCR, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 16);
++  msr(FPSR, TMP1);
++  ldr(TMP2, ARMEmitter::Reg::rsp, 24);
++  ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 64);
++  ARMEmitter::ForwardLabel Allowed;
++  cbnz_OrRestart(ARMEmitter::Size::i64Bit, TMP2, &Allowed);
++  // Restored registers and status precede the trap, and the original access
++  // has not executed. The embedding experiment records the denied descriptor.
++  brk(0x4c4d);
++  BindOrRestart(&Allowed);
++#endif
++}
++
+ DEF_OP(LoadContext) {
+   const auto Op = IROp->C<IR::IROp_LoadContext>();
+   const auto OpSize = IROp->Size;
+@@ -706,6 +773,8 @@ DEF_OP(LoadMem) {
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  if (Op->Class == IR::RegClass::GPR)
++    EmitLumenGuestMemoryCheck(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale, false);
+   const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+@@ -769,6 +838,8 @@ DEF_OP(LoadMemTSO) {
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  if (Op->Class == IR::RegClass::GPR)
++    EmitLumenGuestMemoryCheck(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale, false);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+     LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
+@@ -1641,6 +1712,8 @@ DEF_OP(StoreMem) {
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  if (Op->Class == IR::RegClass::GPR)
++    EmitLumenGuestMemoryCheck(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale, true);
+   const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+@@ -1780,6 +1853,8 @@ DEF_OP(StoreMemTSO) {
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  if (Op->Class == IR::RegClass::GPR)
++    EmitLumenGuestMemoryCheck(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale, true);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+     LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");

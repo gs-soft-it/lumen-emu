@@ -1,0 +1,396 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -771,7 +771,77 @@
+   (void)Bind(&l_TFUnset);
+ }
+ 
+-void Arm64JITCore::EmitSuspendInterruptCheck() {
++// The embedding returns immutable provider bindings before its first JIT.
++// A null binding emits no checks (the exclusive-publication engine contract).
++extern "C" __attribute__((weak, noinline)) const uint32_t* FEXLumenGuestProgressFlagProviderV1() noexcept { return nullptr; }
++extern "C" __attribute__((weak, noinline)) void (*FEXLumenGuestProgressCallbackProviderV1() noexcept)() noexcept { return nullptr; }
++
++void Arm64JITCore::EmitLumenGuestProgressCheck() {
++  if (!FEXLumenGuestProgressFlagProviderV1() || !FEXLumenGuestProgressCallbackProviderV1()) return;
++#ifdef __APPLE__
++  EnsureLumenJITSpace(4096);
++#endif
++  auto Flag = InsertNamedSymbolLiteral(RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_GUEST_PROGRESS_FLAG);
++  auto Callback = InsertNamedSymbolLiteral(RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_GUEST_PROGRESS_CALLBACK);
++  ARMEmitter::ForwardLabel Done;
++  // TMP1 is reserved scratch at these exit/backedge boundaries. The load and
++  // branch leave NZCV intact. No call or stack traffic when nobody owes work.
++  ldr(TMP1, &Flag.Loc);
++  ldar(TMP1.W(), TMP1);
++  (void)cbz(ARMEmitter::Size::i32Bit, TMP1, &Done);
++  constexpr auto FPSR = static_cast<ARMEmitter::SystemRegister>(
++    ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
++  constexpr uint32_t FrameSize = 160;
++  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  stp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
++  stp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  str(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  if (HostSupportsSVE256) {
++    mov(TMP1, 96);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++    mov(TMP1, 128);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++  } else {
++    stp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++  }
++  mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++  str(TMP1, ARMEmitter::Reg::rsp, 0);
++  mrs(TMP1, ARMEmitter::SystemRegister::FPCR);
++  str(TMP1, ARMEmitter::Reg::rsp, 8);
++  mrs(TMP1, FPSR);
++  str(TMP1, ARMEmitter::Reg::rsp, 16);
++  SpillForABICall(false, TMP1);
++  ldr(ARMEmitter::XReg::x16, &Callback.Loc);
++  blr(ARMEmitter::Reg::r16);
++  if (HostSupportsSVE256) ptrue(ARMEmitter::SubRegSize::i8Bit, PRED_TMP_32B, ARMEmitter::PredicatePattern::SVE_VL32);
++  FillForABICall(false);
++  if (HostSupportsSVE256) {
++    mov(TMP1, 96);
++    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++    mov(TMP1, 128);
++    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++  } else {
++    ldp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++  }
++  ldr(TMP1, ARMEmitter::Reg::rsp, 0);
++  msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 8);
++  msr(ARMEmitter::SystemRegister::FPCR, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 16);
++  msr(FPSR, TMP1);
++  ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
++  ldp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  (void)b(&Done);
++  Align(8);
++  PlaceNamedSymbolLiteral(Flag);
++  PlaceNamedSymbolLiteral(Callback);
++  (void)Bind(&Done);
++}
++
++void Arm64JITCore::EmitSuspendInterruptCheck(bool CompletedGuestWork) {
++  if (CompletedGuestWork) EmitLumenGuestProgressCheck();
+   if (CTX->Config.NeedsPendingInterruptFaultCheck) {
+     // Trigger a fault if there are any pending interrupts
+     // Used only for suspend on WIN32 at the moment
+@@ -1021,7 +1091,7 @@
+       // if there's a pending branch, and it is not fall-through
+       if (PendingTargetLabel && PendingTargetLabel != Target) {
+         if (PendingTargetLabel->Backward.Location) {
+-          EmitSuspendInterruptCheck();
++          EmitSuspendInterruptCheck(true);
+         }
+         b_OrRestart(PendingTargetLabel);
+         PendingTargetLabel = nullptr;
+@@ -1077,7 +1147,7 @@
+   // Make sure last branch is generated. It certainly can't be eliminated here.
+   if (PendingTargetLabel) {
+     if (PendingTargetLabel->Backward.Location) {
+-      EmitSuspendInterruptCheck();
++      EmitSuspendInterruptCheck(true);
+     }
+     b_OrRestart(PendingTargetLabel);
+   }
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -639,7 +639,8 @@
+ 
+   void EmitTFCheck();
+ 
+-  void EmitSuspendInterruptCheck();
++  void EmitLumenGuestProgressCheck();
++  void EmitSuspendInterruptCheck(bool CompletedGuestWork = false);
+ 
+   void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF);
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -20,6 +20,7 @@
+ namespace FEXCore::CPU {
+ 
+ DEF_OP(CallbackReturn) {
++  EmitLumenGuestProgressCheck();
+   // spill back to CTX
+   SpillStaticRegs(TMP1);
+ 
+@@ -45,6 +46,7 @@
+ 
+ DEF_OP(ExitFunction) {
+   auto Op = IROp->C<IR::IROp_ExitFunction>();
++  if (Op->GuestInstructionRetired) EmitLumenGuestProgressCheck();
+ 
+   ResetStack();
+ 
+@@ -284,7 +286,7 @@
+     // immediately followed by an unconditional backward branch so a frontend
+     // can resume at the target without replaying the completed guest work.
+     // The inverted forward branch skips both instructions on the false edge.
+-    EmitSuspendInterruptCheck();
++    EmitSuspendInterruptCheck(true);
+     b_OrRestart(TrueTargetLabel);
+     BindOrRestart(&SkipBackedge);
+   }
+diff --git a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+@@ -12,12 +12,18 @@
+ #include <FEXCore/Utils/LumenMemoryHandoffAbi.h>
+ 
+ namespace FEXCore::CPU {
++extern "C" const uint32_t* FEXLumenGuestProgressFlagProviderV1() noexcept;
++extern "C" void (*FEXLumenGuestProgressCallbackProviderV1() noexcept)() noexcept;
+ #if defined(__ANDROID__)
+ extern "C" const uint8_t* FEXLumenGuestMemoryHandoffGuardProviderV1() noexcept;
+ extern "C" uint32_t (*FEXLumenGuestMemoryBulkProviderV1() noexcept)(uint64_t, uint64_t, uint64_t, uint64_t) noexcept;
+ #endif
+ uint64_t GetNamedSymbolLiteral(FEXCore::Context::ContextImpl& CTX, FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol Op) {
+   switch (Op) {
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_GUEST_PROGRESS_FLAG:
++    return reinterpret_cast<uint64_t>(FEXLumenGuestProgressFlagProviderV1());
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_GUEST_PROGRESS_CALLBACK:
++    return reinterpret_cast<uint64_t>(FEXLumenGuestProgressCallbackProviderV1());
+   case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_EXITFUNCTION_LINKER:
+     return CTX.Dispatcher->GetExitFunctionLinkerAddress();
+ #if defined(__ANDROID__)
+diff --git a/FEXCore/Source/Interface/Core/JIT/Relocations.h b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+--- a/FEXCore/Source/Interface/Core/JIT/Relocations.h
++++ b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+@@ -44,6 +44,8 @@
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK,
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL,
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY,
++    SYMBOL_LITERAL_LUMEN_GUEST_PROGRESS_FLAG,
++    SYMBOL_LITERAL_LUMEN_GUEST_PROGRESS_CALLBACK,
+   };
+ 
+   RelocationHeader Header {};
+diff --git a/FEXCore/Source/Interface/Core/CodeCache.cpp b/FEXCore/Source/Interface/Core/CodeCache.cpp
+--- a/FEXCore/Source/Interface/Core/CodeCache.cpp
++++ b/FEXCore/Source/Interface/Core/CodeCache.cpp
+@@ -522,7 +522,9 @@
+   // literal is written; storage emits zero for process-local rebinding.
+   if (!ForStorage && Pointer == 0 &&
+       (Symbol == CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL ||
+-       Symbol == CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY)) return false;
++       Symbol == CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY ||
++       Symbol == CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_GUEST_PROGRESS_FLAG ||
++       Symbol == CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_GUEST_PROGRESS_CALLBACK)) return false;
+   Emitter.dc64(Pointer);
+   return true;
+ }
+diff --git a/FEXCore/Source/Interface/IR/IR.json b/FEXCore/Source/Interface/IR/IR.json
+--- a/FEXCore/Source/Interface/IR/IR.json
++++ b/FEXCore/Source/Interface/IR/IR.json
+@@ -312,7 +312,7 @@
+         "HasSideEffects": true,
+         "RAOverride": "2"
+       },
+-      "ExitFunction OpSize:#Size, GPR:$NewRIP, BranchHint:$Hint, GPR:$CallReturnAddress, SSA:$CallReturnBlock": {
++      "ExitFunction OpSize:#Size, GPR:$NewRIP, BranchHint:$Hint, GPR:$CallReturnAddress, SSA:$CallReturnBlock, i1:$GuestInstructionRetired": {
+         "Desc": ["Exits the current JIT function with a target RIP"
+                 ],
+         "Inline": ["Any"],
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -202,13 +202,13 @@
+     auto Cond = Set ? CondClass::TSTNZ : CondClass::TSTZ;
+     return _CondJump(Src, InlineConst, InvalidNode, InvalidNode, Cond, OpSize::iInvalid, false);
+   }
+-  IRPair<IROp_ExitFunction> ExitFunction(Ref NewRIP, BranchHint Hint = BranchHint::None) {
++  IRPair<IROp_ExitFunction> ExitFunction(Ref NewRIP, bool GuestInstructionRetired, BranchHint Hint = BranchHint::None) {
+     FlushRegisterCache();
+-    return _ExitFunction(GetOpSize(NewRIP), NewRIP, Hint, InvalidNode, InvalidNode);
+-  }
+-  IRPair<IROp_ExitFunction> ExitFunction(Ref NewRIP, BranchHint Hint, Ref CallReturnAddress, Ref CallReturnBlock) {
++    return _ExitFunction(GetOpSize(NewRIP), NewRIP, Hint, InvalidNode, InvalidNode, GuestInstructionRetired);
++  }
++  IRPair<IROp_ExitFunction> ExitFunction(Ref NewRIP, bool GuestInstructionRetired, BranchHint Hint, Ref CallReturnAddress, Ref CallReturnBlock) {
+     FlushRegisterCache();
+-    return _ExitFunction(GetOpSize(NewRIP), NewRIP, Hint, CallReturnAddress, CallReturnBlock);
++    return _ExitFunction(GetOpSize(NewRIP), NewRIP, Hint, CallReturnAddress, CallReturnBlock, GuestInstructionRetired);
+   }
+   IRPair<IROp_Break> Break(BreakDefinition Reason) {
+     FlushRegisterCache();
+@@ -237,7 +237,7 @@
+         const auto GPRSize = GetGPROpSize();
+         // If we don't have a jump target to a new block then we have to leave
+         // Set the RIP to the next instruction and leave
+-        ExitFunction(_InlineEntrypointOffset(GPRSize, NextRIP - Entry));
++        ExitFunction(_InlineEntrypointOffset(GPRSize, NextRIP - Entry), true);
+       } else if (it != JumpTargets.end()) {
+         Jump(it->second.BlockEntry);
+         return true;
+@@ -1522,11 +1522,11 @@
+   }
+ 
+   void ExitRelocatedPC(const FEXCore::X86Tables::DecodedOp& Op, int64_t Offset = 0) {
+-    ExitFunction(_GetRelocatedPC(Op, Offset, true /* Inline */));
++    ExitFunction(_GetRelocatedPC(Op, Offset, true /* Inline */), true);
+   }
+ 
+   void ExitRelocatedPC(const FEXCore::X86Tables::DecodedOp& Op, int64_t Offset, BranchHint Hint, Ref CallReturnAddress, Ref CallReturnBlock) {
+-    ExitFunction(_GetRelocatedPC(Op, Offset, true /* Inline */), Hint, CallReturnAddress, CallReturnBlock);
++    ExitFunction(_GetRelocatedPC(Op, Offset, true /* Inline */), true, Hint, CallReturnAddress, CallReturnBlock);
+   }
+ 
+   [[nodiscard]]
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -104,7 +104,7 @@
+   if (Op->TableInfo->Flags & X86Tables::InstFlags::FLAGS_BLOCK_END) {
+     // RIP could have been updated after coming back from the Syscall.
+     NewRIP = _LoadContextGPR(GPRSize, offsetof(FEXCore::Core::CPUState, rip));
+-    ExitFunction(NewRIP);
++    ExitFunction(NewRIP, true);
+   }
+ }
+ 
+@@ -123,7 +123,7 @@
+   auto NewRIP = Pop(GPRSize);
+ 
+   // Store the new RIP
+-  ExitFunction(NewRIP, BranchHint::Return);
++  ExitFunction(NewRIP, true, BranchHint::Return);
+   BlockSetRIP = true;
+ }
+ 
+@@ -162,7 +162,7 @@
+   StoreGPRRegister(X86State::REG_RSP, SP);
+ 
+   // Store the new RIP
+-  ExitFunction(NewRIP, BranchHint::Return);
++  ExitFunction(NewRIP, true, BranchHint::Return);
+   BlockSetRIP = true;
+ }
+ 
+@@ -211,7 +211,7 @@
+     StoreGPRRegister(X86State::REG_RSP, SP);
+   }
+ 
+-  ExitFunction(NewRIP);
++  ExitFunction(NewRIP, true);
+   BlockSetRIP = true;
+ }
+ 
+@@ -221,7 +221,7 @@
+   _CallbackReturn();
+   auto NewRIP = _LoadContextGPR(GPRSize, offsetof(FEXCore::Core::CPUState, rip));
+   // This ExitFunction won't actually get hit but needs to exist
+-  ExitFunction(NewRIP);
++  ExitFunction(NewRIP, true);
+   BlockSetRIP = true;
+ }
+ 
+@@ -549,7 +549,7 @@
+ 
+   // Store the RIP
+   const uint64_t NextRIP = Op->PC + Op->InstSize;
+-  ExitFunction(JMPPCOffset, BranchHint::Call, ConstantPC, [&]() {
++  ExitFunction(JMPPCOffset, true, BranchHint::Call, ConstantPC, [&]() {
+     auto CallReturnJumpTarget = JumpTargets.find(NextRIP);
+     if (CallReturnJumpTarget != JumpTargets.end() && CallReturnJumpTarget->second.IsEntryPoint) {
+       return CallReturnJumpTarget->second.BlockEntry;
+@@ -924,7 +924,7 @@
+   auto RIPOffset = LoadSourceGPR(Op, Op->Src[0], Op->Flags);
+ 
+   // Store the new RIP
+-  ExitFunction(RIPOffset);
++  ExitFunction(RIPOffset, true);
+ }
+ 
+ void OpDispatchBuilder::JUMPFARIndirectOp(OpcodeArgs) {
+@@ -945,7 +945,7 @@
+   UpdatePrefixFromSegment(NewSegmentCS, FEXCore::X86Tables::DecodeFlags::FLAG_CS_PREFIX);
+ 
+   // Store the new RIP
+-  ExitFunction(RIPOffset);
++  ExitFunction(RIPOffset, true);
+ }
+ 
+ void OpDispatchBuilder::CALLFARIndirectOp(OpcodeArgs) {
+@@ -975,7 +975,7 @@
+   UpdatePrefixFromSegment(NewSegmentCS, FEXCore::X86Tables::DecodeFlags::FLAG_CS_PREFIX);
+ 
+   // Store the new RIP
+-  ExitFunction(RIPOffset);
++  ExitFunction(RIPOffset, true);
+ }
+ 
+ void OpDispatchBuilder::RETFARIndirectOp(OpcodeArgs) {
+@@ -998,7 +998,7 @@
+   UpdatePrefixFromSegment(NewSegmentCS, FEXCore::X86Tables::DecodeFlags::FLAG_CS_PREFIX);
+ 
+   // Store the new RIP
+-  ExitFunction(NewRIP);
++  ExitFunction(NewRIP, true);
+   BlockSetRIP = true;
+ }
+ 
+@@ -3682,7 +3682,7 @@
+   SetPackedRFLAG(false, Src);
+ 
+   auto NewRIP = GetRelocatedPC(Op);
+-  ExitFunction(NewRIP, BranchHint::CheckTF);
++  ExitFunction(NewRIP, true, BranchHint::CheckTF);
+   BlockSetRIP = true;
+ }
+ 
+@@ -4025,7 +4025,7 @@
+ 
+     // We haven't emitted. Dump out to the dispatcher
+     SetCurrentCodeBlock(Handler.second.BlockEntry);
+-    ExitFunction(_InlineEntrypointOffset(GPRSize, Handler.first - Entry));
++    ExitFunction(_InlineEntrypointOffset(GPRSize, Handler.first - Entry), false);
+   }
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -601,7 +601,7 @@
+       const uint64_t InstsInBlock = Block.NumInstructions;
+       if (InstsInBlock == 0) {
+         // Special case for an empty instruction block.
+-        Thread->OpDispatcher->ExitFunction(Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, Block.Entry - GuestRIP));
++        Thread->OpDispatcher->ExitFunction(Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, Block.Entry - GuestRIP), false);
+       }
+ 
+       uint64_t BlockInstructionsLength {};
+@@ -661,7 +661,7 @@
+           Thread->OpDispatcher->SetCurrentCodeBlock(CodeWasChangedBlock);
+           Thread->OpDispatcher->StartNewBlock();
+           Thread->OpDispatcher->_ThreadRemoveCodeEntry();
+-          Thread->OpDispatcher->ExitFunction(Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, InstAddress - GuestRIP));
++          Thread->OpDispatcher->ExitFunction(Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, InstAddress - GuestRIP), false);
+ 
+           auto NextOpBlock = Thread->OpDispatcher->CreateNewCodeBlockAfter(CurrentBlock);
+ 
+@@ -738,7 +738,7 @@
+         if (NeedsBlockEnd) {
+           // We had some instructions. Early exit
+           Thread->OpDispatcher->ExitFunction(
+-            Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, Block.Entry + BlockInstructionsLength - GuestRIP));
++            Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, Block.Entry + BlockInstructionsLength - GuestRIP), BlockInstructionsLength != 0);
+           break;
+         }
+ 
+@@ -1105,7 +1105,7 @@
+         emit->_StoreContextFPR(GPRSize, emit->_VCastFromGPR(IR::OpSize::i64Bit, IR::OpSize::i64Bit, emit->Constant(Entrypoint)),
+                                offsetof(Core::CPUState, mm[0][0]));
+       }
+-      emit->_ExitFunction(IR::OpSize::i64Bit, emit->Constant(GuestThunkEntrypoint), IR::BranchHint::None, emit->Invalid(), emit->Invalid());
++      emit->_ExitFunction(IR::OpSize::i64Bit, emit->Constant(GuestThunkEntrypoint), IR::BranchHint::None, emit->Invalid(), emit->Invalid(), false);
+     },
+     ThunkHandler, (void*)GuestThunkEntrypoint);
+ 

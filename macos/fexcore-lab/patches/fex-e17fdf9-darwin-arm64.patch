@@ -1,0 +1,976 @@
+diff --git a/CodeEmitter/CodeEmitter/Buffer.h b/CodeEmitter/CodeEmitter/Buffer.h
+index 602eeb674..bb2712b8b 100644
+--- a/CodeEmitter/CodeEmitter/Buffer.h
++++ b/CodeEmitter/CodeEmitter/Buffer.h
+@@ -4,6 +4,9 @@
+ #include <cstdint>
+ #include <cstring>
+ #include <type_traits>
++#ifdef __APPLE__
++#include <libkern/OSCacheControl.h>
++#endif
+ 
+ namespace ARMEmitter {
+ class Buffer {
+@@ -63,7 +66,11 @@ public:
+   }
+ 
+   static void ClearICache(void* Begin, std::size_t Length) {
++#ifdef __APPLE__
++    sys_icache_invalidate(Begin, Length);
++#else
+     __builtin___clear_cache(static_cast<char*>(Begin), static_cast<char*>(Begin) + Length);
++#endif
+   }
+ 
+   size_t GetCursorOffset() const {
+diff --git a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
+index 3ebadb5aa..f57237f2f 100644
+--- a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
++++ b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
+@@ -73,21 +73,38 @@ namespace x64 {
+     ARMEmitter::Reg::r8, ARMEmitter::Reg::r16, ARMEmitter::Reg::r17,
+   };
+ 
+-  constexpr std::array<ARMEmitter::Register, 7> RA = {
++  constexpr std::array<ARMEmitter::Register,
++#ifdef __APPLE__
++                       6
++#else
++                       7
++#endif
++                       > RA = {
+     // All these callee saved
+     ARMEmitter::Reg::r20, ARMEmitter::Reg::r21, ARMEmitter::Reg::r22, ARMEmitter::Reg::r23,
+-    ARMEmitter::Reg::r24, ARMEmitter::Reg::r30, ARMEmitter::Reg::r18,
++    ARMEmitter::Reg::r24, ARMEmitter::Reg::r30,
++#ifndef __APPLE__
++    ARMEmitter::Reg::r18,
++#endif
+   };
+ 
+   constexpr unsigned RAPairs = 4;
+ 
+   // Dynamic GPRs
+-  constexpr std::array<ARMEmitter::Register, 2> PreserveAll_Dynamic = {
++  constexpr std::array<ARMEmitter::Register,
++#ifdef __APPLE__
++                       1
++#else
++                       2
++#endif
++                       > PreserveAll_Dynamic = {
++#ifndef __APPLE__
+     ARMEmitter::Reg::r18,
++#endif
+     ARMEmitter::Reg::r30,
+   };
+ 
+-  constexpr std::array<ARMEmitter::Register, 2> NotPreserved_Dynamic = PreserveAll_Dynamic;
++  constexpr auto NotPreserved_Dynamic = PreserveAll_Dynamic;
+ 
+   // All are caller saved
+   constexpr std::array<ARMEmitter::VRegister, 16> SRAFPR = {
+diff --git a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
+index 5ad6e7b19..a2d0966b2 100644
+--- a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
++++ b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
+@@ -180,7 +180,11 @@ protected:
+   }
+ 
+   // Register 0-18 + 29 + 30 are caller saved
+-  static constexpr uint32_t CALLER_GPR_MASK = 0b0110'0000'0000'0111'1111'1111'1111'1111U;
++  static constexpr uint32_t CALLER_GPR_MASK = 0b0110'0000'0000'0111'1111'1111'1111'1111U
++#ifdef __APPLE__
++    & ~(1U << 18)
++#endif
++    ;
+ 
+   // This isn't technically true because the lower 64-bits of v8..v15 are callee saved
+   // We can't guarantee only the lower 64bits are used so flush everything
+diff --git a/FEXCore/Source/Interface/Core/CodeCache.cpp b/FEXCore/Source/Interface/Core/CodeCache.cpp
+index b3982e47d..083ca8a15 100644
+--- a/FEXCore/Source/Interface/Core/CodeCache.cpp
++++ b/FEXCore/Source/Interface/Core/CodeCache.cpp
+@@ -255,7 +255,9 @@ void CodeMapWriter::AppendData(std::span<const std::byte> Data) {
+     }
+     if (!IsResponsibleForFlush) {
+       // Wait for the buffer to be flushed on the responsible thread
+-      Utils::SpinWaitLock::WaitPred<std::less_equal<>, size_t>(reinterpret_cast<size_t*>(&BufferOffset), Buffer.size());
++      static_assert(sizeof(BufferOffset) == sizeof(uint64_t));
++      Utils::SpinWaitLock::WaitPred<std::less_equal<>, uint64_t>(reinterpret_cast<uint64_t*>(&BufferOffset),
++                                                                 static_cast<uint64_t>(Buffer.size()));
+     }
+     AppendData(Data);
+     return;
+@@ -608,6 +610,13 @@ bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> C
+ 
+ fextl::unique_ptr<MappedCodeCacheFile>
+ CodeCache::LoadCache(std::span<std::byte> CacheFile, const ExecutableFileInfo& FileInfo, uint64_t FileStartVA) {
++#ifdef __APPLE__
++  (void)CacheFile;
++  (void)FileInfo;
++  (void)FileStartVA;
++  LogMan::Msg::EFmt("Darwin disk code-cache loading is not implemented");
++  return nullptr;
++#else
+   if (!EnableCodeCaching) {
+     return nullptr;
+   }
+@@ -696,9 +705,17 @@ CodeCache::LoadCache(std::span<std::byte> CacheFile, const ExecutableFileInfo& F
+   return fextl::unique_ptr<MappedCodeCacheFile>(
+     new (Storage) MappedCodeCacheFile {this, CacheFile, CodeDataInFile, CodeBuffer, BlockListStart, header.NumBlocks, header.NumCodePages,
+                                        std::move(PageRelocationRanges), fextl::vector<bool>(NumPages), FileStartVA});
++#endif
+ }
+ 
+ bool CodeCache::EnableLoadedSection(Core::InternalThreadState* Thread, MappedCodeCacheFile& Code, const ExecutableFileSectionInfo& BinarySection) {
++#ifdef __APPLE__
++  (void)Thread;
++  (void)Code;
++  (void)BinarySection;
++  LogMan::Msg::EFmt("Darwin disk code-cache sections are not implemented");
++  return false;
++#else
+   if (!EnableCodeCaching) {
+     return true;
+   }
+@@ -814,6 +831,7 @@ bool CodeCache::EnableLoadedSection(Core::InternalThreadState* Thread, MappedCod
+   }
+ 
+   return true;
++#endif
+ }
+ 
+ } // namespace FEXCore::Context
+@@ -899,7 +917,7 @@ void CodeCache::FinalizeCodePages(MappedCodeCacheFile& Code, std::span<std::byte
+ 
+   FEXCORE_PROFILE_SCOPED("FinalizeCodePages");
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__APPLE__)
+   // Atomicity is critical when making the finalized code data visible.
+   // We ensure this by remapping a temporary buffer onto the PROT_NONE
+   // placeholder page in CodeBuffer. Some constraints to keep in mind are:
+@@ -942,6 +960,8 @@ void CodeCache::FinalizeCodePages(MappedCodeCacheFile& Code, std::span<std::byte
+ 
+   // Release resident file pages that will no longer be needed. The VA range is left allocated to allow cleanup with a single VirtualFree.
+   Allocator::VirtualDontNeed(Code.CodeBufferInFile.data() + StartOffset, Size);
++#elif defined(__APPLE__)
++  ERROR_AND_DIE_FMT("Darwin lazy code-cache finalization is not implemented");
+ #else
+   // TODO: Implement lazy mapping on Windows
+ #ifdef _M_ARM64EC
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index b174dab3c..7f1942ca1 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -13,6 +13,7 @@
+ #include <FEXCore/Core/X86Enums.h>
+ #include <FEXCore/Debug/InternalThreadState.h>
+ #include <FEXCore/HLE/SyscallHandler.h>
++#include <FEXCore/Utils/AllocatorHooks.h>
+ #include <FEXCore/Utils/Event.h>
+ #include <FEXCore/Utils/LogManager.h>
+ #include <FEXCore/Utils/MathUtils.h>
+@@ -36,8 +37,18 @@ static void SleepThread(FEXCore::Context::ContextImpl* CTX, FEXCore::Core::CpuSt
+ 
+ constexpr size_t MAX_DISPATCHER_CODE_SIZE = FEXCore::Utils::FEX_PAGE_SIZE * 4;
+ 
++static void* AllocateDispatcherCodeBuffer() {
++  void* Buffer = FEXCore::Allocator::VirtualAlloc(MAX_DISPATCHER_CODE_SIZE, true);
++#ifndef _WIN32
++  LOGMAN_THROW_A_FMT(Buffer != MAP_FAILED, "Couldn't allocate dispatcher code buffer");
++#else
++  LOGMAN_THROW_A_FMT(Buffer != nullptr, "Couldn't allocate dispatcher code buffer");
++#endif
++  return Buffer;
++}
++
+ Dispatcher::Dispatcher(FEXCore::Context::ContextImpl* ctx)
+-  : Arm64Emitter(ctx, FEXCore::Allocator::VirtualAlloc(MAX_DISPATCHER_CODE_SIZE, true), MAX_DISPATCHER_CODE_SIZE)
++  : Arm64Emitter(ctx, AllocateDispatcherCodeBuffer(), MAX_DISPATCHER_CODE_SIZE)
+   , CTX {ctx} {
+   EmitDispatcher();
+ 
+@@ -275,9 +286,18 @@ void Dispatcher::EmitDispatcher() {
+     sub(ARMEmitter::Size::i64Bit, TMP2, TMP2, 1);
+     str(TMP2, STATE, offsetof(FEXCore::Core::CPUState, DeferredSignalRefCount));
+ 
+-    // Trigger segfault if any deferred signals are pending
+-    strb(ARMEmitter::XReg::zr, STATE,
+-         offsetof(FEXCore::Core::InternalThreadState, InterruptFaultPage) - offsetof(FEXCore::Core::InternalThreadState, BaseFrameState));
++    // Trigger segfault if any deferred signals are pending.
++    constexpr size_t InterruptPageOffset =
++      offsetof(FEXCore::Core::InternalThreadState, InterruptFaultPage) - offsetof(FEXCore::Core::InternalThreadState, BaseFrameState);
++#ifdef __APPLE__
++    // A 16-KiB host-page boundary is beyond STRB's immediate range. The
++    // physical fault page is naturally aligned, so an eight-byte store keeps
++    // the access inside that page while using STR's scaled range.
++    static_assert((InterruptPageOffset % sizeof(uint64_t)) == 0 && InterruptPageOffset <= 32760);
++    str(ARMEmitter::XReg::zr, STATE, InterruptPageOffset);
++#else
++    strb(ARMEmitter::XReg::zr, STATE, InterruptPageOffset);
++#endif
+ #endif
+   };
+ 
+diff --git a/FEXCore/Source/Interface/Core/Interpreter/Fallbacks/F80Fallbacks.h b/FEXCore/Source/Interface/Core/Interpreter/Fallbacks/F80Fallbacks.h
+index 5c0e656c4..4b8f9b103 100644
+--- a/FEXCore/Source/Interface/Core/Interpreter/Fallbacks/F80Fallbacks.h
++++ b/FEXCore/Source/Interface/Core/Interpreter/Fallbacks/F80Fallbacks.h
+@@ -369,7 +369,7 @@ struct OpHandlers<IR::OP_F64SINCOS> {
+   FEXCORE_PRESERVE_ALL_ATTR static VectorScalarF64Pair handle(double src, FEXCore::Core::CpuStateFrame* Frame) {
+     FEXCORE_PROFILE_INSTANT_INCREMENT(Frame->Thread, AccumulatedFloatFallbackCount, 1);
+     double sin, cos;
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(__APPLE__)
+     sin = ::sin(src);
+     cos = ::cos(src);
+ #else
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index 7330e40a6..75fd18396 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -878,13 +878,14 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+ 
+   // Fairly excessive buffer range to make sure we don't overflow
+   // One page baseline, plus SSANodeMultipler bytes, plus another page for guard page.
+-  const uint32_t DesiredBufferRange = AlignUp(FEXCore::Utils::FEX_PAGE_SIZE * 2 + SSACount * SSANodeMultiplier, FEXCore::Utils::FEX_PAGE_SIZE);
++  const uint32_t HostPageSize = FEXCore::Utils::HOST_PAGE_SIZE();
++  const uint32_t DesiredBufferRange = AlignUp(HostPageSize * 2 + SSACount * SSANodeMultiplier, HostPageSize);
+ 
+   // JIT output is first written to a temporary buffer and later relocated to the CodeBuffer.
+   // This minimizes lock contention of CodeBufferWriteMutex.
+   auto TempCodeBufferInfo = TempCodeBufferAllocator.ReownOrClaimBufferWithSize(DesiredBufferRange);
+   auto TempCodeBuffer = TempCodeBufferInfo.Ptr;
+-  const uint32_t UsableBufferRange = TempCodeBufferInfo.Size - FEXCore::Utils::FEX_PAGE_SIZE;
++  const uint32_t UsableBufferRange = TempCodeBufferInfo.Size - HostPageSize;
+ 
+   SetBuffer(TempCodeBuffer, UsableBufferRange);
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+index 6c2b3499a..82acd5f38 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -5,7 +5,7 @@ tags: backend|arm64
+ $end_info$
+ */
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__APPLE__)
+ #include <syscall.h>
+ #endif
+ 
+@@ -234,7 +234,13 @@ DEF_OP(ProcessorID) {
+     mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDRRO_EL0);
+     return;
+   }
+-#ifdef _WIN32
++#ifdef __APPLE__
++  else {
++    // Darwin has no Linux getcpu syscall ABI. A stable zero index is valid
++    // until a frontend-provided CPU-index helper is wired in.
++    LoadConstant(ARMEmitter::Size::i64Bit, GetReg(Node), 0);
++  }
++#elif defined(_WIN32)
+   else {
+     // If on Windows and TPIDRRO isn't supported (like in wine), then this is a programming error.
+     ERROR_AND_DIE_FMT("Unsupported");
+diff --git a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+index d63ec3ef2..e855d1420 100644
+--- a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
++++ b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+@@ -7,7 +7,7 @@
+ #include <FEXCore/Utils/LogManager.h>
+ #include <FEXCore/Utils/MathUtils.h>
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__APPLE__)
+ #include <FEXCore/Utils/PrctlUtils.h>
+ #endif
+ 
+@@ -17,13 +17,18 @@ static constexpr size_t INITIAL_CODE_SIZE = 1024 * 1024 * 16;
+ static constexpr size_t MAX_CODE_SIZE = 1024 * 1024 * 128;
+ 
+ CodeBuffer::CodeBuffer(size_t Size)
+-  : AllocatedSize(Size) {
++  : AllocatedSize(Size)
++  , GuardPageSize(FEXCore::Utils::HOST_PAGE_SIZE()) {
+   Ptr = static_cast<uint8_t*>(FEXCore::Allocator::VirtualAlloc(Size, true));
++#ifndef _WIN32
++  LOGMAN_THROW_A_FMT(Ptr != MAP_FAILED, "Couldn't allocate code buffer");
++#else
+   LOGMAN_THROW_A_FMT(!!Ptr, "Couldn't allocate code buffer");
++#endif
+ 
+   // Protect the last page of the allocated buffer to trigger SIGSEGV on write access
+-  uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_PAGE_SIZE);
+-  if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_PAGE_SIZE,
++  uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, GuardPageSize);
++  if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), GuardPageSize,
+                                           FEXCore::Allocator::ProtectOptions::None)) {
+     LogMan::Msg::EFmt("Failed to mprotect last page of code buffer.");
+   }
+@@ -44,7 +49,7 @@ CodeBuffer::~CodeBuffer() {
+ }
+ 
+ fextl::shared_ptr<CodeBuffer> SharedCodeBufferManager::AllocateNew(size_t Size) {
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__APPLE__)
+   // MDWE (Memory-Deny-Write-Execute) is a new Linux 6.3 feature.
+   // It's equivalent to systemd's `MemoryDenyWriteExecute` but implemented entirely in the kernel.
+   //
+diff --git a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.h b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.h
+index c047eb847..8c9de4ff0 100644
+--- a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.h
++++ b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.h
+@@ -68,7 +68,7 @@ struct CodeBuffer {
+ 
+   // Returns the total number of bytes available for storing code
+   size_t UsableSize() const {
+-    return AllocatedSize - FEXCore::Utils::FEX_PAGE_SIZE;
++    return AllocatedSize - GuardPageSize;
+   }
+ 
+   // Returns the full size of the buffer, including the guard page.
+@@ -95,6 +95,7 @@ private:
+   uint8_t* Ptr;
+   uint8_t* CodeBufferEnd;
+   size_t AllocatedSize; // including guard page; see UsableSize()
++  size_t GuardPageSize;
+ 
+   // Code buffer allocation information.
+   std::atomic<uint8_t*> CodeBufferOffset {};
+diff --git a/FEXCore/Source/Utils/Allocator.cpp b/FEXCore/Source/Utils/Allocator.cpp
+index 2060f269c..4827bf6c1 100644
+--- a/FEXCore/Source/Utils/Allocator.cpp
++++ b/FEXCore/Source/Utils/Allocator.cpp
+@@ -23,8 +23,10 @@
+ #include <fcntl.h>
+ #ifndef _WIN32
+ #include <sys/mman.h>
++#ifndef __APPLE__
+ #include <sys/user.h>
+ #endif
++#endif
+ 
+ namespace fextl::pmr {
+ static fextl::pmr::default_resource FEXDefaultResource;
+@@ -58,6 +60,11 @@ static void* FEX_mmap(void* addr, size_t length, int prot, int flags, int fd, of
+ }
+ 
+ void VirtualName(const char* Name, void* Ptr, size_t Size) {
++#ifdef __APPLE__
++  (void)Name;
++  (void)Ptr;
++  (void)Size;
++#else
+   static bool Supports {true};
+   if (Supports) {
+     auto Result = prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, Ptr, Size, Name);
+@@ -66,6 +73,7 @@ void VirtualName(const char* Name, void* Ptr, size_t Size) {
+       Supports = false;
+     }
+   }
++#endif
+ }
+ 
+ static int FEX_munmap(void* addr, size_t length) {
+@@ -103,6 +111,12 @@ void ClearHooks() {
+ #pragma GCC diagnostic pop
+ 
+ FEX_DEFAULT_VISIBILITY size_t GetHostVABits() {
++#ifdef __APPLE__
++  // The bootstrap lab doesn't own a Darwin guest-VA reservation backend yet.
++  // Returning less than 48 bits prevents the Linux gap-stealing path from
++  // being selected by Setup48BitAllocatorIfExists().
++  return 47;
++#else
+   static uint64_t HostVABits = 0;
+ 
+   if (HostVABits) {
+@@ -132,10 +146,25 @@ FEX_DEFAULT_VISIBILITY size_t GetHostVABits() {
+ 
+   LOGMAN_MSG_A_FMT("Couldn't determine host VA size");
+   FEX_UNREACHABLE;
++#endif
+ }
+ 
+ #define STEAL_LOG(...) // fprintf(stderr, __VA_ARGS__)
+ 
++#ifdef __APPLE__
++fextl::vector<MemoryRegion> CollectMemoryGaps(uintptr_t Begin, uintptr_t End, int MapsFD) {
++  (void)Begin;
++  (void)End;
++  (void)MapsFD;
++  ERROR_AND_DIE_FMT("Darwin guest-VA gap collection is not implemented");
++}
++
++fextl::vector<MemoryRegion> StealMemoryRegion(uintptr_t Begin, uintptr_t End) {
++  (void)Begin;
++  (void)End;
++  ERROR_AND_DIE_FMT("Darwin guest-VA reservation is not implemented");
++}
++#else
+ fextl::vector<MemoryRegion> CollectMemoryGaps(uintptr_t Begin, uintptr_t End, int MapsFD) {
+   fextl::vector<MemoryRegion> Regions;
+ 
+@@ -272,6 +301,7 @@ fextl::vector<MemoryRegion> StealMemoryRegion(uintptr_t Begin, uintptr_t End) {
+ 
+   return Regions;
+ }
++#endif
+ 
+ fextl::vector<MemoryRegion> Setup48BitAllocatorIfExists(size_t PageSize) {
+   size_t Bits = FEXCore::Allocator::GetHostVABits();
+diff --git a/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp b/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
+index b136ec50d..748235d80 100644
+--- a/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
++++ b/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
+@@ -505,7 +505,9 @@ void OSAllocator_64Bit::AllocateMemoryRegions(fextl::vector<FEXCore::Allocator::
+     mprotect(it.Ptr, ObjectAllocSize, PROT_READ | PROT_WRITE);
+ 
+     // This enables the kernel to use transparent large pages in the allocator which can reduce memory pressure
++#ifndef __APPLE__
+     ::madvise(it.Ptr, ObjectAllocSize, MADV_HUGEPAGE);
++#endif
+ 
+     FEXCore::Allocator::VirtualName("FEXMem_Misc", reinterpret_cast<void*>(it.Ptr), ObjectAllocSize);
+ 
+diff --git a/FEXCore/Source/Utils/AllocatorHooks.cpp b/FEXCore/Source/Utils/AllocatorHooks.cpp
+index fd6947fdf..c1a982f7b 100644
+--- a/FEXCore/Source/Utils/AllocatorHooks.cpp
++++ b/FEXCore/Source/Utils/AllocatorHooks.cpp
+@@ -1,8 +1,10 @@
+ // SPDX-License-Identifier: MIT
+ #ifdef ENABLE_FEX_ALLOCATOR
+ #include <rpmalloc/rpmalloc.h>
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__APPLE__)
+ #include <sys/prctl.h>
++#endif
++#ifndef _WIN32
+ #include <sys/mman.h>
+ #else
+ #define NTDDI_VERSION 0x0A000005
+@@ -11,7 +13,11 @@
+ #endif
+ 
+ #include <cstdint>
++#ifdef __APPLE__
++#include <malloc/malloc.h>
++#else
+ #include <malloc.h>
++#endif
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+@@ -107,10 +113,12 @@ static void* FEX_rp_mmap(size_t size, size_t alignment, size_t* offset, size_t*
+ #ifndef PR_SET_VMA_ANON_NAME
+ #define PR_SET_VMA_ANON_NAME 0
+ #endif
++#ifndef __APPLE__
+     prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ptr, map_size, global_config.page_name);
+ 
+     // Disable HUGEPAGE on allocation from rpmalloc.
+     madvise(ptr, map_size, MADV_NOHUGEPAGE);
++#endif
+   }
+ 
+   if (ptr == nullptr) {
+diff --git a/FEXCore/Source/Utils/Profiler.cpp b/FEXCore/Source/Utils/Profiler.cpp
+index 67fe0ca38..40464541c 100644
+--- a/FEXCore/Source/Utils/Profiler.cpp
++++ b/FEXCore/Source/Utils/Profiler.cpp
+@@ -1,7 +1,7 @@
+ // SPDX-License-Identifier: MIT
+ #include <cstdint>
+ #include <fcntl.h>
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__APPLE__)
+ #include <linux/magic.h>
+ #include <sys/stat.h>
+ #include <sys/vfs.h>
+diff --git a/FEXCore/include/FEXCore/Debug/InternalThreadState.h b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+index 42feabb1c..efc48624f 100644
+--- a/FEXCore/include/FEXCore/Debug/InternalThreadState.h
++++ b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+@@ -87,7 +87,13 @@ struct UnalignedExclusiveStore {
+   uint8_t Size;
+ };
+ 
+-struct alignas(FEXCore::Utils::FEX_PAGE_SIZE) InternalThreadState : public FEXCore::Allocator::FEXAllocOperators {
++#ifdef __APPLE__
++static constexpr std::size_t INTERNAL_THREAD_STATE_ALIGNMENT {16384};
++#else
++static constexpr std::size_t INTERNAL_THREAD_STATE_ALIGNMENT {FEXCore::Utils::FEX_PAGE_SIZE};
++#endif
++
++struct alignas(INTERNAL_THREAD_STATE_ALIGNMENT) InternalThreadState : public FEXCore::Allocator::FEXAllocOperators {
+   FEXCore::Core::CpuStateFrame* const CurrentFrame = &BaseFrameState;
+ 
+   FEXCore::Context::Context* const CTX;
+@@ -122,7 +128,14 @@ struct alignas(FEXCore::Utils::FEX_PAGE_SIZE) InternalThreadState : public FEXCo
+   FEXCore::Core::CpuStateFrame BaseFrameState {};
+ 
+   // Can be reprotected as RO to trigger an interrupt at generated code block entrypoints
+-  alignas(FEXCore::Utils::FEX_PAGE_SIZE) uint8_t InterruptFaultPage[FEXCore::Utils::FEX_PAGE_SIZE];
++#ifdef __APPLE__
++  // The macOS lab is admitted only on a 16-KiB host. Keep this physical
++  // protection unit distinct from the 4-KiB x86 guest-page constants.
++  static constexpr std::size_t INTERRUPT_FAULT_PAGE_SIZE {INTERNAL_THREAD_STATE_ALIGNMENT};
++#else
++  static constexpr std::size_t INTERRUPT_FAULT_PAGE_SIZE {FEXCore::Utils::FEX_PAGE_SIZE};
++#endif
++  alignas(INTERRUPT_FAULT_PAGE_SIZE) uint8_t InterruptFaultPage[INTERRUPT_FAULT_PAGE_SIZE];
+ };
+ static_assert(std::is_standard_layout_v<FEXCore::Core::InternalThreadState>);
+ // Maximum unsigned-offset store range for fault page.
+diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+index cccce4d56..98d115d79 100644
+--- a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
++++ b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+@@ -6,7 +6,11 @@
+ 
+ #ifndef _WIN32
+ #include <stdlib.h>
++#ifdef __APPLE__
++#include <malloc/malloc.h>
++#else
+ #include <malloc.h>
++#endif
+ #include <sys/mman.h>
+ #else
+ #define NTDDI_VERSION 0x0A000005
+@@ -114,11 +118,23 @@ FEX_DEFAULT_VISIBILITY extern void VirtualName(const char* Name, void* Ptr, size
+ // All commit parameters are ignored here, they are unnecessary as Linux supports overcommit
+ 
+ inline void* VirtualAlloc(size_t Size, bool Execute = false, bool Commit = true) {
+-  return FEXCore::Allocator::mmap(nullptr, Size, PROT_READ | PROT_WRITE | (Execute ? PROT_EXEC : 0), MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  int Flags = MAP_PRIVATE | MAP_ANONYMOUS;
++#ifdef __APPLE__
++  if (Execute) {
++    Flags |= MAP_JIT;
++  }
++#endif
++  return FEXCore::Allocator::mmap(nullptr, Size, PROT_READ | PROT_WRITE | (Execute ? PROT_EXEC : 0), Flags, -1, 0);
+ }
+ 
+ inline void* VirtualAlloc(void* Base, size_t Size, bool Execute = false, bool Commit = true) {
+-  return FEXCore::Allocator::mmap(Base, Size, PROT_READ | PROT_WRITE | (Execute ? PROT_EXEC : 0), MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  int Flags = MAP_PRIVATE | MAP_ANONYMOUS;
++#ifdef __APPLE__
++  if (Execute) {
++    Flags |= MAP_JIT;
++  }
++#endif
++  return FEXCore::Allocator::mmap(Base, Size, PROT_READ | PROT_WRITE | (Execute ? PROT_EXEC : 0), Flags, -1, 0);
+ }
+ 
+ inline void VirtualFree(void* Ptr, size_t Size) {
+@@ -143,7 +159,13 @@ inline bool VirtualProtect(void* Ptr, size_t Size, ProtectOptions options) {
+ }
+ 
+ inline void VirtualTHPControl(const void* Ptr, size_t Size, THPControl Control) {
++#ifdef __APPLE__
++  (void)Ptr;
++  (void)Size;
++  (void)Control;
++#else
+   ::madvise(const_cast<void*>(Ptr), Size, Control == THPControl::Enable ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
++#endif
+ }
+ 
+ #endif
+diff --git a/FEXCore/include/FEXCore/Utils/InterruptableConditionVariable.h b/FEXCore/include/FEXCore/Utils/InterruptableConditionVariable.h
+index d81c376c0..db4bd4702 100644
+--- a/FEXCore/include/FEXCore/Utils/InterruptableConditionVariable.h
++++ b/FEXCore/include/FEXCore/Utils/InterruptableConditionVariable.h
+@@ -5,15 +5,16 @@
+ #include <chrono>
+ #include <climits>
+ #include <cstdint>
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__APPLE__)
+ #include <linux/futex.h>
+ #include <sys/syscall.h>
+-#else
++#elif defined(_WIN32)
+ #include <errhandlingapi.h>
+ #include <synchapi.h>
+ #include <winerror.h>
+ #endif
+ #include <unistd.h>
++#include <thread>
+ 
+ namespace FEXCore {
+ /**
+@@ -24,7 +25,58 @@ namespace FEXCore {
+  * call can leave the condition variable in an invalid state that breaks later
+  * uses of that object and may cause hangs as a consequence.
+  */
+-#ifndef _WIN32
++#if defined(__APPLE__)
++class InterruptableConditionVariable final {
++public:
++  bool Wait(struct timespec* Timeout = nullptr) {
++    const auto Deadline = Timeout
++      ? std::chrono::steady_clock::now() + std::chrono::seconds(Timeout->tv_sec) + std::chrono::nanoseconds(Timeout->tv_nsec)
++      : std::chrono::steady_clock::time_point::max();
++
++    while (true) {
++      uint32_t Expected = SIGNALED;
++      if (Mutex.compare_exchange_strong(Expected, UNSIGNALED, std::memory_order_acq_rel)) {
++        return true;
++      }
++
++      if (!Timeout) {
++        Mutex.wait(UNSIGNALED, std::memory_order_acquire);
++      } else if (std::chrono::steady_clock::now() >= Deadline) {
++        return false;
++      } else {
++        std::this_thread::sleep_for(std::chrono::microseconds(100));
++      }
++    }
++  }
++
++  template<class Rep, class Period>
++  bool WaitFor(const std::chrono::duration<Rep, Period>& Time) {
++    struct timespec Timeout {};
++    auto SecondsDuration = std::chrono::duration_cast<std::chrono::seconds>(Time);
++    Timeout.tv_sec = SecondsDuration.count();
++    Timeout.tv_nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(Time - SecondsDuration).count();
++    return Wait(&Timeout);
++  }
++
++  void NotifyOne() { DoNotify(false); }
++  void NotifyAll() { DoNotify(true); }
++
++private:
++  std::atomic<uint32_t> Mutex {};
++  constexpr static uint32_t SIGNALED = 1;
++  constexpr static uint32_t UNSIGNALED = 0;
++
++  void DoNotify(bool All) {
++    if (Mutex.exchange(SIGNALED, std::memory_order_release) == UNSIGNALED) {
++      if (All) {
++        Mutex.notify_all();
++      } else {
++        Mutex.notify_one();
++      }
++    }
++  }
++};
++#elif !defined(_WIN32)
+ class InterruptableConditionVariable final {
+ public:
+   bool Wait(struct timespec* Timeout = nullptr) {
+diff --git a/FEXCore/include/FEXCore/Utils/PrctlUtils.h b/FEXCore/include/FEXCore/Utils/PrctlUtils.h
+index f0211fc4c..5096a0788 100644
+--- a/FEXCore/include/FEXCore/Utils/PrctlUtils.h
++++ b/FEXCore/include/FEXCore/Utils/PrctlUtils.h
+@@ -1,7 +1,7 @@
+ // SPDX-License-Identifier: MIT
+ #pragma once
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__APPLE__)
+ 
+ #include <sys/prctl.h>
+ 
+@@ -53,4 +53,4 @@
+ #define PR_GET_MDWE 66
+ #endif
+ 
+-#endif // ifndef _WIN32
++#endif // !defined(_WIN32) && !defined(__APPLE__)
+diff --git a/FEXCore/include/FEXCore/Utils/SignalScopeGuards.h b/FEXCore/include/FEXCore/Utils/SignalScopeGuards.h
+index 9616a6ed0..43df13a7f 100644
+--- a/FEXCore/include/FEXCore/Utils/SignalScopeGuards.h
++++ b/FEXCore/include/FEXCore/Utils/SignalScopeGuards.h
+@@ -7,6 +7,9 @@
+ #include <cstdint>
+ #include <mutex>
+ #include <optional>
++#ifndef _WIN32
++#include <pthread.h>
++#endif
+ #include <signal.h>
+ #ifndef _WIN32
+ #include <sys/syscall.h>
+@@ -153,6 +156,38 @@ private:
+ };
+ 
+ // Helper class to mask POSIX signals within a block scope
++#ifdef __APPLE__
++class ScopedSignalMasker final {
++public:
++  explicit ScopedSignalMasker(uint64_t Mask) {
++    sigset_t NewMask {};
++    sigemptyset(&NewMask);
++    for (int Signal = 1; Signal < NSIG && Signal <= 64; ++Signal) {
++      if (Mask & (1ULL << (Signal - 1))) {
++        sigaddset(&NewMask, Signal);
++      }
++    }
++    Active = pthread_sigmask(SIG_SETMASK, &NewMask, &OriginalMask) == 0;
++  }
++
++  ScopedSignalMasker(const ScopedSignalMasker&) = delete;
++  ScopedSignalMasker& operator=(ScopedSignalMasker&) = delete;
++  ScopedSignalMasker(ScopedSignalMasker&& rhs)
++    : OriginalMask(rhs.OriginalMask)
++    , Active(rhs.Active) {
++    rhs.Active = false;
++  }
++
++  ~ScopedSignalMasker() {
++    if (Active) {
++      pthread_sigmask(SIG_SETMASK, &OriginalMask, nullptr);
++    }
++  }
++private:
++  sigset_t OriginalMask {};
++  bool Active {};
++};
++#else
+ class ScopedSignalMasker final {
+ public:
+   explicit ScopedSignalMasker(uint64_t Mask)
+@@ -177,6 +212,7 @@ public:
+ private:
+   std::optional<uint64_t> OriginalMask {};
+ };
++#endif
+ 
+ /**
+  * @brief Produces a wrapper object around a scoped lock of the given mutex
+diff --git a/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h b/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
+index 1c0c8b805..d5d1e25e9 100644
+--- a/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
++++ b/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
+@@ -2,6 +2,7 @@
+ #pragma once
+ 
+ #include <FEXCore/Utils/Allocator.h>
++#include <FEXCore/Utils/AllocatorHooks.h>
+ #include <FEXCore/Utils/LogManager.h>
+ #include <FEXCore/Utils/MathUtils.h>
+ #include <FEXCore/Utils/TypeDefines.h>
+@@ -386,6 +387,11 @@ public:
+ private:
+   void* Alloc(size_t Size) override {
+     auto Result = FEXCore::Allocator::VirtualAlloc(Size);
++#ifndef _WIN32
++    LOGMAN_THROW_A_FMT(Result != MAP_FAILED, "Couldn't allocate pooled virtual buffer");
++#else
++    LOGMAN_THROW_A_FMT(Result != nullptr, "Couldn't allocate pooled virtual buffer");
++#endif
+     if (Name) {
+       FEXCore::Allocator::VirtualName(Name, Result, Size);
+     }
+@@ -417,8 +423,14 @@ public:
+ private:
+   void* Alloc(size_t Size) override {
+     auto Ptr = FEXCore::Allocator::VirtualAlloc(Size);
+-    uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_PAGE_SIZE);
+-    if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_PAGE_SIZE,
++#ifndef _WIN32
++    LOGMAN_THROW_A_FMT(Ptr != MAP_FAILED, "Couldn't allocate pooled code buffer");
++#else
++    LOGMAN_THROW_A_FMT(Ptr != nullptr, "Couldn't allocate pooled code buffer");
++#endif
++    const size_t GuardPageSize = FEXCore::Utils::HOST_PAGE_SIZE();
++    uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, GuardPageSize);
++    if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), GuardPageSize,
+                                             FEXCore::Allocator::ProtectOptions::None)) {
+       LogMan::Msg::EFmt("Failed to mprotect last page of code buffer.");
+     }
+diff --git a/FEXCore/include/FEXCore/Utils/TypeDefines.h b/FEXCore/include/FEXCore/Utils/TypeDefines.h
+index ec03ac6cd..3823a2ea0 100644
+--- a/FEXCore/include/FEXCore/Utils/TypeDefines.h
++++ b/FEXCore/include/FEXCore/Utils/TypeDefines.h
+@@ -1,6 +1,9 @@
+ // SPDX-License-Identifier: MIT
+ #pragma once
+ #include <cstddef>
++#ifdef __APPLE__
++#include <unistd.h>
++#endif
+ 
+ namespace FEXCore::Utils {
+ // FEX assumes an operating page size of 4096
+@@ -9,4 +12,18 @@ namespace FEXCore::Utils {
+ constexpr size_t FEX_PAGE_SIZE = 4096;
+ constexpr size_t FEX_PAGE_SHIFT = 12;
+ constexpr size_t FEX_PAGE_MASK = ~(FEX_PAGE_SIZE - 1);
++
++// FEX_PAGE_SIZE is the x86 guest page geometry. Darwin executable mappings
++// and protection boundaries must instead use the physical host page size.
++inline size_t HOST_PAGE_SIZE() {
++#ifdef __APPLE__
++  static const size_t PageSize = []() {
++    const long Result = ::sysconf(_SC_PAGESIZE);
++    return Result > 0 ? static_cast<size_t>(Result) : size_t {16384};
++  }();
++  return PageSize;
++#else
++  return FEX_PAGE_SIZE;
++#endif
++}
+ } // namespace FEXCore::Utils
+diff --git a/FEXCore/include/FEXCore/Utils/WritePriorityMutex.h b/FEXCore/include/FEXCore/Utils/WritePriorityMutex.h
+index bf1bd2bbc..f85798c1b 100644
+--- a/FEXCore/include/FEXCore/Utils/WritePriorityMutex.h
++++ b/FEXCore/include/FEXCore/Utils/WritePriorityMutex.h
+@@ -3,12 +3,13 @@
+ #include <atomic>
+ #include <cstdint>
+ #include <limits.h>
++#include <shared_mutex>
+ 
+-#if !defined(_WIN32)
++#if !defined(_WIN32) && !defined(__APPLE__)
+ #include <linux/futex.h> /* Definition of FUTEX_* constants */
+ #include <sys/syscall.h> /* Definition of SYS_* constants */
+ #include <unistd.h>
+-#else
++#elif defined(_WIN32)
+ #include <synchapi.h>
+ // Don't pull in all WIN32 headers for INFINITE. Causes too many problems.
+ #ifndef INFINITE
+@@ -35,6 +36,30 @@ namespace FEXCore::Utils::WritePriorityMutex {
+ //  - No guaranteed order of wake-ups besides prioritizing writers
+ //  - No support for recursive locking
+ //  - We can't use FUTEX_LOCK_PI to enable priority inheritance
++#ifdef __APPLE__
++class Mutex final {
++public:
++  Mutex() = default;
++  Mutex(const Mutex&) = delete;
++  Mutex& operator=(const Mutex&) = delete;
++  Mutex(Mutex&&) = delete;
++  Mutex& operator=(Mutex&&) = delete;
++
++  void lock() { MutexImpl.lock(); }
++  void unlock() { MutexImpl.unlock(); }
++  void lock_shared() { MutexImpl.lock_shared(); }
++  void unlock_shared() { MutexImpl.unlock_shared(); }
++  bool try_lock() { return MutexImpl.try_lock(); }
++  bool try_lock_shared() { return MutexImpl.try_lock_shared(); }
++
++  void StealAndDropActiveLocks() {
++    ERROR_AND_DIE_FMT("{} is unsupported on Darwin builds!", __func__);
++  }
++
++private:
++  std::shared_mutex MutexImpl;
++};
++#else
+ class Mutex final {
+ public:
+   Mutex() = default;
+@@ -409,4 +434,5 @@ private:
+   //  Bits[15:0]: Read-owner count.
+   uint32_t Futex {};
+ };
++#endif
+ } // namespace FEXCore::Utils::WritePriorityMutex
+diff --git a/FEXHeaderUtils/FEXHeaderUtils/Filesystem.h b/FEXHeaderUtils/FEXHeaderUtils/Filesystem.h
+index b00cc588c..e8bc3f135 100644
+--- a/FEXHeaderUtils/FEXHeaderUtils/Filesystem.h
++++ b/FEXHeaderUtils/FEXHeaderUtils/Filesystem.h
+@@ -9,7 +9,7 @@
+ #include <fcntl.h>
+ #include <memory_resource>
+ #include <string_view>
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__APPLE__)
+ #include <linux/limits.h>
+ #include <sys/sendfile.h>
+ #else
+@@ -56,7 +56,7 @@ inline std::error_code RenameFile(const fextl::string& From, const fextl::string
+   return rename(From.c_str(), To.c_str()) == 0 ? std::error_code {} : std::make_error_code(std::errc::io_error);
+ }
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__APPLE__)
+ inline bool ExistsAt(int FD, const fextl::string& Path) {
+   return faccessat(FD, Path.c_str(), F_OK, 0) == 0;
+ }
+diff --git a/FEXHeaderUtils/FEXHeaderUtils/Syscalls.h b/FEXHeaderUtils/FEXHeaderUtils/Syscalls.h
+index e5c2824f4..561acc252 100644
+--- a/FEXHeaderUtils/FEXHeaderUtils/Syscalls.h
++++ b/FEXHeaderUtils/FEXHeaderUtils/Syscalls.h
+@@ -7,7 +7,10 @@
+ #include <sched.h>
+ #include <signal.h>
+ #include <stdio.h>
+-#ifndef _WIN32
++#if defined(__APPLE__)
++#include <pthread.h>
++#include <sys/syscall.h>
++#elif !defined(_WIN32)
+ #include <syscall.h>
+ #else
+ #include <processthreadsapi.h>
+@@ -51,7 +54,57 @@ namespace FHU::Syscalls {
+ #define SYS_pidfd_open 434
+ #endif
+ 
+-#ifndef _WIN32
++#if defined(__APPLE__)
++inline int32_t getcpu(uint32_t* cpu, uint32_t* node) {
++  if (cpu) {
++    *cpu = 0;
++  }
++  if (node) {
++    *node = 0;
++  }
++  return 0;
++}
++
++inline int32_t gettid() {
++  uint64_t ThreadID {};
++  return pthread_threadid_np(nullptr, &ThreadID) == 0 ? static_cast<int32_t>(ThreadID) : -1;
++}
++
++inline int32_t tgkill(pid_t tgid, pid_t tid, int sig) {
++  (void)tgid;
++  (void)tid;
++  (void)sig;
++  errno = ENOSYS;
++  return -1;
++}
++
++inline int32_t statx(int dirfd, const char* pathname, int32_t flags, uint32_t mask, void* statxbuf) {
++  (void)dirfd;
++  (void)pathname;
++  (void)flags;
++  (void)mask;
++  (void)statxbuf;
++  errno = ENOSYS;
++  return -1;
++}
++
++inline int32_t renameat2(int olddirfd, const char* oldpath, int newdirfd, const char* newpath, unsigned int flags) {
++  (void)olddirfd;
++  (void)oldpath;
++  (void)newdirfd;
++  (void)newpath;
++  (void)flags;
++  errno = ENOSYS;
++  return -1;
++}
++
++inline int32_t pidfd_open(pid_t pid, unsigned int flags) {
++  (void)pid;
++  (void)flags;
++  errno = ENOSYS;
++  return -1;
++}
++#elif !defined(_WIN32)
+ inline int32_t getcpu(uint32_t* cpu, uint32_t* node) {
+   // Third argument is unused
+ #if defined(HAS_SYSCALL_GETCPU) && HAS_SYSCALL_GETCPU

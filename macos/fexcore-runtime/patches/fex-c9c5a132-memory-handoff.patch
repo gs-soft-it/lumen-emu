@@ -1,0 +1,735 @@
+diff --git a/FEXCore/Source/Interface/Core/CodeCache.cpp b/FEXCore/Source/Interface/Core/CodeCache.cpp
+--- a/FEXCore/Source/Interface/Core/CodeCache.cpp
++++ b/FEXCore/Source/Interface/Core/CodeCache.cpp
+@@ -448,7 +448,8 @@
+   NewRelocations.erase(std::remove_if(NewRelocations.begin(), NewRelocations.end(), [](const CPU::Relocation& Reloc) {
+     return Reloc.Header.Type != CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL && Reloc.Header.Type != CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE;
+   }));
+-  (void)ApplyCodeRelocations(Section.FileStartVA, CodeBufferRangeRef, NewRelocations, false);
++  if (!ApplyCodeRelocations(Section.FileStartVA, CodeBufferRangeRef, NewRelocations, false))
++    ERROR_AND_DIE_FMT("Unsupported native code-cache binding during validation");
+ 
+   if (NewCodeBuffer->AllocatedSpaceUsed() <= CodeBufferRangeRef.size()) {
+     // Reference compilation produced fewer bytes than our cache, so validation is going to fail.
+@@ -509,11 +510,18 @@
+   LogMan::Msg::IFmt("            successfully validated cache");
+ }
+ 
+-static inline void ApplySymbolLiteralRelocation(ContextImpl& CTX, const CPU::RelocNamedSymbolLiteral::NamedSymbol Symbol,
++static inline bool ApplySymbolLiteralRelocation(ContextImpl& CTX, const CPU::RelocNamedSymbolLiteral::NamedSymbol Symbol,
+                                                 uint64_t GuestEntry, CPU::Arm64Emitter& Emitter, bool ForStorage) {
+   // Generate a literal so we can place it
+   uint64_t Pointer = ForStorage ? 0 : GetNamedSymbolLiteral(CTX, Symbol);
++  // Every ownership binding must exist in this process, and each typed ABI
++  // binds only its own provider. Storage still emits deterministic zero;
++  // failed rebinding leaves the candidate unpublished for the caller to discard.
++  if (!ForStorage && Pointer == 0 &&
++      Symbol >= CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS &&
++      Symbol <= CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY) return false;
+   Emitter.dc64(Pointer);
++  return true;
+ }
+ 
+ static inline bool
+@@ -549,7 +557,7 @@
+     Emitter.SetCursorOffset(Reloc.Offset);
+     switch ((CPU::RelocationTypes)Reloc.Type) {
+     case FEXCore::CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL: {
+-      ApplySymbolLiteralRelocation(CTX, (CPU::RelocNamedSymbolLiteral::NamedSymbol)Reloc.Named.Symbol, GuestEntry, Emitter, ForStorage);
++      if (!ApplySymbolLiteralRelocation(CTX, (CPU::RelocNamedSymbolLiteral::NamedSymbol)Reloc.Named.Symbol, GuestEntry, Emitter, ForStorage)) return false;
+       break;
+     }
+     case FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL: {
+@@ -583,7 +591,7 @@
+ 
+     switch (Reloc.Header.Type) {
+     case FEXCore::CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL: {
+-      ApplySymbolLiteralRelocation(CTX, Reloc.NamedSymbolLiteral.Symbol, GuestEntry, Emitter, ForStorage);
++      if (!ApplySymbolLiteralRelocation(CTX, Reloc.NamedSymbolLiteral.Symbol, GuestEntry, Emitter, ForStorage)) return false;
+       break;
+     }
+     case FEXCore::CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE: {
+@@ -944,7 +952,8 @@
+   auto StagingSpan = std::span {Staging, Size};
+   for (size_t i = StartPage; i < EndPage; ++i) {
+     auto PageRelocations = SpanPageRelocations(Code, i);
+-    (void)ApplyCodeRelocations(Code.GuestBase, StagingSpan, PageRelocations, false);
++    if (!ApplyCodeRelocations(Code.GuestBase, StagingSpan, PageRelocations, false))
++      ERROR_AND_DIE_FMT("Unsupported native code-cache binding; pages remain unpublished");
+     Code.LoadedPages[i] = true;
+   }
+ 
+@@ -969,7 +978,8 @@
+ #endif
+   for (size_t i = StartPage; i < EndPage; ++i) {
+     auto PageRelocations = SpanPageRelocations(Code, i);
+-    (void)ApplyCodeRelocations(Code.GuestBase, Code.CodeBuffer, PageRelocations, false);
++    if (!ApplyCodeRelocations(Code.GuestBase, Code.CodeBuffer, PageRelocations, false))
++      ERROR_AND_DIE_FMT("Unsupported native code-cache binding; pages remain unpublished");
+     Code.LoadedPages[i] = true;
+   }
+ #endif
+diff --git a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+@@ -9,12 +9,33 @@
+ #include "Interface/Core/JIT/JITClass.h"
+ 
+ #include <FEXCore/Core/Thunks.h>
++#include <FEXCore/Utils/LumenMemoryHandoffAbi.h>
+ 
+ namespace FEXCore::CPU {
++#ifdef __APPLE__
++extern "C" const uint8_t* FEXLumenGuestMemoryHandoffGuardProviderV1() noexcept;
++extern "C" uint32_t (*FEXLumenGuestMemoryBulkProviderV1() noexcept)(uint64_t, uint64_t, uint64_t, uint64_t) noexcept;
++#endif
+ uint64_t GetNamedSymbolLiteral(FEXCore::Context::ContextImpl& CTX, FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol Op) {
+   switch (Op) {
+   case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_EXITFUNCTION_LINKER:
+     return CTX.Dispatcher->GetExitFunctionLinkerAddress();
++#ifdef __APPLE__
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS:
++    return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryHandoffGuardProviderV1());
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK:
++    return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryCheckProviderV1());
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK:
++    return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryBulkProviderV1());
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY:
++    return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryReadGuardProviderV1());
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL:
++#if FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI
++    return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryPreserveAllProviderV1());
++#else
++    return 0;
++#endif
++#endif
+ 
+   default: ERROR_AND_DIE_FMT("Unknown named symbol literal: {}", static_cast<uint32_t>(Op));
+   }
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -888,7 +888,65 @@
+   // Fairly excessive buffer range to make sure we don't overflow
+   // One page baseline, plus SSANodeMultipler bytes, plus another page for guard page.
+   const uint32_t HostPageSize = FEXCore::Utils::HOST_PAGE_SIZE();
+-  const uint32_t DesiredBufferRange = AlignUp(HostPageSize * 2 + SSACount * SSANodeMultiplier, HostPageSize);
++  // Ownership checks emit full ABI preservation only in cold fragments. Their
++  // code still occupies the translation buffer even when the hot guard skips
++  // them. Account for it before code emission rather than faulting into the
++  // guard page while a callback fragment is being generated.
++  uint64_t HandoffCodeBudget {};
++  if (HasLumenGuestMemoryChecks()) {
++    for (auto [BlockNode, BlockHeader] : IR->GetBlocks()) {
++      for (auto [CodeNode, Op] : IR->GetCode(BlockNode)) {
++        switch (Op->Op) {
++        case IR::OP_GUESTMEMORYCHECK:
++        case IR::OP_LOADMEM:
++        case IR::OP_LOADMEMPAIR:
++        case IR::OP_LOADMEMTSO:
++        case IR::OP_VLOADVECTORELEMENT:
++        case IR::OP_VSTOREVECTORELEMENT:
++        case IR::OP_VBROADCASTFROMMEM:
++        case IR::OP_PUSH:
++        case IR::OP_PUSHTWO:
++        case IR::OP_POP:
++        case IR::OP_POPTWO:
++        case IR::OP_STOREMEM:
++        case IR::OP_STOREMEMX87SVEOPTPREDICATE:
++        case IR::OP_LOADMEMX87SVEOPTPREDICATE:
++        case IR::OP_STOREMEMPAIR:
++        case IR::OP_STOREMEMTSO:
++        case IR::OP_CACHELINECLEAR:
++        case IR::OP_CACHELINECLEAN:
++        case IR::OP_CACHELINEZERO:
++        case IR::OP_VSTORENONTEMPORAL:
++        case IR::OP_VSTORENONTEMPORALPAIR:
++        case IR::OP_VLOADNONTEMPORAL:
++        case IR::OP_CASPAIR:
++        case IR::OP_CAS:
++        case IR::OP_ATOMICSWAP:
++        case IR::OP_ATOMICFETCHADD:
++        case IR::OP_ATOMICFETCHSUB:
++        case IR::OP_ATOMICFETCHAND:
++        case IR::OP_ATOMICFETCHCLR:
++        case IR::OP_ATOMICFETCHOR:
++        case IR::OP_ATOMICFETCHXOR:
++        case IR::OP_ATOMICFETCHNEG:
++          HandoffCodeBudget += 2048; break;
++        case IR::OP_GUESTMEMORYCHECKMASKED:
++        case IR::OP_VLOADVECTORMASKED:
++        case IR::OP_VSTOREVECTORMASKED:
++        case IR::OP_VLOADVECTORGATHERMASKED:
++        case IR::OP_VLOADVECTORGATHERMASKEDQPS:
++        case IR::OP_MEMSET:
++          HandoffCodeBudget += 32 * 2048; break;
++        case IR::OP_MEMCPY: HandoffCodeBudget += 64 * 2048; break;
++        default: break;
++        }
++      }
++    }
++  }
++  const auto WantedBufferRange = static_cast<uint64_t>(HostPageSize) * 2 +
++    static_cast<uint64_t>(SSACount) * SSANodeMultiplier + HandoffCodeBudget;
++  LOGMAN_THROW_A_FMT(WantedBufferRange <= UINT32_MAX - HostPageSize, "Ownership instrumentation exceeds JIT buffer range");
++  const uint32_t DesiredBufferRange = AlignUp(static_cast<uint32_t>(WantedBufferRange), HostPageSize);
+ 
+   // JIT output is first written to a temporary buffer and later relocated to the CodeBuffer.
+   // This minimizes lock contention of CodeBufferWriteMutex.
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -546,9 +546,10 @@
+                                     IR::OrderedNodeWrapper Offset, ARMEmitter::Register Data,
+                                     bool Write, ARMEmitter::ForwardLabel* Done);
+   bool HasLumenGuestMemoryChecks() const;
++  void EmitLumenUnwatchedBulkCheck(uint32_t ElementSize, bool Copy, ARMEmitter::ForwardLabel* Checked);
+   void EmitLumenGuestMemoryCheckBytes(uint64_t Bytes, ARMEmitter::Register Base,
+                                      int64_t Displacement, bool Write);
+-  void EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write);
++  void EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write, bool PreserveScratch);
+   void EmitLumenGuestMemoryCheck(IR::OpSize Size, ARMEmitter::Register Base,
+                                 IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
+                                 uint8_t OffsetScale, bool Write);
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -12,6 +12,7 @@
+ #include "Interface/Core/CPUID.h"
+ #include "Interface/Core/JIT/JITClass.h"
+ #include "Interface/Core/JIT/DebugData.h"
++#include <FEXCore/Utils/LumenMemoryHandoffAbi.h>
+ #include "Interface/IR/RegisterAllocationData.h"
+ #include <FEXCore/Utils/CompilerDefs.h>
+ #include <FEXCore/Utils/MathUtils.h>
+@@ -19,24 +20,39 @@
+ namespace FEXCore::CPU {
+ 
+ #ifdef __APPLE__
+-// Diagnostic-only link hook. The default provider returns no callback, keeping
+-// direct code generation and the uniform-host-page VM contract in the product.
++// Embedding ownership hooks. The default provider keeps upstream embeddings
++// unchanged. Lumen supplies a process-lifetime conservative 4 KiB page table;
++// GPU ownership is acquired only after a real exclusive CPU safepoint.
+ extern "C" __attribute__((weak, noinline)) uint32_t FEXLumenDirectUnalignedTsoEnabledV1() noexcept {
+   return 0;
+ }
+ 
+ extern "C" __attribute__((weak, noinline)) void FEXLumenDirectUnalignedTsoRestartV1() noexcept {}
+ 
+-using LumenMemoryCheck = uint32_t (*)(uint64_t Address, uint64_t Bytes,
+-                                     uint32_t Write, uint64_t GuestRIP) noexcept;
++using LumenMemoryCheck = FEXLumenMemoryCheckV1;
+ extern "C" __attribute__((weak, noinline)) LumenMemoryCheck FEXLumenGuestMemoryCheckProviderV1() noexcept {
+   return nullptr;
+ }
++extern "C" __attribute__((weak, noinline)) FEXLumenMemoryPreserveAllCheckV1 FEXLumenGuestMemoryPreserveAllProviderV1() noexcept {
++  return nullptr;
++}
++extern "C" __attribute__((weak, noinline)) const uint8_t* FEXLumenGuestMemoryHandoffGuardProviderV1() noexcept {
++  return nullptr;
++}
++extern "C" __attribute__((weak, noinline)) FEXLumenMemoryReadGuardDirectoryV1 FEXLumenGuestMemoryReadGuardProviderV1() noexcept {
++  return nullptr;
++}
++using LumenMemoryBulkCheck = uint32_t (*)(uint64_t Destination, uint64_t Source,
++                                         uint64_t Count, uint64_t Shape) noexcept;
++extern "C" __attribute__((weak, noinline)) LumenMemoryBulkCheck FEXLumenGuestMemoryBulkProviderV1() noexcept {
++  return nullptr;
++}
+ #endif
+ 
+ extern "C" bool FEXLumenGuestMemoryChecksEnabled() noexcept {
+ #ifdef __APPLE__
+-  return FEXLumenGuestMemoryCheckProviderV1() != nullptr;
++  return FEXLumenGuestMemoryCheckProviderV1() != nullptr ||
++    (FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI && FEXLumenGuestMemoryPreserveAllProviderV1() != nullptr);
+ #else
+   return false;
+ #endif
+@@ -46,7 +62,7 @@
+ // adapter routes guest faults and does not longjmp out of native code generation.
+ void Arm64JITCore::EnsureLumenJITSpace(uint64_t RequiredSpace) {
+ #ifdef __APPLE__
+-  if (FEXLumenDirectUnalignedTsoEnabledV1() == 0) return;
++  if (FEXLumenDirectUnalignedTsoEnabledV1() == 0 && !HasLumenGuestMemoryChecks()) return;
+   const auto Cursor = GetCursorOffset();
+   const auto Capacity = GetBufferSize();
+   if (Cursor > Capacity || Capacity - Cursor < RequiredSpace) {
+@@ -155,7 +171,8 @@
+ 
+ bool Arm64JITCore::HasLumenGuestMemoryChecks() const {
+ #ifdef __APPLE__
+-  return FEXLumenGuestMemoryCheckProviderV1() != nullptr;
++  return FEXLumenGuestMemoryCheckProviderV1() != nullptr ||
++    (FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI && FEXLumenGuestMemoryPreserveAllProviderV1() != nullptr);
+ #else
+   return false;
+ #endif
+@@ -187,7 +204,7 @@
+       const auto Address = ApplyMemOperand(Size, Base, TMP2, Offset, OffsetType, OffsetScale);
+       if (Address != TMP2) mov(ARMEmitter::Size::i64Bit, TMP2, Address);
+     }
+-  }, Write);
++  }, Write, false);
+ }
+ 
+ void Arm64JITCore::EmitLumenGuestMemoryCheckBytes(uint64_t Bytes, ARMEmitter::Register Base,
+@@ -198,24 +215,88 @@
+       LoadConstant(ARMEmitter::Size::i64Bit, TMP1, static_cast<uint64_t>(Displacement));
+       add(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP1);
+     }
+-  }, Write);
+-}
+-
+-void Arm64JITCore::EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write) {
++  }, Write, Base.Idx() == TMP1.Idx() || Base.Idx() == TMP2.Idx() ||
++             Base.Idx() == TMP3.Idx() || Base.Idx() == TMP4.Idx());
++}
++
++void Arm64JITCore::EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write, bool PreserveScratch) {
+ #ifdef __APPLE__
+   const auto Check = FEXLumenGuestMemoryCheckProviderV1();
+-  if (Check == nullptr) return;
+-  LOGMAN_THROW_A_FMT(Bytes != 0, "Memory checks require a nonempty footprint");
++  const auto PreservedCheck = FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI ? FEXLumenGuestMemoryPreserveAllProviderV1() : nullptr;
++  if (Check == nullptr && PreservedCheck == nullptr) return;
++  const bool PreserveAll = PreservedCheck != nullptr;
++  EnsureLumenJITSpace(4096);
++  LOGMAN_THROW_A_FMT(Bytes != 0 && Bytes <= 4096, "Memory checks require a fixed footprint of at most one page");
+   constexpr auto FPSR = static_cast<ARMEmitter::SystemRegister>(
+     ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
+-  // Unlike the normal ABI spill, preserve scratch registers as well: checked
+-  // lane/loop emitters can hold their address, counter and data in these.
+   constexpr uint32_t FrameSize = 160;
++  const auto Guards = FEXLumenGuestMemoryHandoffGuardProviderV1();
++  const auto ReadDirectory = !Write && Guards ? FEXLumenGuestMemoryReadGuardProviderV1() : nullptr;
++  // Persist symbolic relocations, never process-local ASLR addresses, in the
++  // native translation cache. Every load resolves against this runtime.
++  auto GuardAddress = InsertNamedSymbolLiteral(ReadDirectory ?
++    RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY :
++    RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS);
++  auto CheckAddress = InsertNamedSymbolLiteral(PreserveAll ?
++    RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL :
++    RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK);
++  ARMEmitter::ForwardLabel Slow, Done;
++  const auto ProbePage = [&](ARMEmitter::ForwardLabel* CleanRead) {
++    ubfx(ARMEmitter::Size::i64Bit, TMP2, TMP2, 12, 20);
++    ldr(TMP1, &GuardAddress.Loc);
++    if (ReadDirectory) {
++      // The embedding excludes new GPU ownership while this CPU admission
++      // lives. A complete empty-ledger proof skips the callback and its frame;
++      // writes and RMW always use the ordinary guard table. The scratch path
++      // branches through its restoration label, not directly out of the frame.
++      ldar(TMP1, TMP1);
++      cbz_OrRestart(ARMEmitter::Size::i64Bit, TMP1, CleanRead);
++    }
++    add(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP2);
++    ldarb(TMP1.W(), TMP1);
++    cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP1, &Slow);
++  };
++  if (Guards && !PreserveScratch) {
++    // Ordinary scalar/SIMD/RMW accesses use reserved scratch registers: the
++    // hot path has no stack spill, ABI call or NZCV modification. The second
++    // guard load is required only when the <=4 KiB footprint crosses a page.
++    EmitAddress();
++    ProbePage(&Done);
++    if (Bytes != 1) {
++      EmitAddress();
++      and_(ARMEmitter::Size::i64Bit, TMP1, TMP2, 4095);
++      add(ARMEmitter::Size::i64Bit, TMP1, TMP1, Bytes - 1);
++      tbz_OrRestart(TMP1, 12, &Done);
++      add(ARMEmitter::Size::i64Bit, TMP2, TMP2, Bytes - 1);
++      ProbePage(&Done);
++    }
++    b_OrRestart(&Done);
++    BindOrRestart(&Slow);
++  }
++  // REP/lane helpers may carry their address, count or data in scratch
++  // registers. Preserve those scratch values even on their inline path.
+   sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
+   stp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
+-  stp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
+   EmitAddress();
+   str(TMP2, ARMEmitter::Reg::rsp, 32);
++  if (Guards && PreserveScratch) {
++    ARMEmitter::ForwardLabel Fast;
++    ProbePage(&Fast);
++    if (Bytes != 1) {
++      ldr(TMP2, ARMEmitter::Reg::rsp, 32);
++      and_(ARMEmitter::Size::i64Bit, TMP1, TMP2, 4095);
++      add(ARMEmitter::Size::i64Bit, TMP1, TMP1, Bytes - 1);
++      tbz_OrRestart(TMP1, 12, &Fast);
++      add(ARMEmitter::Size::i64Bit, TMP2, TMP2, Bytes - 1);
++      ProbePage(&Fast);
++    }
++    BindOrRestart(&Fast);
++    ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
++    add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++    b_OrRestart(&Done);
++    BindOrRestart(&Slow);
++  }
++  stp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
+   str(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
+   if (HostSupportsSVE256) {
+     mov(TMP1, 96);
+@@ -231,17 +312,19 @@
+   str(TMP1, ARMEmitter::Reg::rsp, 8);
+   mrs(TMP1, FPSR);
+   str(TMP1, ARMEmitter::Reg::rsp, 16);
+-  const auto SpillSize = SpillForABICall(false, TMP1);
++  const auto SpillSize = SpillForABICall(PreserveAll, TMP1);
+   ldr(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 32);
+   LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, Bytes);
+   LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r2, Write ? 1 : 0);
+   LOGMAN_THROW_A_FMT(!DebugData->GuestOpcodes.empty(), "Memory check requires a precise guest opcode");
+   InsertGuestRIPMove(ARMEmitter::Reg::r3, Entry + DebugData->GuestOpcodes.back().GuestEntryOffset);
+-  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r16,
+-               reinterpret_cast<uintptr_t>(Check));
++  ldr(ARMEmitter::XReg::x16, &CheckAddress.Loc);
+   blr(ARMEmitter::Reg::r16);
+-  str(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 24);
+-  FillForABICall(false);
++  str(ARMEmitter::XReg::x0.W(), ARMEmitter::Reg::rsp, SpillSize + 24);
++  // Both ABIs can clobber predicate registers. Base-ABI dynamic pops precede
++  // FillStaticRegs, so reestablish the 32-byte predicate before any SVE load.
++  if (HostSupportsSVE256) ptrue(ARMEmitter::SubRegSize::i8Bit, PRED_TMP_32B, ARMEmitter::PredicatePattern::SVE_VL32);
++  FillForABICall(PreserveAll);
+   if (HostSupportsSVE256) {
+     mov(TMP1, 96);
+     ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
+@@ -256,12 +339,12 @@
+   msr(ARMEmitter::SystemRegister::FPCR, TMP1);
+   ldr(TMP1, ARMEmitter::Reg::rsp, 16);
+   msr(FPSR, TMP1);
+-  ldr(TMP2, ARMEmitter::Reg::rsp, 24);
++  ldr(TMP2.W(), ARMEmitter::Reg::rsp, 24);
+   ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
+   ldr(TMP1, ARMEmitter::Reg::rsp, 48);
+   ldp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
+   ARMEmitter::ForwardLabel Allowed;
+-  cbnz_OrRestart(ARMEmitter::Size::i64Bit, TMP2, &Allowed);
++  cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP2, &Allowed);
+   ldr(TMP2, ARMEmitter::Reg::rsp, 56);
+   add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
+   // All registers and status are restored before trapping. No guest memory
+@@ -270,6 +353,91 @@
+   BindOrRestart(&Allowed);
+   ldr(TMP2, ARMEmitter::Reg::rsp, 56);
+   add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  b_OrRestart(&Done);
++  Align(8);
++  if (Guards) PlaceNamedSymbolLiteral(GuardAddress);
++  PlaceNamedSymbolLiteral(CheckAddress);
++  BindOrRestart(&Done);
++#endif
++}
++
++// Admit only an entirely unwatched forward REP while the embedding keeps
++// this CPU execution counted. A denial preserves the original checked loop;
++// it never publishes cumulative watched source/destination ranges.
++void Arm64JITCore::EmitLumenUnwatchedBulkCheck(uint32_t ElementSize, bool Copy, ARMEmitter::ForwardLabel* Checked) {
++#ifdef __APPLE__
++  if (FEXLumenGuestMemoryBulkProviderV1() == nullptr) {
++    b_OrRestart(Checked);
++    return;
++  }
++  EnsureLumenJITSpace(4096);
++  constexpr auto FPSR = static_cast<ARMEmitter::SystemRegister>(
++    ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
++  constexpr uint32_t FrameSize = 160;
++  auto CheckAddress = InsertNamedSymbolLiteral(RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK);
++  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  stp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
++  stp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  str(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  if (HostSupportsSVE256) {
++    mov(TMP1, 96);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++    mov(TMP1, 128);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++  } else {
++    stp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++  }
++  mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++  str(TMP1, ARMEmitter::Reg::rsp, 0);
++  mrs(TMP1, ARMEmitter::SystemRegister::FPCR);
++  str(TMP1, ARMEmitter::Reg::rsp, 8);
++  mrs(TMP1, FPSR);
++  str(TMP1, ARMEmitter::Reg::rsp, 16);
++  const auto SpillSize = SpillForABICall(false, TMP1);
++  ldr(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 56);
++  if (Copy) ldr(ARMEmitter::XReg::x1, ARMEmitter::Reg::rsp, SpillSize + 64);
++  else LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, 0);
++  ldr(ARMEmitter::XReg::x2, ARMEmitter::Reg::rsp, SpillSize + 48);
++  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r3, ElementSize | (Copy ? 0x100U : 0U));
++  ldr(ARMEmitter::XReg::x16, &CheckAddress.Loc);
++  blr(ARMEmitter::Reg::r16);
++  str(ARMEmitter::WReg::w0, ARMEmitter::Reg::rsp, SpillSize + 24);
++  // The callback may clobber the SVE predicate used by dynamic-register
++  // pops. Reestablish it before FillForABICall consumes it.
++  if (HostSupportsSVE256) ptrue(ARMEmitter::SubRegSize::i8Bit, PRED_TMP_32B, ARMEmitter::PredicatePattern::SVE_VL32);
++  FillForABICall(false);
++  if (HostSupportsSVE256) {
++    mov(TMP1, 96);
++    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++    mov(TMP1, 128);
++    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++  } else {
++    ldp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++  }
++  ldr(TMP1, ARMEmitter::Reg::rsp, 0);
++  msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 8);
++  msr(ARMEmitter::SystemRegister::FPCR, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 16);
++  msr(FPSR, TMP1);
++  ldr(TMP2.W(), ARMEmitter::Reg::rsp, 24);
++  ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 48);
++  ldp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  ARMEmitter::ForwardLabel Allowed, Done;
++  cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP2, &Allowed);
++  ldr(TMP2, ARMEmitter::Reg::rsp, 56);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  b_OrRestart(Checked);
++  BindOrRestart(&Allowed);
++  ldr(TMP2, ARMEmitter::Reg::rsp, 56);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  b_OrRestart(&Done);
++  Align(8);
++  PlaceNamedSymbolLiteral(CheckAddress);
++  BindOrRestart(&Done);
++#else
++  b_OrRestart(Checked);
+ #endif
+ }
+ 
+@@ -2248,8 +2416,8 @@
+     (void)tbnz(DirectionReg, 1, &BackwardImpl);
+   }
+ 
+-  auto MemStore = [this](auto Value, uint32_t OpSize, int32_t Size) {
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++  auto MemStore = [this](auto Value, uint32_t OpSize, int32_t Size, bool Checked) {
++    if (Checked) EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     switch (OpSize) {
+     case 1: strb<ARMEmitter::IndexType::POST>(Value.W(), TMP2, Size); break;
+     case 2: strh<ARMEmitter::IndexType::POST>(Value.W(), TMP2, Size); break;
+@@ -2259,8 +2427,8 @@
+     }
+   };
+ 
+-  auto MemStoreTSO = [this](auto Value, uint32_t OpSize, int32_t Size) {
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++  auto MemStoreTSO = [this](auto Value, uint32_t OpSize, int32_t Size, bool Checked) {
++    if (Checked) EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     if (OpSize == 1) {
+       // 8bit load is always aligned to natural alignment
+       stlrb(Value.W(), TMP2);
+@@ -2287,7 +2455,7 @@
+                           Size == 8 ? ARMEmitter::SubRegSize::i64Bit :
+                                       ARMEmitter::SubRegSize::i8Bit;
+ 
+-  auto EmitMemset = [&](int32_t Direction) {
++  auto EmitMemsetImpl = [&](int32_t Direction, bool Checked) {
+     const int32_t SizeDirection = Size * Direction;
+     const bool IsBackwards = Direction == -1;
+ 
+@@ -2319,7 +2487,7 @@
+     // Early exit if zero count.
+     (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &DoneInternal);
+ 
+-    if (!IsAtomic && !HasLumenGuestMemoryChecks()) {
++    if (!IsAtomic && (!HasLumenGuestMemoryChecks() || !Checked)) {
+       if (CTX->HostFeatures.SupportsMOPS) {
+         const bool Is8Bit = SubRegSize == ARMEmitter::SubRegSize::i8Bit;
+ 
+@@ -2414,9 +2582,9 @@
+ 
+     (void)Bind(&AgainInternal);
+     if (IsAtomic) {
+-      MemStoreTSO(Value, Size, SizeDirection);
++      MemStoreTSO(Value, Size, SizeDirection, Checked);
+     } else {
+-      MemStore(Value, Size, SizeDirection);
++      MemStore(Value, Size, SizeDirection, Checked);
+     }
+     sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, 1);
+     (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &AgainInternal);
+@@ -2424,6 +2592,22 @@
+     (void)Bind(&DoneInternal);
+ 
+     MakeFinalAddress();
++  };
++
++  auto EmitMemset = [&](int32_t Direction) {
++    if (!IsAtomic && HasLumenGuestMemoryChecks() && Direction == 1) {
++      ARMEmitter::ForwardLabel Checked, Complete;
++      // Zero uses the original final-address path without querying admission.
++      cbz_OrRestart(ARMEmitter::Size::i64Bit, TMP1, &Checked);
++      EmitLumenUnwatchedBulkCheck(Size, false, &Checked);
++      EmitMemsetImpl(Direction, false);
++      b_OrRestart(&Complete);
++      BindOrRestart(&Checked);
++      EmitMemsetImpl(Direction, true);
++      BindOrRestart(&Complete);
++    } else {
++      EmitMemsetImpl(Direction, true);
++    }
+   };
+ 
+   if (DirectionIsInline) {
+@@ -2489,9 +2673,11 @@
+     (void)tbnz(DirectionReg, 1, &BackwardImpl);
+   }
+ 
+-  auto MemCpy = [this](uint32_t OpSize, int32_t Size) {
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++  auto MemCpy = [this](uint32_t OpSize, int32_t Size, bool Checked) {
++    if (Checked) {
++      EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
++      EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++    }
+     switch (OpSize) {
+     case 1:
+       ldrb<ARMEmitter::IndexType::POST>(TMP4.W(), TMP3, Size);
+@@ -2517,9 +2703,11 @@
+     }
+   };
+ 
+-  auto MemCpyTSO = [this](uint32_t OpSize, int32_t Size) {
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++  auto MemCpyTSO = [this](uint32_t OpSize, int32_t Size, bool Checked) {
++    if (Checked) {
++      EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
++      EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++    }
+     if (CTX->HostFeatures.SupportsRCPC) {
+       if (OpSize == 1) {
+         // 8bit load is always aligned to natural alignment
+@@ -2579,7 +2767,7 @@
+     }
+   };
+ 
+-  auto EmitMemcpy = [&](int32_t Direction) {
++  auto EmitMemcpyImpl = [&](int32_t Direction, bool Checked) {
+     const int32_t SizeDirection = Size * Direction;
+     const bool IsBackwards = Direction == -1;
+ 
+@@ -2621,7 +2809,7 @@
+     // Early exit if zero count.
+     (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &DoneInternal);
+ 
+-    if (!IsAtomic && !HasLumenGuestMemoryChecks()) {
++    if (!IsAtomic && (!HasLumenGuestMemoryChecks() || !Checked)) {
+       if (CTX->HostFeatures.SupportsMOPS) {
+         // In the event we have an overlap (gross), we need to fall back
+         // to the non-mops copy handler. Since the overlap check needs to
+@@ -2692,8 +2880,8 @@
+       (void)tbnz(TMP1, 63, &AgainInternal256Exit);
+ 
+       (void)Bind(&AgainInternal256);
+-      MemCpy(32, 32 * Direction);
+-      MemCpy(32, 32 * Direction);
++      MemCpy(32, 32 * Direction, Checked);
++      MemCpy(32, 32 * Direction, Checked);
+       sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, 64 / Size);
+       (void)tbz(TMP1, 63, &AgainInternal256);
+ 
+@@ -2704,7 +2892,7 @@
+       sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, 32 / Size);
+       (void)tbnz(TMP1, 63, &AgainInternal128Exit);
+       (void)Bind(&AgainInternal128);
+-      MemCpy(32, 32 * Direction);
++      MemCpy(32, 32 * Direction, Checked);
+       sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, 32 / Size);
+       (void)tbz(TMP1, 63, &AgainInternal128);
+ 
+@@ -2720,9 +2908,9 @@
+ 
+     (void)Bind(&AgainInternal);
+     if (IsAtomic) {
+-      MemCpyTSO(Size, SizeDirection);
++      MemCpyTSO(Size, SizeDirection, Checked);
+     } else {
+-      MemCpy(Size, SizeDirection);
++      MemCpy(Size, SizeDirection, Checked);
+     }
+     sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, 1);
+     (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &AgainInternal);
+@@ -2735,6 +2923,22 @@
+     mov(TMP3, Length.X());
+ 
+     FinalizeAddresses();
++  };
++
++  auto EmitMemcpy = [&](int32_t Direction) {
++    if (!IsAtomic && HasLumenGuestMemoryChecks() && Direction == 1) {
++      ARMEmitter::ForwardLabel Checked, Complete;
++      // Zero uses the original final-address path without querying admission.
++      cbz_OrRestart(ARMEmitter::Size::i64Bit, TMP1, &Checked);
++      EmitLumenUnwatchedBulkCheck(Size, true, &Checked);
++      EmitMemcpyImpl(Direction, false);
++      b_OrRestart(&Complete);
++      BindOrRestart(&Checked);
++      EmitMemcpyImpl(Direction, true);
++      BindOrRestart(&Complete);
++    } else {
++      EmitMemcpyImpl(Direction, true);
++    }
+   };
+ 
+   if (DirectionIsInline) {
+diff --git a/FEXCore/Source/Interface/Core/JIT/Relocations.h b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+--- a/FEXCore/Source/Interface/Core/JIT/Relocations.h
++++ b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+@@ -39,6 +39,11 @@
+     ///< Thread specific relocations
+     // JIT Literal pointers
+     SYMBOL_LITERAL_EXITFUNCTION_LINKER,
++    SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS,
++    SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK,
++    SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK,
++    SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL,
++    SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_READ_GUARD_DIRECTORY,
+   };
+ 
+   RelocationHeader Header {};
+diff --git a/FEXCore/include/FEXCore/Utils/LumenMemoryHandoffAbi.h b/FEXCore/include/FEXCore/Utils/LumenMemoryHandoffAbi.h
+new file mode 100644
+--- /dev/null
++++ b/FEXCore/include/FEXCore/Utils/LumenMemoryHandoffAbi.h
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++#include <atomic>
++#include <cstdint>
++
++// Private embedding ABI. A preserving provider is a separate symbol so a
++// native cache can never rebind a reduced-spill call to an ordinary ABI callee.
++#if defined(__APPLE__) && defined(__clang__) && __has_attribute(preserve_all) && \
++    defined(FEX_HAS_PRESERVE_ALL_ATTR) && FEX_HAS_PRESERVE_ALL_ATTR && defined(FEX_PRESERVE_ALL_ATTR)
++#define FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI 1
++#define FEX_LUMEN_MEMORY_PRESERVE_ALL_ABI FEX_PRESERVE_ALL_ATTR
++#else
++#define FEX_LUMEN_HAS_MEMORY_PRESERVE_ALL_ABI 0
++#define FEX_LUMEN_MEMORY_PRESERVE_ALL_ABI
++#endif
++
++using FEXLumenMemoryCheckV1 = std::uint32_t (*)(std::uint64_t, std::uint64_t,
++  std::uint32_t, std::uint64_t) noexcept;
++using FEXLumenMemoryPreserveAllCheckV1 = std::uint32_t (FEX_LUMEN_MEMORY_PRESERVE_ALL_ABI *)(
++  std::uint64_t, std::uint64_t, std::uint32_t, std::uint64_t) noexcept;
++extern "C" FEXLumenMemoryCheckV1 FEXLumenGuestMemoryCheckProviderV1() noexcept;
++extern "C" FEXLumenMemoryPreserveAllCheckV1 FEXLumenGuestMemoryPreserveAllProviderV1() noexcept;
++
++// A process-lifetime directory loaded with acquire by generated code. Null
++// table means the owner proved all GPU dirty intervals empty. Non-null table
++// retains the ordinary conservative page guards. Only Read uses this proof.
++using FEXLumenMemoryReadGuardDirectoryV1 = const std::atomic<const std::uint8_t*>*;
++static_assert(std::atomic<const std::uint8_t*>::is_always_lock_free);
++static_assert(sizeof(std::atomic<const std::uint8_t*>) == sizeof(const std::uint8_t*));
++extern "C" FEXLumenMemoryReadGuardDirectoryV1 FEXLumenGuestMemoryReadGuardProviderV1() noexcept;

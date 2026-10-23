@@ -1,0 +1,18 @@
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -587,6 +587,13 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
+       // Set the block entry point
+       Thread->OpDispatcher->SetNewBlockIfChanged(Block.Entry);
+-
++
++      // A generated-code backedge can resume at any decoded block, including
++      // one whose first instruction only moves registers. Record its exact
++      // guest entry before register-cache housekeeping emits any IR. Without
++      // this marker, host-PC restoration can inherit an earlier guest opcode
++      // and dispatch before already-completed work with the current registers.
++      Thread->OpDispatcher->_GuestOpcode(Block.Entry - GuestRIP);
++
+       // Reset any block-specific state
+       Thread->OpDispatcher->StartNewBlock();
+       Thread->OpDispatcher->BeginBlockDecode();

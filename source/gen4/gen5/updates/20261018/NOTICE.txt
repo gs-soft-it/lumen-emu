@@ -1,0 +1,19 @@
+PS5 candidate: selected KytyPS5 update, 2026-10-18
+
+Selected graphics/shader source changes derive from
+https://github.com/KytyPS5/KytyPS5, commit
+fe3857a1715551e4f554b2ec29cc1ca3286287a1, under GPL-2.0-only.
+The original b3e419ff import and the October 10 selective update remain
+recorded in source/gen4/gen5/UPSTREAM.json. This is an adapted selective update,
+not a complete upstream revision or an official KytyPS5 release.
+
+The reviewed patch and per-file hashes are recorded in manifest.json and
+kyty.patch beside this notice. Lumen preserves its ARM64 FEX/HLE/VM and
+CPU/GPU publication adaptations, typed exports, RectList interfaces and
+single-sample barycentric handling. The x86 SRT host JIT is disabled on
+ARM64, which uses the portable evaluator. Controller, launcher/updater,
+fixed-address AGC allocation and unqualified VM/fault-tracking changes are
+outside this selection. Original submodule pins and license texts remain.
+
+Copyright and applicable licenses of retained components are unchanged.
+The candidate is opt-in and does not establish public distribution readiness.

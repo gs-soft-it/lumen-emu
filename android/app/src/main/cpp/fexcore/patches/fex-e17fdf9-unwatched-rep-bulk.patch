@@ -1,0 +1,321 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+@@ -14,6 +14,7 @@
+ #if defined(__ANDROID__)
+ extern "C" const uint8_t* FEXLumenGuestMemoryHandoffGuardProviderV1() noexcept;
+ extern "C" uint64_t (*FEXLumenGuestMemoryCheckProviderV1() noexcept)(uint64_t, uint64_t, uint64_t, uint64_t);
++extern "C" uint32_t (*FEXLumenGuestMemoryBulkProviderV1() noexcept)(uint64_t, uint64_t, uint64_t, uint64_t) noexcept;
+ #endif
+ uint64_t GetNamedSymbolLiteral(FEXCore::Context::ContextImpl& CTX, FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol Op) {
+   switch (Op) {
+@@ -24,6 +25,8 @@
+     return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryHandoffGuardProviderV1());
+   case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK:
+     return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryCheckProviderV1());
++  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK:
++    return reinterpret_cast<uint64_t>(FEXLumenGuestMemoryBulkProviderV1());
+ #endif
+ 
+   default: ERROR_AND_DIE_FMT("Unknown named symbol literal: {}", static_cast<uint32_t>(Op));
+diff --git a/FEXCore/Source/Interface/Core/JIT/Relocations.h b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+--- a/FEXCore/Source/Interface/Core/JIT/Relocations.h
++++ b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+@@ -41,6 +41,7 @@
+     SYMBOL_LITERAL_EXITFUNCTION_LINKER,
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_GUARDS,
+     SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK,
++    SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK,
+   };
+ 
+   RelocationHeader Header {};
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -542,6 +542,7 @@
+                                  IR::OpSize VectorIndexSize, size_t DataElementOffsetStart, size_t IndexElementOffsetStart,
+                                  uint8_t OffsetScale, IR::OpSize AddrSize);
+   bool HasLumenGuestMemoryChecks() const;
++  void EmitLumenUnwatchedBulkCheck(uint32_t ElementSize, bool Copy, ARMEmitter::ForwardLabel* Checked);
+   void EmitLumenGuestMemoryCheckBytes(uint64_t Bytes, ARMEmitter::Register Base,
+                                      int64_t Displacement, bool Write);
+   void EmitLumenGuestMemoryCheckImpl(uint64_t Bytes, const std::function<void()>& EmitAddress, bool Write, bool PreserveScratch);
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -28,6 +28,11 @@
+   return nullptr;
+ }
+ extern "C" __attribute__((weak, noinline)) const uint8_t* FEXLumenGuestMemoryHandoffGuardProviderV1() noexcept {
++  return nullptr;
++}
++using LumenMemoryBulkCheck = uint32_t (*)(uint64_t Destination, uint64_t Source,
++                                         uint64_t Count, uint64_t Shape) noexcept;
++extern "C" __attribute__((weak, noinline)) LumenMemoryBulkCheck FEXLumenGuestMemoryBulkProviderV1() noexcept {
+   return nullptr;
+ }
+ #endif
+@@ -213,6 +218,85 @@
+ #endif
+ }
+ 
++// Admit only an entirely unwatched forward REP while the embedding keeps
++// this CPU execution counted. A denial preserves the original checked loop;
++// it never publishes cumulative watched source/destination ranges.
++void Arm64JITCore::EmitLumenUnwatchedBulkCheck(uint32_t ElementSize, bool Copy, ARMEmitter::ForwardLabel* Checked) {
++#if defined(__ANDROID__)
++  if (FEXLumenGuestMemoryBulkProviderV1() == nullptr) {
++    b_OrRestart(Checked);
++    return;
++  }
++  constexpr auto FPSR = static_cast<ARMEmitter::SystemRegister>(
++    ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
++  constexpr uint32_t FrameSize = 160;
++  auto CheckAddress = InsertNamedSymbolLiteral(RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_BULK);
++  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  stp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, ARMEmitter::Reg::rsp, 48);
++  stp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  str(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  if (HostSupportsSVE256) {
++    mov(TMP1, 96);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++    mov(TMP1, 128);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++  } else {
++    stp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++  }
++  mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++  str(TMP1, ARMEmitter::Reg::rsp, 0);
++  mrs(TMP1, ARMEmitter::SystemRegister::FPCR);
++  str(TMP1, ARMEmitter::Reg::rsp, 8);
++  mrs(TMP1, FPSR);
++  str(TMP1, ARMEmitter::Reg::rsp, 16);
++  const auto SpillSize = SpillForABICall(false, TMP1);
++  ldr(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 56);
++  if (Copy) ldr(ARMEmitter::XReg::x1, ARMEmitter::Reg::rsp, SpillSize + 64);
++  else LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, 0);
++  ldr(ARMEmitter::XReg::x2, ARMEmitter::Reg::rsp, SpillSize + 48);
++  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r3, ElementSize | (Copy ? 0x100U : 0U));
++  ldr(ARMEmitter::XReg::x16, &CheckAddress.Loc);
++  blr(ARMEmitter::Reg::r16);
++  str(ARMEmitter::WReg::w0, ARMEmitter::Reg::rsp, SpillSize + 24);
++  // The callback may clobber the SVE predicate used by dynamic-register
++  // pops. Reestablish it before FillForABICall consumes it.
++  if (HostSupportsSVE256) ptrue(ARMEmitter::SubRegSize::i8Bit, PRED_TMP_32B, ARMEmitter::PredicatePattern::SVE_VL32);
++  FillForABICall(false);
++  if (HostSupportsSVE256) {
++    mov(TMP1, 96);
++    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++    mov(TMP1, 128);
++    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++  } else {
++    ldp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++  }
++  ldr(TMP1, ARMEmitter::Reg::rsp, 0);
++  msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 8);
++  msr(ARMEmitter::SystemRegister::FPCR, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 16);
++  msr(FPSR, TMP1);
++  ldr(TMP2.W(), ARMEmitter::Reg::rsp, 24);
++  ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 48);
++  ldp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  ARMEmitter::ForwardLabel Allowed, Done;
++  cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP2, &Allowed);
++  ldr(TMP2, ARMEmitter::Reg::rsp, 56);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  b_OrRestart(Checked);
++  BindOrRestart(&Allowed);
++  ldr(TMP2, ARMEmitter::Reg::rsp, 56);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  b_OrRestart(&Done);
++  Align(8);
++  PlaceNamedSymbolLiteral(CheckAddress);
++  BindOrRestart(&Done);
++#else
++  b_OrRestart(Checked);
++#endif
++}
++
+ DEF_OP(LoadContext) {
+   const auto Op = IROp->C<IR::IROp_LoadContext>();
+   const auto OpSize = IROp->Size;
+@@ -2178,8 +2262,8 @@
+     (void)tbnz(DirectionReg, 1, &BackwardImpl);
+   }
+ 
+-  auto MemStore = [this](auto Value, uint32_t OpSize, int32_t Size) {
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++  auto MemStore = [this](auto Value, uint32_t OpSize, int32_t Size, bool Checked) {
++    if (Checked) EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     switch (OpSize) {
+     case 1: strb<ARMEmitter::IndexType::POST>(Value.W(), TMP2, Size); break;
+     case 2: strh<ARMEmitter::IndexType::POST>(Value.W(), TMP2, Size); break;
+@@ -2189,8 +2273,8 @@
+     }
+   };
+ 
+-  auto MemStoreTSO = [this](auto Value, uint32_t OpSize, int32_t Size) {
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++  auto MemStoreTSO = [this](auto Value, uint32_t OpSize, int32_t Size, bool Checked) {
++    if (Checked) EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
+     if (OpSize == 1) {
+       // 8bit load is always aligned to natural alignment
+       stlrb(Value.W(), TMP2);
+@@ -2217,7 +2301,7 @@
+                           Size == 8 ? ARMEmitter::SubRegSize::i64Bit :
+                                       ARMEmitter::SubRegSize::i8Bit;
+ 
+-  auto EmitMemset = [&](int32_t Direction) {
++  auto EmitMemsetImpl = [&](int32_t Direction, bool Checked) {
+     const int32_t SizeDirection = Size * Direction;
+     const bool IsBackwards = Direction == -1;
+ 
+@@ -2249,7 +2333,7 @@
+     // Early exit if zero count.
+     (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &DoneInternal);
+ 
+-    if (!IsAtomic && !HasLumenGuestMemoryChecks()) {
++    if (!IsAtomic && (!HasLumenGuestMemoryChecks() || !Checked)) {
+       if (CTX->HostFeatures.SupportsMOPS) {
+         const bool Is8Bit = SubRegSize == ARMEmitter::SubRegSize::i8Bit;
+ 
+@@ -2344,9 +2428,9 @@
+ 
+     (void)Bind(&AgainInternal);
+     if (IsAtomic) {
+-      MemStoreTSO(Value, Size, SizeDirection);
++      MemStoreTSO(Value, Size, SizeDirection, Checked);
+     } else {
+-      MemStore(Value, Size, SizeDirection);
++      MemStore(Value, Size, SizeDirection, Checked);
+     }
+     sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, 1);
+     (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &AgainInternal);
+@@ -2354,6 +2438,22 @@
+     (void)Bind(&DoneInternal);
+ 
+     MakeFinalAddress();
++  };
++
++  auto EmitMemset = [&](int32_t Direction) {
++    if (!IsAtomic && HasLumenGuestMemoryChecks() && Direction == 1) {
++      ARMEmitter::ForwardLabel Checked, Complete;
++      // Zero uses the original final-address path without querying admission.
++      cbz_OrRestart(ARMEmitter::Size::i64Bit, TMP1, &Checked);
++      EmitLumenUnwatchedBulkCheck(Size, false, &Checked);
++      EmitMemsetImpl(Direction, false);
++      b_OrRestart(&Complete);
++      BindOrRestart(&Checked);
++      EmitMemsetImpl(Direction, true);
++      BindOrRestart(&Complete);
++    } else {
++      EmitMemsetImpl(Direction, true);
++    }
+   };
+ 
+   if (DirectionIsInline) {
+@@ -2419,9 +2519,11 @@
+     (void)tbnz(DirectionReg, 1, &BackwardImpl);
+   }
+ 
+-  auto MemCpy = [this](uint32_t OpSize, int32_t Size) {
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++  auto MemCpy = [this](uint32_t OpSize, int32_t Size, bool Checked) {
++    if (Checked) {
++      EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
++      EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++    }
+     switch (OpSize) {
+     case 1:
+       ldrb<ARMEmitter::IndexType::POST>(TMP4.W(), TMP3, Size);
+@@ -2447,9 +2549,11 @@
+     }
+   };
+ 
+-  auto MemCpyTSO = [this](uint32_t OpSize, int32_t Size) {
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
+-    EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++  auto MemCpyTSO = [this](uint32_t OpSize, int32_t Size, bool Checked) {
++    if (Checked) {
++      EmitLumenGuestMemoryCheckBytes(OpSize, TMP3, 0, false);
++      EmitLumenGuestMemoryCheckBytes(OpSize, TMP2, 0, true);
++    }
+     if (CTX->HostFeatures.SupportsRCPC) {
+       if (OpSize == 1) {
+         // 8bit load is always aligned to natural alignment
+@@ -2509,7 +2613,7 @@
+     }
+   };
+ 
+-  auto EmitMemcpy = [&](int32_t Direction) {
++  auto EmitMemcpyImpl = [&](int32_t Direction, bool Checked) {
+     const int32_t SizeDirection = Size * Direction;
+     const bool IsBackwards = Direction == -1;
+ 
+@@ -2551,7 +2655,7 @@
+     // Early exit if zero count.
+     (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &DoneInternal);
+ 
+-    if (!IsAtomic && !HasLumenGuestMemoryChecks()) {
++    if (!IsAtomic && (!HasLumenGuestMemoryChecks() || !Checked)) {
+       if (CTX->HostFeatures.SupportsMOPS) {
+         // In the event we have an overlap (gross), we need to fall back
+         // to the non-mops copy handler. Since the overlap check needs to
+@@ -2622,8 +2726,8 @@
+       (void)tbnz(TMP1, 63, &AgainInternal256Exit);
+ 
+       (void)Bind(&AgainInternal256);
+-      MemCpy(32, 32 * Direction);
+-      MemCpy(32, 32 * Direction);
++      MemCpy(32, 32 * Direction, Checked);
++      MemCpy(32, 32 * Direction, Checked);
+       sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, 64 / Size);
+       (void)tbz(TMP1, 63, &AgainInternal256);
+ 
+@@ -2634,7 +2738,7 @@
+       sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, 32 / Size);
+       (void)tbnz(TMP1, 63, &AgainInternal128Exit);
+       (void)Bind(&AgainInternal128);
+-      MemCpy(32, 32 * Direction);
++      MemCpy(32, 32 * Direction, Checked);
+       sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, 32 / Size);
+       (void)tbz(TMP1, 63, &AgainInternal128);
+ 
+@@ -2650,9 +2754,9 @@
+ 
+     (void)Bind(&AgainInternal);
+     if (IsAtomic) {
+-      MemCpyTSO(Size, SizeDirection);
++      MemCpyTSO(Size, SizeDirection, Checked);
+     } else {
+-      MemCpy(Size, SizeDirection);
++      MemCpy(Size, SizeDirection, Checked);
+     }
+     sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, 1);
+     (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &AgainInternal);
+@@ -2665,6 +2769,22 @@
+     mov(TMP3, Length.X());
+ 
+     FinalizeAddresses();
++  };
++
++  auto EmitMemcpy = [&](int32_t Direction) {
++    if (!IsAtomic && HasLumenGuestMemoryChecks() && Direction == 1) {
++      ARMEmitter::ForwardLabel Checked, Complete;
++      // Zero uses the original final-address path without querying admission.
++      cbz_OrRestart(ARMEmitter::Size::i64Bit, TMP1, &Checked);
++      EmitLumenUnwatchedBulkCheck(Size, true, &Checked);
++      EmitMemcpyImpl(Direction, false);
++      b_OrRestart(&Complete);
++      BindOrRestart(&Checked);
++      EmitMemcpyImpl(Direction, true);
++      BindOrRestart(&Complete);
++    } else {
++      EmitMemcpyImpl(Direction, true);
++    }
+   };
+ 
+   if (DirectionIsInline) {

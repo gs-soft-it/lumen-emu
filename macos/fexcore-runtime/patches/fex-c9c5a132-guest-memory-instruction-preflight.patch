@@ -1,0 +1,170 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -28,12 +28,31 @@
+ }
+ #endif
+ 
++extern "C" bool FEXLumenGuestMemoryChecksEnabled() noexcept {
++#ifdef __APPLE__
++  return FEXLumenGuestMemoryCheckProviderV1() != nullptr;
++#else
++  return false;
++#endif
++}
++
+ bool Arm64JITCore::HasLumenGuestMemoryChecks() const {
+ #ifdef __APPLE__
+   return FEXLumenGuestMemoryCheckProviderV1() != nullptr;
+ #else
+   return false;
+ #endif
++}
++
++DEF_OP(GuestMemoryCheck) {
++  const auto Op = IROp->C<IR::IROp_GuestMemoryCheck>();
++  EmitLumenGuestMemoryCheckBytes(Op->Bytes, GetReg(Op->Addr), 0, Op->Write);
++}
++
++DEF_OP(GuestMemoryCheckMasked) {
++  const auto Op = IROp->C<IR::IROp_GuestMemoryCheckMasked>();
++  EmitLumenMaskedMemoryCheck(IROp->Size, IROp->ElementSize, GetReg(Op->Addr), GetVReg(Op->Mask),
++                             Op->Offset, IR::MemOffsetType::SXTX, 1, Op->Write);
+ }
+ 
+ void Arm64JITCore::EmitLumenGuestMemoryCheck(IR::OpSize Size, ARMEmitter::Register Base,
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -25,6 +25,10 @@
+ #include <stddef.h>
+ #include <utility>
+ #include <xxhash.h>
++
++#ifdef __APPLE__
++extern "C" bool FEXLumenGuestMemoryChecksEnabled() noexcept;
++#endif
+ 
+ namespace FEXCore::IR {
+ enum class VectorCompareType {
+@@ -2521,6 +2525,12 @@
+       return LoadMemPair(Class, Size, B.Base, B.Offset);
+     }
+ 
++#ifdef __APPLE__
++    if (FEXLumenGuestMemoryChecksEnabled()) {
++      const auto Address = LoadEffectiveAddress(this, A, GetGPROpSize(), true, false);
++      _GuestMemoryCheck(Address, 2 * IR::OpSizeToSize(Size), false);
++    }
++#endif
+     AddressMode HighA = A;
+     HighA.Offset += 16;
+ 
+@@ -2559,6 +2569,12 @@
+       const auto B = SelectPairAddressMode(A, Size);
+       _StoreMemPair(Class, Size, Value1, Value2, B.Base, B.Offset);
+     } else {
++#ifdef __APPLE__
++      if (FEXLumenGuestMemoryChecksEnabled()) {
++        const auto Address = LoadEffectiveAddress(this, A, GetGPROpSize(), true, false);
++        _GuestMemoryCheck(Address, 2 * SizeInt, true);
++      }
++#endif
+       auto B = A;
+ 
+       _StoreMemAutoTSO(Class, Size, B, Value1, OpSize::i8Bit);
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
+@@ -1579,12 +1579,25 @@
+     auto Address = MakeAddress(Op->Dest);
+ 
+     auto Data = AVX128_LoadSource_WithOpSize(Op, DataOp, Op->Flags, !Is128Bit);
++#ifdef __APPLE__
++    if (!Is128Bit && FEXLumenGuestMemoryChecksEnabled()) {
++      // Preflight both halves before the first store publishes any active lane.
++      _GuestMemoryCheckMasked(OpSize::i128Bit, ElementSize, Mask.Low, Address, Invalid(), true);
++      _GuestMemoryCheckMasked(OpSize::i128Bit, ElementSize, Mask.High, Address, _InlineConstant(16), true);
++    }
++#endif
+     _VStoreVectorMasked(OpSize::i128Bit, ElementSize, Mask.Low, Data.Low, Address, Invalid(), MemOffsetType::SXTX, 1);
+     if (!Is128Bit) {
+       _VStoreVectorMasked(OpSize::i128Bit, ElementSize, Mask.High, Data.High, Address, _InlineConstant(16), MemOffsetType::SXTX, 1);
+     }
+   } else {
+     auto Address = MakeAddress(DataOp);
++#ifdef __APPLE__
++    if (!Is128Bit && FEXLumenGuestMemoryChecksEnabled()) {
++      _GuestMemoryCheckMasked(OpSize::i128Bit, ElementSize, Mask.Low, Address, Invalid(), false);
++      _GuestMemoryCheckMasked(OpSize::i128Bit, ElementSize, Mask.High, Address, _InlineConstant(16), false);
++    }
++#endif
+ 
+     RefPair Result {};
+     Result.Low = _VLoadVectorMasked(OpSize::i128Bit, ElementSize, Mask.Low, Address, Invalid(), MemOffsetType::SXTX, 1);
+diff --git a/FEXCore/Source/Interface/IR/IR.json b/FEXCore/Source/Interface/IR/IR.json
+--- a/FEXCore/Source/Interface/IR/IR.json
++++ b/FEXCore/Source/Interface/IR/IR.json
+@@ -529,6 +529,18 @@
+         "DestSize": "OpSize::i64Bit"
+       },
+ 
++      "GuestMemoryCheck GPR:$Addr, u32:$Bytes, i1:$Write": {
++        "Desc": ["Preflight a complete guest memory footprint before split instruction effects."],
++        "HasSideEffects": true
++      },
++
++      "GuestMemoryCheckMasked OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Mask, GPR:$Addr, GPR:$Offset, i1:$Write": {
++        "Desc": ["Preflight active lanes without publishing loads or stores."],
++        "HasSideEffects": true,
++        "DestSize": "RegisterSize",
++        "ElementSize": "ElementSize"
++      },
++
+       "SSA = LoadMem RegisterClass:$Class, OpSize:#Size, GPR:$Addr, GPR:$Offset, OpSize:$Align, MemOffsetType:$OffsetType, u8:$OffsetScale": {
+         "Inline": ["", "Mem"],
+         "DestSize": "Size"
+@@ -561,15 +573,13 @@
+       },
+ 
+       "StoreMemX87SVEOptPredicate OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Value, GPR:$Addr": {
+-        "Desc": [ "Stores a value to memory using SVE predicate mask that's designed",
+-                  "specifically for use in the X87 SVE Ldst optimization." ],
++        "Desc": [ "Stores an 80-bit x87 memory value, using the SVE predicate or a scalar fallback." ],
+         "DestSize": "RegisterSize",
+         "HasSideEffects": true,
+         "ElementSize": "ElementSize"
+       },
+       "FPR = LoadMemX87SVEOptPredicate OpSize:#RegisterSize, OpSize:#ElementSize, GPR:$Addr": {
+-        "Desc": [ "Loads a value to memory using SVE predicate mask that's designed",
+-                  "specifically for use in the X87 SVE Ldst optimization." ],
++        "Desc": [ "Loads an 80-bit x87 memory value, using the SVE predicate or a scalar fallback." ],
+         "DestSize": "RegisterSize",
+         "ElementSize": "ElementSize"
+       },
+diff --git a/FEXCore/Source/Interface/IR/Passes/RegisterAllocationPass.cpp b/FEXCore/Source/Interface/IR/Passes/RegisterAllocationPass.cpp
+--- a/FEXCore/Source/Interface/IR/Passes/RegisterAllocationPass.cpp
++++ b/FEXCore/Source/Interface/IR/Passes/RegisterAllocationPass.cpp
+@@ -19,6 +19,10 @@
+ #include <bit>
+ #include <cstdint>
+ 
++#ifdef __APPLE__
++extern "C" bool FEXLumenGuestMemoryChecksEnabled() noexcept;
++#endif
++
+ using namespace FEXCore;
+ 
+ namespace FEXCore::IR {
+@@ -667,6 +671,11 @@
+       // Since we'd be doing this check anyway for merging, do the check now so
+       // we can skip the rest of the logic too.
+       if (IROp->Op == OP_GUESTOPCODE || IROp->Op == OP_INLINECONSTANT) {
++#ifdef __APPLE__
++        // A checked pair may not move an earlier instruction's access under
++        // a later instruction's RIP or suppress its already permitted effects.
++        if (IROp->Op == OP_GUESTOPCODE && FEXLumenGuestMemoryChecksEnabled()) LastNode = nullptr;
++#endif
+         continue;
+       }
+ 

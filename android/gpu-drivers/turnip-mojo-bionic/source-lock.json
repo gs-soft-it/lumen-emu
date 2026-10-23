@@ -1,0 +1,44 @@
+{
+  "schema": "lumen.mojo-bionic.baseline.v1",
+  "baseline": "C13",
+  "source": {
+    "repository": "https://github.com/whitebelyash/mesa-unified",
+    "commit": "08e74439b86d87df4b705edc00e47a5ef1e3b637",
+    "archive_url": "https://codeload.github.com/whitebelyash/mesa-unified/tar.gz/08e74439b86d87df4b705edc00e47a5ef1e3b637",
+    "archive_sha256": "ec4d47c54b5ea31bbd4feaaada26b00be72fe3eb77728f4aafd9badd9163f342"
+  },
+  "patch": {
+    "file": "kgsl-zero-timeout-poll.patch",
+    "sha256": "0d9bde13f4421a4dc12b3d12140381213f4c2aad61863c3006d9d85074efe886",
+    "upstream_author": "JICA98",
+    "upstream_commit": "02c560395409ad96c28544ffad5d4dbb01e1d24b",
+    "license": "Apache-2.0",
+    "target": "src/freedreno/vulkan/tu_knl_kgsl.cc",
+    "preimage_sha256": "38ac12b4bf7ad8a132f84fdc9e99a22f39b0dc088cf0f8d9332e8714f7740614",
+    "postimage_sha256": "19398a5db4443c38c1b513e14aed6619ebe64657ad3272aa0b04f4d1dadc9978"
+  },
+  "build": {
+    "ndk_version": "29.0.14206865",
+    "meson_version": "1.12.1",
+    "api": 35,
+    "abi": "arm64-v8a",
+    "page_alignment": 16384,
+    "options": [
+      "-Dplatforms=android", "-Dplatform-sdk-version=35", "-Dandroid-stub=true",
+      "-Dandroid-libbacktrace=disabled", "-Dgallium-drivers=", "-Dvulkan-drivers=freedreno",
+      "-Dfreedreno-kmds=kgsl", "-Dopengl=false", "-Dgles1=disabled", "-Dgles2=disabled",
+      "-Degl=disabled", "-Dglx=disabled", "-Dgbm=disabled", "-Dllvm=disabled",
+      "-Dshared-glapi=disabled", "-Dlibunwind=disabled", "-Dbuild-tests=false",
+      "-Dzstd=disabled", "-Dxmlconfig=disabled", "-Dexpat=disabled",
+      "-Dspirv-tools=disabled", "-Dcpp_args=-Wno-error=c++11-narrowing"
+    ]
+  },
+  "accepted_driver": {
+    "directory": "GpuDrivers/turnip-mojo-26.1-v2-bionic",
+    "library": "libvulkan_freedreno.so",
+    "sha256": "db643e03427f253b9e74304a8b71c4279a2c27fcce85e0adcee51a47c7e9c577",
+    "bytes": 13953536,
+    "build_id": "fc261017966465709e45087c5c2e8595d7a6e0c9"
+  },
+  "qualification": "Accepted C13 driver identity; a rebuild is recorded separately and is not automatically runtime-qualified."
+}

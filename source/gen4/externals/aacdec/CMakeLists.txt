@@ -1,0 +1,155 @@
+# SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+set(AACDEC_SRC
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/FDK_delay.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/aac_ram.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/aac_rom.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/aacdec_drc.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/aacdec_hcr.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/aacdec_hcr_bit.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/aacdec_hcrs.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/aacdec_pns.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/aacdec_tns.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/aacdecoder.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/aacdecoder_lib.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/block.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/channel.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/channelinfo.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/conceal.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/ldfiltbank.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/pulsedata.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/rvlc.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/rvlcbit.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/rvlcconceal.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/stereo.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/usacdec_ace_d4t64.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/usacdec_ace_ltp.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/usacdec_acelp.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/usacdec_fac.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/usacdec_lpc.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/usacdec_lpd.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/src/usacdec_rom.cpp
+)
+
+set(FDK_SRC
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/FDK_bitbuffer.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/FDK_core.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/FDK_crc.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/FDK_decorrelate.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/FDK_hybrid.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/FDK_lpc.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/FDK_matrixCalloc.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/FDK_qmf_domain.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/FDK_tools_rom.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/FDK_trigFcts.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/autocorr2nd.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/dct.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/fft.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/fft_rad2.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/fixpoint_math.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/huff_nodes.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/mdct.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/nlc_dec.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/qmf.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/src/scale.cpp
+)
+
+set(SYS_SRC
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSYS/src/genericStds.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSYS/src/syslib_channelMapDescr.cpp
+)
+
+set(ARITHCODING_SRC
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libArithCoding/src/ac_arith_coder.cpp
+)
+
+set(MPEGTPDEC_SRC
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libMpegTPDec/src/tpdec_adif.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libMpegTPDec/src/tpdec_adts.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libMpegTPDec/src/tpdec_asc.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libMpegTPDec/src/tpdec_drm.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libMpegTPDec/src/tpdec_latm.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libMpegTPDec/src/tpdec_lib.cpp
+)
+
+set(SBRDEC_SRC
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/HFgen_preFlat.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/env_calc.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/env_dec.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/env_extr.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/hbe.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/huff_dec.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/lpp_tran.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/psbitdec.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/psdec.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/psdec_drm.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/psdecrom_drm.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/pvc_dec.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/sbr_deb.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/sbr_dec.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/sbr_ram.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/sbr_rom.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/sbrdec_drc.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/sbrdec_freq_sca.cpp
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/src/sbrdecoder.cpp
+)
+
+set(PCMUTILS_SRC
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libPCMutils/src/limiter.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libPCMutils/src/pcm_utils.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libPCMutils/src/pcmdmx_lib.cpp
+)
+
+set(DRCDEC_SRC
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libDRCdec/src/FDK_drcDecLib.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libDRCdec/src/drcDec_gainDecoder.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libDRCdec/src/drcDec_reader.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libDRCdec/src/drcDec_rom.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libDRCdec/src/drcDec_selectionProcess.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libDRCdec/src/drcDec_tools.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libDRCdec/src/drcGainDec_init.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libDRCdec/src/drcGainDec_preprocess.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libDRCdec/src/drcGainDec_process.cpp
+)
+
+set(SACDEC_SRC
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_bitdec.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_calcM1andM2.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_dec.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_dec_conceal.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_dec_lib.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_process.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_qmf.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_reshapeBBEnv.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_rom.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_smoothing.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_stp.cpp
+  ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/src/sac_tsd.cpp
+)
+
+add_library(fdk-aac
+  ${AACDEC_SRC}
+  ${FDK_SRC}
+  ${SYS_SRC}
+  ${ARITHCODING_SRC}
+  ${MPEGTPDEC_SRC}
+  ${SBRDEC_SRC}
+  ${PCMUTILS_SRC}
+  ${DRCDEC_SRC}
+  ${SACDEC_SRC}
+)
+
+target_include_directories(fdk-aac
+  PUBLIC
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libAACdec/include
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libFDK/include
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSYS/include
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libArithCoding/include
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libMpegTPDec/include
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSBRdec/include
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libPCMutils/include
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libDRCdec/include
+    ${LUMEN_GEN4_DEPS_DIR}/aacdec/fdk-aac/libSACdec/include
+)

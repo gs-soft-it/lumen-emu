@@ -1,0 +1,40 @@
+--- a/meson.build
++++ b/meson.build
+@@ -1371,7 +1371,7 @@
+ rt = not_found
+ if host_os != 'windows'
+   have_shm_open = cc.has_function('shm_open')
+-  if not have_shm_open
++  if not have_shm_open and cc.get_define('__ANDROID__') != '1'
+     rt = cc.find_library('rt', required: true)
+   endif
+ endif
+--- a/util/oslib-posix.c
++++ b/util/oslib-posix.c
+@@ -59,6 +59,9 @@
+ #endif
+ 
+ #include "qemu/memalign.h"
++#ifdef __ANDROID__
++#include "qemu/memfd.h"
++#endif
+ #include "qemu/mmap-alloc.h"
+ 
+ #define MAX_MEM_PREALLOC_THREAD_COUNT 32
+@@ -984,6 +987,9 @@
+ 
+ int qemu_shm_alloc(size_t size, Error **errp)
+ {
++#ifdef __ANDROID__
++    return qemu_memfd_create("lumen-qemu-shm", size, false, 0, 0, errp);
++#else
+     g_autoptr(GString) shm_name = g_string_new(NULL);
+     int fd, oflag, cur_sequence;
+     static int sequence;
+@@ -1032,4 +1038,5 @@
+     }
+ 
+     return fd;
+-}
++#endif
++}

@@ -1,0 +1,317 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -1823,75 +1823,35 @@
+ 
+ DEF_OP(StoreMemX87SVEOptPredicate) {
+   const auto Op = IROp->C<IR::IROp_StoreMemX87SVEOptPredicate>();
+-  const auto Predicate = PRED_X87_SVEOPT;
+-
+-  LOGMAN_THROW_A_FMT(HostSupportsSVE128 || HostSupportsSVE256, "StoreMemX87SVEOptPredicate needs SVE support");
+-
+   const auto RegData = GetVReg(Op->Value);
+   const auto MemReg = GetReg(Op->Addr);
+-  if (HasLumenGuestMemoryChecks()) {
+-    // The pin's x87 optimization uses five halfwords (80 bits), not the
+-    // 128-bit IR result width. Reject a new unchecked predicate shape.
+-    LOGMAN_THROW_A_FMT(IROp->ElementSize == IR::OpSize::i16Bit, "Unexpected x87 SVE memory element size");
+-    EmitLumenGuestMemoryCheckBytes(10, MemReg, 0, true);
+-  }
+-  const auto MemDst = ARMEmitter::SVEMemOperand(MemReg.X(), 0);
+-
+-  switch (IROp->ElementSize) {
+-  case IR::OpSize::i8Bit: {
+-    st1b<ARMEmitter::SubRegSize::i8Bit>(RegData.Z(), Predicate, MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i16Bit: {
+-    st1h<ARMEmitter::SubRegSize::i16Bit>(RegData.Z(), Predicate, MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i32Bit: {
+-    st1w<ARMEmitter::SubRegSize::i32Bit>(RegData.Z(), Predicate, MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i64Bit: {
+-    st1d(RegData.Z(), Predicate, MemDst);
+-    break;
+-  }
+-  default: LOGMAN_MSG_A_FMT("Unhandled {} element size: {}", __func__, IROp->ElementSize); break;
++  // Keep an 80-bit transfer in one IR operation on every host. Splitting it
++  // into independent 64/16-bit stores allows the first half to escape preflight.
++  LOGMAN_THROW_A_FMT(IROp->ElementSize == IR::OpSize::i16Bit, "Unexpected x87 memory element size");
++  EmitLumenGuestMemoryCheckBytes(10, MemReg, 0, true);
++  if (HostSupportsSVE128 || HostSupportsSVE256) {
++    const auto MemDst = ARMEmitter::SVEMemOperand(MemReg.X(), 0);
++    st1h<ARMEmitter::SubRegSize::i16Bit>(RegData.Z(), PRED_X87_SVEOPT, MemDst);
++  } else {
++    str(RegData.D(), MemReg);
++    umov<ARMEmitter::SubRegSize::i64Bit>(TMP1, RegData, 1);
++    strh(TMP1.W(), MemReg, 8);
+   }
+ }
+ 
+ DEF_OP(LoadMemX87SVEOptPredicate) {
+   const auto Op = IROp->C<IR::IROp_LoadMemX87SVEOptPredicate>();
+   const auto Dst = GetVReg(Node);
+-  const auto Predicate = PRED_X87_SVEOPT;
+   const auto MemReg = GetReg(Op->Addr);
+-  if (HasLumenGuestMemoryChecks()) {
+-    // The pin's x87 optimization uses five halfwords (80 bits), not the
+-    // 128-bit IR result width. Reject a new unchecked predicate shape.
+-    LOGMAN_THROW_A_FMT(IROp->ElementSize == IR::OpSize::i16Bit, "Unexpected x87 SVE memory element size");
+-    EmitLumenGuestMemoryCheckBytes(10, MemReg, 0, false);
+-  }
+-
+-  LOGMAN_THROW_A_FMT(HostSupportsSVE128 || HostSupportsSVE256, "LoadMemX87SVEOptPredicate needs SVE support");
+-
+-  const auto MemDst = ARMEmitter::SVEMemOperand(MemReg.X(), 0);
+-
+-  switch (IROp->ElementSize) {
+-  case IR::OpSize::i8Bit: {
+-    ld1b<ARMEmitter::SubRegSize::i8Bit>(Dst.Z(), Predicate.Zeroing(), MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i16Bit: {
+-    ld1h<ARMEmitter::SubRegSize::i16Bit>(Dst.Z(), Predicate.Zeroing(), MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i32Bit: {
+-    ld1w<ARMEmitter::SubRegSize::i32Bit>(Dst.Z(), Predicate.Zeroing(), MemDst);
+-    break;
+-  }
+-  case IR::OpSize::i64Bit: {
+-    ld1d(Dst.Z(), Predicate.Zeroing(), MemDst);
+-    break;
+-  }
+-  default: LOGMAN_MSG_A_FMT("Unhandled {} element size: {}", __func__, IROp->ElementSize); break;
++  LOGMAN_THROW_A_FMT(IROp->ElementSize == IR::OpSize::i16Bit, "Unexpected x87 memory element size");
++  EmitLumenGuestMemoryCheckBytes(10, MemReg, 0, false);
++  if (HostSupportsSVE128 || HostSupportsSVE256) {
++    const auto MemSrc = ARMEmitter::SVEMemOperand(MemReg.X(), 0);
++    ld1h<ARMEmitter::SubRegSize::i16Bit>(Dst.Z(), PRED_X87_SVEOPT.Zeroing(), MemSrc);
++  } else {
++    ldr(Dst.D(), MemReg);
++    ldrh(TMP1.W(), MemReg, 8);
++    ins(ARMEmitter::SubRegSize::i16Bit, Dst.Q(), 4, TMP1);
+   }
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -4445,13 +4445,9 @@
+   if (ShouldLoad) {
+     if (OpSize == OpSize::f80Bit) {
+       Ref MemSrc = LoadEffectiveAddress(this, A, GetGPROpSize(), true);
+-      if (CTX->HostFeatures.SupportsSVE()) {
+-        Result = _LoadMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, MemSrc);
+-      } else {
+-        // For X87 extended doubles, Split the load.
+-        auto Res = _LoadMem(Class, OpSize::i64Bit, MemSrc, Align == OpSize::iInvalid ? OpSize : Align);
+-        Result = _VLoadVectorElement(OpSize::i128Bit, OpSize::i16Bit, Res, 4, Add(OpSize::i64Bit, MemSrc, 8));
+-      }
++      // One 80-bit memory operation preserves the complete footprint before
++      // the backend selects SVE or a pair of native 64/16-bit accesses.
++      Result = _LoadMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, MemSrc);
+     } else {
+       Result = _LoadMemAutoTSO(Class, OpSize, A, Align == OpSize::iInvalid ? OpSize : Align);
+     }
+@@ -4584,14 +4580,7 @@
+ 
+   if (OpSize == OpSize::f80Bit) {
+     Ref MemStoreDst = LoadEffectiveAddress(this, A, GetGPROpSize(), true);
+-    if (CTX->HostFeatures.SupportsSVE()) {
+-      _StoreMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, Src, MemStoreDst);
+-    } else {
+-      // For X87 extended doubles, split before storing
+-      _StoreMemFPR(OpSize::i64Bit, MemStoreDst, Src, Align);
+-      auto Upper = _VExtractToGPR(OpSize::i128Bit, OpSize::i64Bit, Src, 1);
+-      _StoreMemGPR(OpSize::i16Bit, Upper, MemStoreDst, Constant(8), std::min(Align, OpSize::i64Bit), MemOffsetType::SXTX, 1);
+-    }
++    _StoreMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, Src, MemStoreDst);
+   } else {
+     _StoreMemAutoTSO(Class, OpSize, A, Src, Align == OpSize::iInvalid ? OpSize : Align);
+   }
+diff --git a/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp b/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
+--- a/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
++++ b/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
+@@ -151,16 +151,14 @@
+ 
+ class X87StackOptimization final : public Pass {
+ public:
+-  X87StackOptimization(const FEXCore::HostFeatures& Features, OpSize GPROpSize)
+-    : Features(Features)
+-    , GPROpSize(GPROpSize) {
++  explicit X87StackOptimization(OpSize GPROpSize)
++    : GPROpSize(GPROpSize) {
+     FEX_CONFIG_OPT(ReducedPrecision, X87REDUCEDPRECISION);
+     ReducedPrecisionMode = ReducedPrecision;
+   }
+   void Run(IREmitter* Emit) override;
+ 
+ private:
+-  const FEXCore::HostFeatures& Features;
+   const OpSize GPROpSize;
+   bool ReducedPrecisionMode;
+   FEX_CONFIG_OPT(DisableVixlIndirectCalls, DISABLE_VIXL_INDIRECT_RUNTIME_CALLS);
+@@ -168,35 +166,15 @@
+   // Helpers
+   Ref RotateRight8(uint32_t V, Ref Amount);
+ 
+-  void F80SplitStore_Helper(const IROp_StoreStackMem* Op, Ref StackNode, Ref AddrNode, Ref Offset, OpSize Align, MemOffsetType OffsetType,
+-                            uint8_t OffsetScale) {
+-    IREmit->_StoreMemFPR(OpSize::i64Bit, StackNode, AddrNode, Offset, Align, OffsetType, OffsetScale);
+-    auto Upper = IREmit->_VExtractToGPR(OpSize::i128Bit, OpSize::i64Bit, StackNode, 1);
+-
+-    // Store the Upper part of the register (the remaining 2 bytes) into memory.
++  void Store80BitToMem(const IROp_StoreStackMem* Op, Ref StackNode, Ref AddrNode, Ref Offset, MemOffsetType OffsetType,
++                       uint8_t OffsetScale) {
+     AddressMode A {.Base = AddrNode,
+                    .Index = Op->Offset.IsInvalid() ? nullptr : Offset,
+-                   .Offset = 8,
+-                   .IndexType = MemOffsetType::SXTX,
++                   .IndexType = OffsetType,
+                    .IndexScale = OffsetScale,
+                    .AddrSize = OpSize::i64Bit};
+-    A = SelectAddressMode(IREmit, A, GPROpSize, Features.SupportsTSOImm9, false, false, OpSize::i16Bit);
+-    IREmit->_StoreMemGPR(OpSize::i16Bit, Upper, A.Base, A.Index, OpSize::i64Bit, MemOffsetType::SXTX, A.IndexScale);
+-  }
+-
+-  void Store80BitToMem(const IROp_StoreStackMem* Op, Ref StackNode, Ref AddrNode, Ref Offset, OpSize Align, MemOffsetType OffsetType,
+-                       uint8_t OffsetScale) {
+-    if (Features.SupportsSVE()) {
+-      AddressMode A {.Base = AddrNode,
+-                     .Index = Op->Offset.IsInvalid() ? nullptr : Offset,
+-                     .IndexType = MemOffsetType::SXTX,
+-                     .IndexScale = OffsetScale,
+-                     .AddrSize = OpSize::i64Bit};
+-      AddrNode = LoadEffectiveAddress(IREmit, A, GPROpSize, false);
+-      IREmit->_StoreMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, StackNode, AddrNode);
+-    } else {
+-      F80SplitStore_Helper(Op, StackNode, AddrNode, Offset, Align, OffsetType, OffsetScale);
+-    }
++    AddrNode = LoadEffectiveAddress(IREmit, A, GPROpSize, false);
++    IREmit->_StoreMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, StackNode, AddrNode);
+   }
+ 
+   void StoreStackMem_Helper(const IRListView& IR, const IROp_StoreStackMem* Op, Ref StackNode) {
+@@ -218,7 +196,7 @@
+     }
+ 
+     case OpSize::f80Bit: {
+-      Store80BitToMem(Op, StackNode, AddrNode, Offset, Align, OffsetType, OffsetScale);
++      Store80BitToMem(Op, StackNode, AddrNode, Offset, OffsetType, OffsetScale);
+       break;
+     }
+     default: ERROR_AND_DIE_FMT("Unsupported x87 size");
+@@ -248,7 +226,7 @@
+ 
+     case OpSize::f80Bit: {
+       StackNode = IREmit->_F80CVTTo(StackNode, OpSize::i64Bit);
+-      Store80BitToMem(Op, StackNode, AddrNode, Offset, Align, OffsetType, OffsetScale);
++      Store80BitToMem(Op, StackNode, AddrNode, Offset, OffsetType, OffsetScale);
+       break;
+     }
+     default: ERROR_AND_DIE_FMT("Unsupported x87 size");
+@@ -283,7 +261,6 @@
+   // Top Cache Management
+   Ref GetTopWithCache_Slow();
+   Ref GetOffsetTopWithCache_Slow(uint8_t Offset, bool Reverse = false);
+-  Ref GetOffsetTopAddressWithCache_Slow(uint8_t Offset);
+   void SetTopWithCache_Slow(Ref Value);
+   Ref GetX87ValidTag_Slow(uint8_t Offset);
+   // Resets fields to initial values
+@@ -344,7 +321,6 @@
+ 
+   Ref FTWCached {};
+   std::array<Ref, 8> TopOffsetCache {};
+-  std::array<Ref, 8> TopOffsetAddressCache {};
+   std::array<Ref, 8> TopValueCache {};
+   std::array<StackSlot, 8> TopValidCache {};
+ 
+@@ -371,7 +347,6 @@
+   FlushCachedRegs();
+   FTWCached = {};
+   TopOffsetCache.fill(nullptr);
+-  TopOffsetAddressCache.fill(nullptr);
+   TopValueCache.fill(nullptr);
+   TopValidCache.fill(StackSlot::UNUSED);
+ }
+@@ -428,17 +403,6 @@
+   }
+ 
+   return OffsetTop;
+-}
+-
+-inline Ref X87StackOptimization::GetOffsetTopAddressWithCache_Slow(uint8_t Offset) {
+-  if (TopOffsetAddressCache[Offset]) {
+-    return TopOffsetAddressCache[Offset];
+-  }
+-
+-  Ref OffsetRef = GetOffsetTopWithCache_Slow(Offset);
+-  TopOffsetAddressCache[Offset] = IREmit->_FormContextAddress(OpSize::i64Bit, OffsetRef, 16);
+-
+-  return TopOffsetAddressCache[Offset];
+ }
+ 
+ inline void X87StackOptimization::SetTopWithCache_Slow(Ref Value) {
+@@ -469,10 +433,11 @@
+ }
+ 
+ inline Ref X87StackOptimization::LoadStackValueAtOffset_Slow(uint8_t Offset) {
+-  OrderedNode* TopOffsetAddress = GetOffsetTopAddressWithCache_Slow(Offset);
+   auto Size = ReducedPrecisionMode ? OpSize::i64Bit : OpSize::i128Bit;
+   if (!TopValueCache[Offset]) {
+-    TopValueCache[Offset] = IREmit->_LoadMemFPR(Size, TopOffsetAddress, IREmit->_InlineConstant(MMBaseOffset()), Size, MemOffsetType::SXTX, 1);
++    // This is private CPU context, never guest memory. Keep its provenance in
++    // the IR so guest-permission checks cannot mistake it for a guest pointer.
++    TopValueCache[Offset] = IREmit->_LoadContextIndexed(GetOffsetTopWithCache_Slow(Offset), Size, MMBaseOffset(), 16, RegClass::FPR);
+   }
+   return TopValueCache[Offset];
+ }
+@@ -582,7 +547,6 @@
+   // Pop the top of the x87 stack
+   GetOffsetTopWithCache_Slow(1);
+   PopContainer(TopOffsetCache);
+-  PopContainer(TopOffsetAddressCache);
+   PopContainer(TopValueCache);
+   PopContainer(FlushValuesPending);
+   PopContainer(TopValidCache);
+@@ -598,7 +562,6 @@
+   // Push the top of the x87 stack
+   GetOffsetTopWithCache_Slow(1, true);
+   PushContainer(TopOffsetCache);
+-  PushContainer(TopOffsetAddressCache);
+   PushContainer(TopValueCache);
+   PushContainer(FlushValuesPending);
+   PushContainer(TopValidCache);
+@@ -614,8 +577,7 @@
+   auto Size = ReducedPrecisionMode ? OpSize::i64Bit : OpSize::i128Bit;
+   for (size_t i = 0; i < FlushValuesPending.size(); i++) {
+     if (FlushValuesPending[i]) {
+-      OrderedNode* TopOffsetAddress = GetOffsetTopAddressWithCache_Slow(i);
+-      IREmit->_StoreMemFPR(Size, TopValueCache[i], TopOffsetAddress, IREmit->_InlineConstant(MMBaseOffset()), Size, MemOffsetType::SXTX, 1);
++      IREmit->_StoreContextIndexed(TopValueCache[i], GetOffsetTopWithCache_Slow(i), Size, MMBaseOffset(), 16, RegClass::FPR);
+       // store
+       FlushValuesPending[i] = false;
+     }
+@@ -1017,7 +979,7 @@
+         if (!SlowPath && Value->Source && Value->Source->Size == StoreSize) {
+           Ref SourceValue = Value->Source->Node;
+           if (Op->StoreSize == OpSize::f80Bit) {
+-            Store80BitToMem(Op, SourceValue, AddrNode, Offset, Align, OffsetType, OffsetScale);
++            Store80BitToMem(Op, SourceValue, AddrNode, Offset, OffsetType, OffsetScale);
+           } else {
+             IREmit->_StoreMemFPR(StoreSize, SourceValue, AddrNode, Offset, Align, OffsetType, OffsetScale);
+           }
+@@ -1235,7 +1197,7 @@
+   }
+ }
+ 
+-fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures& Features, OpSize GPROpSize) {
+-  return fextl::make_unique<X87StackOptimization>(Features, GPROpSize);
++fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures&, OpSize GPROpSize) {
++  return fextl::make_unique<X87StackOptimization>(GPROpSize);
+ }
+ } // namespace FEXCore::IR

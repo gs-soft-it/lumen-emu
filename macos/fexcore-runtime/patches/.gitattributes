@@ -1,0 +1,2 @@
+# Unified-diff blank context lines require a space; preserve the sealed patch.
+fex-c9c5a132-denormal-use-budget.patch whitespace=-blank-at-eol

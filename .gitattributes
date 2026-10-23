@@ -1,0 +1,6 @@
+# Unified patches use a single space for an empty context line.
+android/app/src/main/cpp/fexcore/patches/*.patch whitespace=-blank-at-eol
+macos/fexcore-runtime/patches/*.patch whitespace=-blank-at-eol
+source/cpu/qemu/patches/*.patch whitespace=-blank-at-eol
+# Imported patches prefix tab-indented context with a required space.
+source/gen4/gen5/updates/*/*.patch whitespace=-blank-at-eol,-space-before-tab

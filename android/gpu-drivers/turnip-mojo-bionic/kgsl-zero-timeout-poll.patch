@@ -1,0 +1,39 @@
+--- a/src/freedreno/vulkan/tu_knl_kgsl.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
+@@ -33,17 +33,34 @@
+                     unsigned int timestamp,
+                     uint64_t abs_timeout_ns)
+ {
++   int timeout_ms = get_relative_ms(abs_timeout_ns);
++
++   /* Vulkan timeout=0 is a non-blocking poll. KGSL WAITTIMESTAMP with
++    * timeout 0 is not a userspace timestamp check and can block the
++    * CPU submission thread. Read the retired timestamp instead.
++    */
++   if (timeout_ms == 0) {
++      struct kgsl_cmdstream_readtimestamp_ctxtid req = {
++         .context_id = context_id,
++         .type = KGSL_TIMESTAMP_RETIRED,
++      };
++      int ret = ioctl(fd, IOCTL_KGSL_CMDSTREAM_READTIMESTAMP_CTXTID, &req);
++      if (ret == 0 && timestamp_cmp(req.timestamp, timestamp))
++         return VK_SUCCESS;
++      return VK_TIMEOUT;
++   }
++
+    struct kgsl_device_waittimestamp_ctxtid wait = {
+       .context_id = context_id,
+       .timestamp = timestamp,
+-      .timeout = get_relative_ms(abs_timeout_ns),
++      .timeout = timeout_ms,
+    };
+ 
+    while (true) {
+       int ret = ioctl(fd, IOCTL_KGSL_DEVICE_WAITTIMESTAMP_CTXTID, &wait);
+ 
+       if (ret == -1 && (errno == EINTR || errno == EAGAIN)) {
+-         int timeout_ms = get_relative_ms(abs_timeout_ns);
++         timeout_ms = get_relative_ms(abs_timeout_ns);
+ 
+          /* update timeout to consider time that has passed since the start */
+          if (timeout_ms == 0)

@@ -1,0 +1,29 @@
+diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+index 0bfe29c7b..d73f19cd1 100644
+--- a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
++++ b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+@@ -21,6 +21,7 @@
+ #include <new>
+ #include <cstddef>
+ #include <cstdint>
++#include <cstring>
+ #include <sys/types.h>
+ 
+ namespace FEXCore::Allocator {
+@@ -172,7 +173,16 @@ inline void VirtualFree(void* Ptr, size_t Size) {
+   FEXCore::Allocator::munmap(Ptr, Size);
+ }
+ inline void VirtualDontNeed(void* Ptr, size_t Size, bool Recommit = true) {
++#ifdef __APPLE__
++  // Darwin's MADV_DONTNEED does not guarantee that subsequent reads observe
++  // zero-filled pages. FEX lookup caches rely on Linux's zero-on-reuse
++  // contract when dropping L1/L2 state, so explicitly clear the retained
++  // mapping on Darwin. All current executable callers hold the JIT write
++  // scope before reaching this helper.
++  std::memset(Ptr, 0, Size);
++#else
+   ::madvise(reinterpret_cast<void*>(Ptr), Size, MADV_DONTNEED);
++#endif
+ }
+ inline bool VirtualProtect(void* Ptr, size_t Size, ProtectOptions options) {
+   int prot {PROT_NONE};

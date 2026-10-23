@@ -1,0 +1,709 @@
+--- a/tcg/tcg.c
++++ b/tcg/tcg.c
+@@ -7050,3 +7050,6 @@
+     g_assert_not_reached();
+ }
+ #endif
++
++/* Private embedding cache is compiled with the current TCG internals. */
++#include "lumen-ir-cache.c.inc"
+--- a/include/accel/tcg/cpu-ops.h
++++ b/include/accel/tcg/cpu-ops.h
+@@ -65,6 +65,15 @@
+      */
+     void (*translate_code)(CPUState *cpu, TranslationBlock *tb,
+                            int *max_insns, vaddr pc, void *host_pc);
++    /* Optional embedding-owned persistent canonical-IR cache. Load runs in
++     * an empty TCG context. A miss must leave it unchanged. Save runs before
++     * optimization/host emission, while guest-code page locks remain held.
++     * Callbacks cannot execute guest code, mutate VM or retain native pointers. */
++    bool (*lumen_ir_load)(CPUState *cpu, TranslationBlock *tb, uint64_t pc,
++                          void *host_pc, int max_insns);
++    void (*lumen_ir_save)(CPUState *cpu, const TranslationBlock *tb, uint64_t pc,
++                          void *host_pc, int max_insns);
++
+     /**
+      * @get_tb_cpu_state: Extract CPU state for a TCG #TranslationBlock
+      *
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -248,7 +248,24 @@
+ 
+     CPUState *cs = env_cpu(env);
+     tcg_ctx->cpu = cs;
+-    cs->cc->tcg_ops->translate_code(cs, tb, max_insns, pc, host_pc);
++    const TCGCPUOps *ops = cs->cc->tcg_ops;
++    const int requested_max_insns = *max_insns;
++    bool imported = ops->lumen_ir_load &&
++        ops->lumen_ir_load(cs, tb, pc, host_pc, requested_max_insns);
++    if (imported && (!tb->size || !tb->icount ||
++                     tb->icount > requested_max_insns)) {
++        /* No host code has been generated from the rejected image. */
++        tcg_func_start(tcg_ctx);
++        tcg_ctx->cpu = cs;
++        tb->size = tb->icount = 0;
++        imported = false;
++    }
++    if (!imported) {
++        ops->translate_code(cs, tb, max_insns, pc, host_pc);
++        if (ops->lumen_ir_save) {
++            ops->lumen_ir_save(cs, tb, pc, host_pc, requested_max_insns);
++        }
++    }
+ 
+     assert(tb->size != 0);
+     tcg_ctx->cpu = NULL;
+--- /dev/null
++++ b/include/tcg/lumen-ir-cache.h
+@@ -0,0 +1,15 @@
++/* Lumen, 2026-10-05. SPDX-License-Identifier: GPL-2.0-only */
++#ifndef TCG_LUMEN_IR_CACHE_H
++#define TCG_LUMEN_IR_CACHE_H
++#define LUMEN_TCG_IR_CACHE_ABI_VERSION 1
++#include "tcg/tcg.h"
++/* ABI 1 stores canonical x86-64 scalar IR, never native code or host pointers.
++ * The embedding must validate build/CPU/code identity and hold RX/VM leases.
++ * A miss or unsupported IR leaves ordinary QEMU translation available.
++ * Import validates the entire payload before changing the empty context. */
++bool tcg_lumen_ir_export(TCGContext *s, const TranslationBlock *tb,
++                         uint64_t pc, int max_insns, GByteArray *bytes);
++bool tcg_lumen_ir_import(TCGContext *s, TranslationBlock *tb,
++                         uint64_t pc, int max_insns,
++                         const uint8_t *bytes, size_t length);
++#endif
+--- /dev/null
++++ b/tcg/lumen-ir-cache.c.inc
+@@ -0,0 +1,633 @@
++/* Lumen, 2026-10-05. SPDX-License-Identifier: GPL-2.0-only */
++/* Included by tcg.c: current helper layouts are initialized with its private
++ * init_call_layout. The wire format never contains C structs or addresses. */
++#include "tcg/lumen-ir-cache.h"
++#include "hw/core/cpu.h"
++#include "exec/memopidx.h"
++
++extern TCGHelperInfo helper_info_tb_exec_boundary;
++extern TCGHelperInfo helper_info_lookup_tb_ptr;
++
++#define LIR_MAGIC UINT32_C(0x3152494c)
++#define LIR_MAX_OPS 4096
++#define LIR_MAX_LABELS 512
++#define LIR_MAX_ARGS 16
++#define LIR_MAX_BYTES (1024 * 1024)
++#define LIR_NO_LABEL UINT32_MAX
++
++typedef struct LirTemp {
++    uint32_t type, base_type, kind, allocated, relocation;
++    uint64_t value;
++} LirTemp;
++typedef struct LirOp {
++    uint32_t opc, param1, param2, nargs;
++    uint64_t args[LIR_MAX_ARGS];
++} LirOp;
++typedef struct LirImage {
++    uint32_t globals, temps, labels, ops, size, icount, guest_mo, exit_label;
++    uint32_t addr_type;
++    uint64_t globals_hash;
++    LirTemp *temp;
++    LirOp *op;
++    uint32_t *present;
++} LirImage;
++typedef struct LirReader {
++    const uint8_t *bytes;
++    size_t remaining;
++    bool valid;
++} LirReader;
++
++static void lir_u32(GByteArray *b, uint32_t v)
++{
++    uint32_t le = cpu_to_le32(v);
++    g_byte_array_append(b, (const uint8_t *)&le, sizeof(le));
++}
++static void lir_u64(GByteArray *b, uint64_t v)
++{
++    uint64_t le = cpu_to_le64(v);
++    g_byte_array_append(b, (const uint8_t *)&le, sizeof(le));
++}
++static uint64_t lir_read(LirReader *r, size_t n)
++{
++    uint64_t value = 0;
++    if (!r->valid || n > r->remaining) {
++        r->valid = false;
++        return 0;
++    }
++    for (size_t i = 0; i < n; i++) {
++        value |= (uint64_t)r->bytes[i] << (i * 8);
++    }
++    r->bytes += n;
++    r->remaining -= n;
++    return value;
++}
++static uint64_t lir_mix(uint64_t hash, uint64_t value)
++{
++    for (int i = 0; i < 8; ++i) {
++        hash = (hash ^ (uint8_t)(value >> (i * 8))) * UINT64_C(1099511628211);
++    }
++    return hash;
++}
++static uint32_t lir_temp_index(TCGContext *s, const TCGTemp *t)
++{
++    uintptr_t ptr = (uintptr_t)t, base = (uintptr_t)s->temps;
++    if (ptr < base || ptr - base >= sizeof(TCGTemp) * s->nb_temps ||
++        (ptr - base) % sizeof(TCGTemp)) {
++        return UINT32_MAX;
++    }
++    return (ptr - base) / sizeof(TCGTemp);
++}
++static uint64_t lir_globals_hash(TCGContext *s)
++{
++    uint64_t h = UINT64_C(1469598103934665603);
++    for (int i = 0; i < s->nb_globals; ++i) {
++        const TCGTemp *t = &s->temps[i];
++        h = lir_mix(h, t->type); h = lir_mix(h, t->base_type);
++        h = lir_mix(h, t->kind); h = lir_mix(h, t->temp_subindex);
++        h = lir_mix(h, t->kind == TEMP_FIXED ? t->reg : 0);
++        h = lir_mix(h, t->indirect_reg); h = lir_mix(h, t->indirect_base);
++        h = lir_mix(h, t->mem_offset);
++        h = lir_mix(h, t->mem_base ? lir_temp_index(s, t->mem_base) : UINT32_MAX);
++        if (t->name) {
++            for (const char *c = t->name; *c; ++c) {
++                h = lir_mix(h, (unsigned char)*c);
++            }
++        }
++        h = lir_mix(h, 0);
++    }
++    return h;
++}
++static TCGHelperInfo *lir_helper(uint64_t id)
++{
++    return id == 1 ? &helper_info_tb_exec_boundary :
++        id == 2 ? &helper_info_lookup_tb_ptr : NULL;
++}
++static void lir_init_helper(TCGHelperInfo *info)
++{
++    if (g_once_init_enter(HELPER_INFO_INIT(info))) {
++        init_call_layout(info);
++        g_once_init_leave(HELPER_INFO_INIT(info), HELPER_INFO_INIT_VAL(info));
++    }
++}
++static void lir_clear(LirImage *image)
++{
++    g_free(image->temp); g_free(image->op); g_free(image->present);
++}
++static bool lir_allocate(LirImage *image)
++{
++    if (!image->globals || image->globals > image->temps ||
++        image->temps > TCG_MAX_TEMPS || !image->ops || image->ops > LIR_MAX_OPS ||
++        image->labels > LIR_MAX_LABELS) {
++        return false;
++    }
++    image->temp = g_try_new0(LirTemp, image->temps);
++    image->op = g_try_new0(LirOp, image->ops);
++    image->present = g_try_new0(uint32_t, MAX(1, image->labels));
++    return image->temp && image->op && image->present;
++}
++static bool lir_scalar(uint32_t type)
++{
++    return type == TCG_TYPE_I32 || type == TCG_TYPE_I64;
++}
++static bool lir_cond(uint64_t value)
++{
++    switch (value) {
++    case TCG_COND_NEVER: case TCG_COND_ALWAYS:
++    case TCG_COND_EQ: case TCG_COND_NE: case TCG_COND_TSTEQ: case TCG_COND_TSTNE:
++    case TCG_COND_LT: case TCG_COND_GE: case TCG_COND_GT: case TCG_COND_LE:
++    case TCG_COND_LTU: case TCG_COND_GEU: case TCG_COND_GTU: case TCG_COND_LEU:
++        return true;
++    default: return false;
++    }
++}
++/* Envelope intentionally excludes native pointer arithmetic, vectors,
++ * plugins, x87 and arbitrary helper calls. Native ld is only the interrupt
++ * prologue. Guest memory uses QEMU's checked soft-MMU operations. */
++static bool lir_opcode(uint32_t opc)
++{
++    switch (opc) {
++    case INDEX_op_discard: case INDEX_op_set_label: case INDEX_op_call:
++    case INDEX_op_br: case INDEX_op_brcond: case INDEX_op_mb:
++    case INDEX_op_mov: case INDEX_op_add: case INDEX_op_and: case INDEX_op_andc:
++    case INDEX_op_bswap16: case INDEX_op_bswap32: case INDEX_op_bswap64:
++    case INDEX_op_clz: case INDEX_op_ctpop: case INDEX_op_ctz:
++    case INDEX_op_deposit: case INDEX_op_eqv: case INDEX_op_extract:
++    case INDEX_op_extract2: case INDEX_op_ld: case INDEX_op_st8: case INDEX_op_movcond:
++    case INDEX_op_mul: case INDEX_op_muls2: case INDEX_op_mulu2:
++    case INDEX_op_mulsh: case INDEX_op_muluh: case INDEX_op_nand:
++    case INDEX_op_neg: case INDEX_op_negsetcond: case INDEX_op_nor:
++    case INDEX_op_not: case INDEX_op_or: case INDEX_op_orc:
++    case INDEX_op_rotl: case INDEX_op_rotr: case INDEX_op_sar:
++    case INDEX_op_setcond: case INDEX_op_sextract: case INDEX_op_shl:
++    case INDEX_op_shr: case INDEX_op_sub: case INDEX_op_xor:
++    case INDEX_op_ext_i32_i64: case INDEX_op_extu_i32_i64:
++    case INDEX_op_extrl_i64_i32: case INDEX_op_extrh_i64_i32:
++    case INDEX_op_insn_start: case INDEX_op_exit_tb: case INDEX_op_goto_tb:
++    case INDEX_op_goto_ptr: case INDEX_op_qemu_ld: case INDEX_op_qemu_st:
++        return true;
++    default: return false;
++    }
++}
++static uint32_t lir_type(const LirImage *i, TCGContext *s, uint32_t idx)
++{
++    return idx < i->globals ? s->temps[idx].type : i->temp[idx].type;
++}
++static uint32_t lir_kind(const LirImage *i, TCGContext *s, uint32_t idx)
++{
++    return idx < i->globals ? s->temps[idx].kind : i->temp[idx].kind;
++}
++/* Definite assignment over the IR control-flow graph keeps malformed cache
++ * operands from reaching register allocation as uninitialized native values.
++ * Constants/globals are initially available; EBB locals die at labels. */
++static bool lir_flow(const LirImage *i)
++{
++    const size_t words = (i->temps + 63) / 64;
++    uint64_t *in = g_try_new0(uint64_t, i->ops * words);
++    uint64_t *out = g_try_new(uint64_t, words);
++    bool *seen = g_try_new0(bool, i->ops), *queued = g_try_new0(bool, i->ops);
++    uint32_t *queue = g_try_new(uint32_t, i->ops);
++    uint32_t labels[LIR_MAX_LABELS] = {0};
++    bool valid = false;
++    if (!in || !out || !seen || !queued || !queue) goto done;
++    for (uint32_t n = 0; n < i->ops; n++) {
++        if (i->op[n].opc == INDEX_op_set_label) labels[i->op[n].args[0]] = n;
++    }
++    for (uint32_t n = 0; n < i->temps; n++) {
++        if (n < i->globals || i->temp[n].kind == TEMP_CONST) in[n / 64] |= UINT64_C(1) << (n % 64);
++    }
++    uint32_t head = 0, tail = 0, count = 1;
++    queue[tail++] = 0; tail %= i->ops; seen[0] = queued[0] = true;
++    while (count) {
++        uint32_t n = queue[head++]; head %= i->ops; count--; queued[n] = false;
++        const LirOp *o = &i->op[n];
++        const TCGOpDef *d = &tcg_op_defs[o->opc];
++        uint32_t outputs = o->opc == INDEX_op_call ? o->param2 : d->nb_oargs;
++        memcpy(out, &in[n * words], words * sizeof(*out));
++        if (o->opc == INDEX_op_set_label) {
++            for (uint32_t t = i->globals; t < i->temps; t++) {
++                if (i->temp[t].kind == TEMP_EBB) out[t / 64] &= ~(UINT64_C(1) << (t % 64));
++            }
++        }
++        for (uint32_t a = 0; a < outputs; a++) out[o->args[a] / 64] |= UINT64_C(1) << (o->args[a] % 64);
++        if (o->opc == INDEX_op_discard) out[o->args[0] / 64] &= ~(UINT64_C(1) << (o->args[0] % 64));
++        uint32_t next[2], successors = 0;
++        if (o->opc == INDEX_op_br || o->opc == INDEX_op_brcond) {
++            next[successors++] = labels[o->args[o->opc == INDEX_op_br ? 0 : 3]];
++        }
++        if (n + 1 < i->ops && o->opc != INDEX_op_br &&
++            o->opc != INDEX_op_exit_tb && o->opc != INDEX_op_goto_ptr) next[successors++] = n + 1;
++        for (uint32_t a = 0; a < successors; a++) {
++            uint32_t dest = next[a];
++            uint64_t *bits = &in[dest * words];
++            bool changed = !seen[dest];
++            for (size_t w = 0; w < words; w++) {
++                uint64_t v = seen[dest] ? bits[w] & out[w] : out[w];
++                changed |= v != bits[w]; bits[w] = v;
++            }
++            seen[dest] = true;
++            if (changed && !queued[dest]) {
++                queue[tail++] = dest; tail %= i->ops; count++; queued[dest] = true;
++            }
++        }
++    }
++    for (uint32_t n = 0; n < i->ops; n++) {
++        if (!seen[n]) goto done;
++        const LirOp *o = &i->op[n];
++        const TCGOpDef *d = &tcg_op_defs[o->opc];
++        uint32_t outputs = o->opc == INDEX_op_call ? o->param2 : d->nb_oargs;
++        uint32_t inputs = o->opc == INDEX_op_call ? o->param1 : d->nb_iargs;
++        for (uint32_t a = outputs; a < outputs + inputs; a++) {
++            uint32_t idx = o->args[a];
++            if (!(in[n * words + idx / 64] & (UINT64_C(1) << (idx % 64)))) goto done;
++        }
++    }
++    valid = true;
++done:
++    g_free(in); g_free(out); g_free(seen); g_free(queued); g_free(queue);
++    return valid;
++}
++static bool lir_validate(LirImage *i, TCGContext *s, const TranslationBlock *tb,
++                         uint64_t pc, int max_insns)
++{
++    uint32_t emitted[LIR_MAX_LABELS] = {0}, referenced[LIR_MAX_LABELS] = {0};
++    uint32_t env = UINT32_MAX, starts = 0, boundaries = 0, gotos = 0;
++    uint32_t allowed_cflags = CF_PARALLEL | CF_TB_EXEC_BOUNDARY |
++        CF_NO_GOTO_TB | CF_NO_GOTO_PTR | CF_CLUSTER_MASK | CF_PCREL;
++    if (i->globals != s->nb_globals || i->globals_hash != lir_globals_hash(s) ||
++        i->addr_type != TCG_TYPE_I64 || i->guest_mo != s->guest_mo ||
++        !i->size || i->size > 4096 || !i->icount || i->icount > TCG_MAX_INSNS ||
++        max_insns <= 0 || max_insns > TCG_MAX_INSNS ||
++        (pc & 4095) + i->size > 4096 || i->icount > max_insns ||
++        (tb->cflags & ~allowed_cflags) || !(tb->cflags & CF_TB_EXEC_BOUNDARY) ||
++        i->exit_label >= i->labels) {
++        return false;
++    }
++    for (uint32_t n = 0; n < i->globals; n++) {
++        if (s->temps[n].kind == TEMP_FIXED && s->temps[n].name &&
++            !strcmp(s->temps[n].name, "env")) {
++            env = n;
++        }
++    }
++    if (env == UINT32_MAX) return false;
++    for (uint32_t n = i->globals; n < i->temps; n++) {
++        LirTemp *t = &i->temp[n];
++        if (!lir_scalar(t->type) || t->base_type != t->type ||
++            (t->kind != TEMP_CONST && t->kind != TEMP_TB && t->kind != TEMP_EBB) ||
++            t->allocated > 1 || t->relocation > 1 ||
++            (t->relocation && (t->kind != TEMP_CONST || t->type != TCG_TYPE_I64 || t->value)) ||
++            (t->kind != TEMP_CONST && t->value)) return false;
++    }
++    for (uint32_t n = 0; n < i->labels; n++) if (i->present[n] > 1) return false;
++    if (i->ops < 5 || i->op[0].opc != INDEX_op_ld ||
++        i->op[1].opc != INDEX_op_brcond || i->op[2].opc != INDEX_op_call ||
++        i->op[2].nargs != 4 || i->op[2].args[2] != 1 ||
++        i->op[1].args[0] != i->op[0].args[0] ||
++        i->op[1].args[2] != TCG_COND_LT || i->op[1].args[3] != i->exit_label ||
++        i->op[1].args[1] < i->globals || i->op[1].args[1] >= i->temps ||
++        i->temp[i->op[1].args[1]].kind != TEMP_CONST ||
++        i->temp[i->op[1].args[1]].value != 0 ||
++        i->temp[i->op[1].args[1]].relocation ||
++        i->op[i->ops - 2].opc != INDEX_op_set_label ||
++        i->op[i->ops - 2].args[0] != i->exit_label ||
++        i->op[i->ops - 1].opc != INDEX_op_exit_tb ||
++        i->op[i->ops - 1].args[0] != TB_EXIT_REQUESTED) return false;
++    for (uint32_t n = 0; n < i->ops; n++) {
++        LirOp *o = &i->op[n];
++        uint32_t data, outputs;
++        if (!lir_opcode(o->opc) || o->param1 > 255 || o->param2 > 255) return false;
++        const TCGOpDef *d = &tcg_op_defs[o->opc];
++        if (o->opc == INDEX_op_call) {
++            data = o->param1 + o->param2; outputs = o->param2;
++            if (data + 2 != o->nargs || o->nargs > LIR_MAX_ARGS ||
++                o->args[data + 1] != 0) return false;
++            TCGHelperInfo *h = lir_helper(o->args[data]);
++            if (!h) return false;
++            lir_init_helper(h);
++            if (h->nr_in != o->param1 || h->nr_out != o->param2) return false;
++            if (o->args[data] == 1) {
++                /* Mandatory precise boundary, before any guest instruction. */
++                if (starts || ++boundaries != 1 || data != 2 || o->args[0] != env ||
++                    o->args[1] < i->globals || o->args[1] >= i->temps ||
++                    !i->temp[o->args[1]].relocation) return false;
++            } else if (o->param2 != 1 || o->param1 != 1 || o->args[1] != env ||
++                       o->args[0] < i->globals || o->args[0] >= i->temps ||
++                       lir_kind(i, s, o->args[0]) == TEMP_CONST ||
++                       n + 1 >= i->ops || i->op[n + 1].opc != INDEX_op_goto_ptr ||
++                       i->op[n + 1].args[0] != o->args[0]) return false;
++        } else {
++            data = d->nb_oargs + d->nb_iargs; outputs = d->nb_oargs;
++            if (o->nargs != data + d->nb_cargs || o->nargs > LIR_MAX_ARGS) return false;
++            if (d->flags & TCG_OPF_INT) {
++                const bool memory = o->opc == INDEX_op_qemu_ld || o->opc == INDEX_op_qemu_st;
++                if (!lir_scalar(o->param1) ||
++                    o->param2 != (memory ? (get_memop(o->args[2]) & MO_SIZE) : 0)) return false;
++            } else if (o->param2) return false;
++        }
++        for (uint32_t a = 0; a < data; a++) {
++            if (o->args[a] >= i->temps) return false;
++            uint32_t idx = o->args[a], ty = lir_type(i, s, idx);
++            if (idx >= i->globals && i->temp[idx].relocation &&
++                !(o->opc == INDEX_op_call && a == 1 &&
++                  o->args[data] == 1)) return false;
++            if (idx == env && !(o->opc == INDEX_op_call ||
++                                ((o->opc == INDEX_op_ld || o->opc == INDEX_op_st8) && a == 1))) return false;
++            if (!lir_scalar(ty)) return false;
++            if (a < outputs && (lir_kind(i, s, idx) == TEMP_FIXED ||
++                                lir_kind(i, s, idx) == TEMP_CONST)) return false;
++            uint32_t wanted = o->param1;
++            if (o->opc == INDEX_op_call || o->opc == INDEX_op_goto_ptr) wanted = TCG_TYPE_I64;
++            else if ((o->opc == INDEX_op_ld || o->opc == INDEX_op_st8) && a == 1) wanted = TCG_TYPE_I64;
++            else if (o->opc == INDEX_op_ext_i32_i64 || o->opc == INDEX_op_extu_i32_i64)
++                wanted = a == 0 ? TCG_TYPE_I64 : TCG_TYPE_I32;
++            else if (o->opc == INDEX_op_extrl_i64_i32 || o->opc == INDEX_op_extrh_i64_i32)
++                wanted = a == 0 ? TCG_TYPE_I32 : TCG_TYPE_I64;
++            else if (o->opc == INDEX_op_qemu_ld && a == 1) wanted = i->addr_type;
++            else if (o->opc == INDEX_op_qemu_st && a == 1) wanted = i->addr_type;
++            else if (o->opc == INDEX_op_discard) wanted = ty;
++            if (ty != wanted) return false;
++        }
++        uint64_t *a = o->args;
++        switch (o->opc) {
++        case INDEX_op_set_label:
++            if (a[0] >= i->labels || ++emitted[a[0]] != 1) return false;
++            break;
++        case INDEX_op_br: case INDEX_op_brcond: {
++            uint32_t at = o->opc == INDEX_op_br ? 0 : 3;
++            if (a[at] >= i->labels || (at && !lir_cond(a[2]))) return false;
++            referenced[a[at]]++; break;
++        }
++        case INDEX_op_setcond: case INDEX_op_negsetcond:
++            if (!lir_cond(a[3])) return false;
++            break;
++        case INDEX_op_movcond:
++            if (!lir_cond(a[5])) return false;
++            break;
++        case INDEX_op_ld:
++            if (o->param1 != TCG_TYPE_I32 || a[1] != env ||
++                a[2] != (uint64_t)(intptr_t)(offsetof(CPUState, neg.icount_decr.u32) -
++                                           sizeof(CPUState))) return false;
++            break;
++        case INDEX_op_st8:
++            if (o->param1 != TCG_TYPE_I32 || a[1] != env ||
++                a[2] != (uint64_t)(intptr_t)(offsetof(CPUState, neg.can_do_io) - sizeof(CPUState)) ||
++                a[0] < i->globals || i->temp[a[0]].kind != TEMP_CONST ||
++                i->temp[a[0]].relocation || i->temp[a[0]].value > 1) return false;
++            break;
++        case INDEX_op_qemu_ld: case INDEX_op_qemu_st: {
++            const uint32_t at = 2;
++            if (a[at] > UINT32_MAX) return false;
++            MemOp mo = get_memop(a[at]);
++            if (get_mmuidx(a[at]) != 2 ||
++                (mo & ~(MO_SIZE | MO_SIGN | MO_BSWAP | MO_AMASK |
++                        MO_ALIGN_TLB_ONLY | MO_ATOM_MASK)) ||
++                (mo & MO_SIZE) > (o->param1 == TCG_TYPE_I32 ? MO_32 : MO_64) ||
++                (mo & MO_ATOM_MASK) > MO_ATOM_NONE) return false;
++            break;
++        }
++        case INDEX_op_deposit: case INDEX_op_extract: case INDEX_op_sextract: {
++            uint32_t at = data, bits = o->param1 == TCG_TYPE_I32 ? 32 : 64;
++            if (a[at] >= bits || !a[at + 1] || a[at + 1] > bits - a[at]) return false;
++            break;
++        }
++        case INDEX_op_extract2:
++            if (a[data] >= (o->param1 == TCG_TYPE_I32 ? 32 : 64)) return false;
++            break;
++        case INDEX_op_bswap16: case INDEX_op_bswap32: case INDEX_op_bswap64:
++            if (a[data] & ~(TCG_BSWAP_IZ | TCG_BSWAP_OZ | TCG_BSWAP_OS)) return false;
++            break;
++        case INDEX_op_mb:
++            if (a[0] & ~((uint64_t)TCG_MO_ALL | TCG_BAR_SC)) return false;
++            break;
++        case INDEX_op_goto_ptr:
++            if (!n || i->op[n-1].opc != INDEX_op_call ||
++                i->op[n-1].param1 != 1 || i->op[n-1].param2 != 1 ||
++                i->op[n-1].args[2] != 2 || a[0] != i->op[n-1].args[0] ||
++                a[0] < i->globals || lir_kind(i, s, a[0]) == TEMP_CONST) return false;
++            break;
++        case INDEX_op_goto_tb:
++            if ((tb->cflags & CF_NO_GOTO_TB) || a[0] > 1 || (gotos & (1U << a[0]))) return false;
++            gotos |= 1U << a[0]; break;
++        case INDEX_op_exit_tb:
++            if (a[0] != UINT64_MAX && a[0] > TB_EXIT_REQUESTED) return false;
++            if (a[0] <= TB_EXIT_IDXMAX && !(gotos & (1U << a[0]))) return false;
++            break;
++        case INDEX_op_insn_start: {
++            uint64_t start = (tb->cflags & CF_PCREL) ? pc & 4095 : pc;
++            if (!boundaries || ++starts > i->icount ||
++                a[0] < start || a[0] - start >= i->size) return false;
++            break;
++        }
++        default: break;
++        }
++    }
++    for (uint32_t n = 0; n < i->labels; n++) {
++        if (emitted[n] != i->present[n] || (referenced[n] && !emitted[n])) return false;
++    }
++    return starts == i->icount && boundaries == 1 && referenced[i->exit_label] == 1 && lir_flow(i);
++}
++static uint32_t lir_label_index(TCGContext *s, const TCGLabel *label)
++{
++    uint32_t index = 0;
++    TCGLabel *candidate;
++    QSIMPLEQ_FOREACH(candidate, &s->labels, next) {
++        if (candidate == label) return index;
++        index++;
++    }
++    return UINT32_MAX;
++}
++static bool lir_capture(TCGContext *s, const TranslationBlock *tb, LirImage *i,
++                        uint64_t pc, int max_insns)
++{
++    i->globals = s->nb_globals; i->temps = s->nb_temps;
++    i->labels = s->nb_labels; i->ops = s->nb_ops;
++    i->size = tb->size; i->icount = tb->icount;
++    i->guest_mo = s->guest_mo; i->addr_type = s->addr_type;
++    i->globals_hash = lir_globals_hash(s);
++    i->exit_label = lir_label_index(s, s->exitreq_label);
++    if (!lir_allocate(i)) return false;
++    for (uint32_t n = i->globals; n < i->temps; n++) {
++        const TCGTemp *t = &s->temps[n];
++        LirTemp *w = &i->temp[n];
++        if (t->mem_base || t->mem_offset || t->indirect_base || t->indirect_reg ||
++            t->temp_subindex || t->mem_allocated || t->state_ptr) return false;
++        w->type = t->type; w->base_type = t->base_type;
++        w->kind = t->kind; w->allocated = t->temp_allocated;
++        if (t->kind == TEMP_CONST) {
++            w->relocation = t->val == (intptr_t)tb;
++            w->value = w->relocation ? 0 : t->val;
++        }
++    }
++    uint32_t n = 0;
++    TCGLabel *label;
++    QSIMPLEQ_FOREACH(label, &s->labels, next) {
++        if (n >= i->labels || label->has_value || !QSIMPLEQ_EMPTY(&label->relocs)) return false;
++        i->present[n++] = label->present;
++    }
++    if (n != i->labels) return false;
++    n = 0;
++    TCGOp *op;
++    QTAILQ_FOREACH(op, &s->ops, link) {
++        if (n >= i->ops || !lir_opcode(op->opc)) return false;
++        LirOp *w = &i->op[n++];
++        const TCGOpDef *d = &tcg_op_defs[op->opc];
++        w->opc = op->opc; w->param1 = op->param1; w->param2 = op->param2;
++        uint32_t data = d->nb_oargs + d->nb_iargs;
++        w->nargs = data + d->nb_cargs;
++        if (op->opc == INDEX_op_call) {
++            data = TCGOP_CALLO(op) + TCGOP_CALLI(op);
++            w->nargs = data + 2;
++        }
++        if (w->nargs > op->nargs || w->nargs > LIR_MAX_ARGS) return false;
++        for (uint32_t a = 0; a < w->nargs; a++) {
++            w->args[a] = a < data ? lir_temp_index(s, arg_temp(op->args[a])) : op->args[a];
++        }
++        switch (op->opc) {
++        case INDEX_op_call: {
++            const TCGHelperInfo *h = tcg_call_info(op);
++            uint32_t id = h == &helper_info_tb_exec_boundary ? 1 :
++                h == &helper_info_lookup_tb_ptr ? 2 : 0;
++            if (!id || tcg_call_func(op) != h->func) return false;
++            w->args[data] = id; w->args[data + 1] = 0;
++            break;
++        }
++        case INDEX_op_br: case INDEX_op_set_label:
++            w->args[0] = lir_label_index(s, arg_label(op->args[0])); break;
++        case INDEX_op_brcond:
++            w->args[3] = lir_label_index(s, arg_label(op->args[3])); break;
++        case INDEX_op_exit_tb: {
++            uint64_t rx = (uintptr_t)tcg_splitwx_to_rx((void *)tb);
++            if (!op->args[0]) w->args[0] = UINT64_MAX;
++            else if (op->args[0] - rx <= TB_EXIT_REQUESTED) w->args[0] = op->args[0] - rx;
++            else return false;
++            break;
++        }
++        default: break;
++        }
++    }
++    return n == i->ops && lir_validate(i, s, tb, pc, max_insns);
++}
++bool tcg_lumen_ir_export(TCGContext *s, const TranslationBlock *tb,
++                         uint64_t pc, int max_insns, GByteArray *bytes)
++{
++    LirImage i = {0};
++    if (!s || !tb || !bytes || s != tcg_ctx || !lir_capture(s, tb, &i, pc, max_insns)) {
++        lir_clear(&i); return false;
++    }
++    GByteArray *out = g_byte_array_sized_new(16384);
++    lir_u32(out, LIR_MAGIC); lir_u32(out, LUMEN_TCG_IR_CACHE_ABI_VERSION);
++    lir_u32(out, i.globals); lir_u32(out, i.temps);
++    lir_u32(out, i.labels); lir_u32(out, i.ops);
++    lir_u32(out, i.size); lir_u32(out, i.icount);
++    lir_u32(out, i.guest_mo); lir_u32(out, i.exit_label);
++    lir_u32(out, i.addr_type); lir_u64(out, i.globals_hash);
++    for (uint32_t n = i.globals; n < i.temps; n++) {
++        LirTemp *t = &i.temp[n];
++        lir_u32(out, t->type); lir_u32(out, t->base_type);
++        lir_u32(out, t->kind); lir_u32(out, t->allocated);
++        lir_u32(out, t->relocation); lir_u64(out, t->value);
++    }
++    for (uint32_t n = 0; n < i.labels; n++) lir_u32(out, i.present[n]);
++    for (uint32_t n = 0; n < i.ops; n++) {
++        LirOp *o = &i.op[n];
++        lir_u32(out, o->opc); lir_u32(out, o->param1);
++        lir_u32(out, o->param2); lir_u32(out, o->nargs);
++        for (uint32_t a = 0; a < o->nargs; a++) lir_u64(out, o->args[a]);
++    }
++    bool valid = out->len <= LIR_MAX_BYTES;
++    if (valid) g_byte_array_append(bytes, out->data, out->len);
++    g_byte_array_unref(out); lir_clear(&i);
++    return valid;
++}
++static bool lir_parse(const uint8_t *bytes, size_t length, LirImage *i)
++{
++    LirReader r = {bytes, length, true};
++    if (length > LIR_MAX_BYTES || lir_read(&r, 4) != LIR_MAGIC || lir_read(&r, 4) != LUMEN_TCG_IR_CACHE_ABI_VERSION) return false;
++    i->globals = lir_read(&r, 4); i->temps = lir_read(&r, 4);
++    i->labels = lir_read(&r, 4); i->ops = lir_read(&r, 4);
++    i->size = lir_read(&r, 4); i->icount = lir_read(&r, 4);
++    i->guest_mo = lir_read(&r, 4); i->exit_label = lir_read(&r, 4);
++    i->addr_type = lir_read(&r, 4); i->globals_hash = lir_read(&r, 8);
++    if (!r.valid || !lir_allocate(i)) return false;
++    for (uint32_t n = i->globals; n < i->temps; n++) {
++        LirTemp *t = &i->temp[n];
++        t->type = lir_read(&r, 4); t->base_type = lir_read(&r, 4);
++        t->kind = lir_read(&r, 4); t->allocated = lir_read(&r, 4);
++        t->relocation = lir_read(&r, 4); t->value = lir_read(&r, 8);
++    }
++    for (uint32_t n = 0; n < i->labels; n++) i->present[n] = lir_read(&r, 4);
++    for (uint32_t n = 0; n < i->ops; n++) {
++        LirOp *o = &i->op[n];
++        o->opc = lir_read(&r, 4); o->param1 = lir_read(&r, 4);
++        o->param2 = lir_read(&r, 4); o->nargs = lir_read(&r, 4);
++        if (o->nargs > LIR_MAX_ARGS) return false;
++        for (uint32_t a = 0; a < o->nargs; a++) o->args[a] = lir_read(&r, 8);
++    }
++    return r.valid && !r.remaining;
++}
++bool tcg_lumen_ir_import(TCGContext *s, TranslationBlock *tb,
++                         uint64_t pc, int max_insns,
++                         const uint8_t *bytes, size_t length)
++{
++    LirImage i = {0};
++    if (!s || !tb || !bytes || s != tcg_ctx || s->nb_ops || s->nb_labels ||
++        s->nb_temps != s->nb_globals || !lir_parse(bytes, length, &i) ||
++        !lir_validate(&i, s, tb, pc, max_insns)) {
++        lir_clear(&i); return false;
++    }
++    /* translator_loop normally initializes addr_type. Its frontend is skipped
++     * on a hit; ABI 1 is restricted to the embedding's x86-64 guest mode. */
++    s->addr_type = TCG_TYPE_I64;
++    /* No operation below consumes unvalidated disk indices or pointers. */
++    TCGLabel **labels = g_new(TCGLabel *, MAX(1, i.labels));
++    for (uint32_t n = i.globals; n < i.temps; n++) {
++        TCGTemp *t = &s->temps[n]; LirTemp *w = &i.temp[n];
++        memset(t, 0, sizeof(*t));
++        t->type = w->type; t->base_type = w->base_type;
++        t->kind = w->kind; t->temp_allocated = w->allocated;
++        t->val = w->relocation ? (intptr_t)tb : w->value;
++    }
++    s->nb_temps = i.temps;
++    for (uint32_t n = 0; n < i.labels; n++) {
++        labels[n] = gen_new_label(); labels[n]->present = i.present[n];
++    }
++    s->exitreq_label = labels[i.exit_label];
++    for (uint32_t n = 0; n < i.ops; n++) {
++        LirOp *w = &i.op[n];
++        TCGOp *o = tcg_emit_op(w->opc, w->nargs);
++        o->param1 = w->param1; o->param2 = w->param2;
++        const TCGOpDef *d = &tcg_op_defs[w->opc];
++        uint32_t data = w->opc == INDEX_op_call ? w->param1 + w->param2 : d->nb_oargs + d->nb_iargs;
++        for (uint32_t a = 0; a < w->nargs; a++) {
++            o->args[a] = a < data ? temp_arg(&s->temps[w->args[a]]) : w->args[a];
++        }
++        switch (w->opc) {
++        case INDEX_op_call: {
++            TCGHelperInfo *h = lir_helper(w->args[data]);
++            o->args[data] = (uintptr_t)h->func; o->args[data + 1] = (uintptr_t)h;
++            break;
++        }
++        case INDEX_op_set_label: o->args[0] = label_arg(labels[w->args[0]]); break;
++        case INDEX_op_br: case INDEX_op_brcond: {
++            uint32_t at = w->opc == INDEX_op_br ? 0 : 3;
++            TCGLabel *l = labels[w->args[at]];
++            o->args[at] = label_arg(l);
++            TCGLabelUse *use = tcg_malloc(sizeof(*use)); use->op = o;
++            QSIMPLEQ_INSERT_TAIL(&l->branches, use, next);
++            break;
++        }
++        case INDEX_op_exit_tb:
++            o->args[0] = w->args[0] == UINT64_MAX ? 0 :
++                (uintptr_t)tcg_splitwx_to_rx((void *)tb) + w->args[0];
++            break;
++        case INDEX_op_goto_tb:
++#ifdef CONFIG_DEBUG_TCG
++            s->goto_tb_issue_mask |= 1U << w->args[0];
++#endif
++            break;
++        default: break;
++        }
++    }
++    tb->size = i.size; tb->icount = i.icount;
++    g_free(labels); lir_clear(&i);
++    return true;
++}

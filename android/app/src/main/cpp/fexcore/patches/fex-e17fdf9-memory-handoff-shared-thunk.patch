@@ -1,0 +1,177 @@
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -190,6 +190,39 @@
+     b_OrRestart(&Done);
+     BindOrRestart(&Slow);
+   }
++  if (ScratchDeadAtEntry) {
++    // Keep all guest state, including dynamic x30, untouched before the shared
++    // body spills it. ADR + B carries a separate continuation without BL's LR
++    // clobber. The only changed registers here are the proven-dead TMP1-4.
++    constexpr uint32_t SharedFrameSize = 64;
++    sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, SharedFrameSize);
++    if (!Guards) EmitAddress();
++    str(TMP2, ARMEmitter::Reg::rsp, 32);
++    str(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP1, (Bytes << 1) | (Write ? 1 : 0));
++    str(TMP1, ARMEmitter::Reg::rsp, 48);
++    LOGMAN_THROW_A_FMT(!DebugData->GuestOpcodes.empty(), "Memory check requires a precise guest opcode");
++    InsertGuestRIPMove(TMP1, Entry + DebugData->GuestOpcodes.back().GuestEntryOffset);
++    str(TMP1, ARMEmitter::Reg::rsp, 56);
++    str(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, State.rip));
++    LOGMAN_THROW_A_FMT(!LumenMemoryThunkNeeded || LumenMemoryThunkPreserveAll == PreserveAll,
++      "Memory callback ABI must remain stable within one compilation");
++    LumenMemoryThunkNeeded = true;
++    LumenMemoryThunkPreserveAll = PreserveAll;
++    ARMEmitter::ForwardLabel Continuation;
++    (void)adr(TMP4, &Continuation);
++    b_OrRestart(&LumenMemoryThunk);
++    BindOrRestart(&Continuation);
++    cbnz_OrRestart(ARMEmitter::Size::i32Bit, TMP2, &Done);
++    // The thunk restored LR, SP, status and every guest allocation bank.
++    // Keep denial here so the ordinary PC map identifies this instruction.
++    brk(0x4c4d);
++    b_OrRestart(&Done);
++    Align(8);
++    PlaceNamedSymbolLiteral(GuardAddress);
++    BindOrRestart(&Done);
++    return;
++  }
+   // REP/lane helpers may carry their address, count or data in scratch
+   // registers. Preserve those scratch values even on their inline path.
+   sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
+@@ -302,6 +335,47 @@
+   PlaceNamedSymbolLiteral(GuardAddress);
+   PlaceNamedSymbolLiteral(CheckAddress);
+   BindOrRestart(&Done);
++#endif
++}
++
++void Arm64JITCore::EmitLumenMemoryThunk() {
++#if defined(__ANDROID__)
++  constexpr auto FPSR = static_cast<ARMEmitter::SystemRegister>(
++    ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
++  BindOrRestart(&LumenMemoryThunk);
++  // Frame: NZCV, FPCR, FPSR, continuation, EA, original LR, shape/result, RIP.
++  str(TMP4, ARMEmitter::Reg::rsp, 24);
++  mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++  mrs(TMP3, ARMEmitter::SystemRegister::FPCR);
++  mrs(TMP4, FPSR);
++  stp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP3, ARMEmitter::Reg::rsp, 0);
++  str(TMP4, ARMEmitter::Reg::rsp, 16);
++  const auto SpillSize = SpillForABICall(LumenMemoryThunkPreserveAll, TMP1);
++  ldr(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 32);
++  ldr(ARMEmitter::XReg::x1, ARMEmitter::Reg::rsp, SpillSize + 48);
++  and_(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r2, ARMEmitter::Reg::r1, 1);
++  lsr(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, ARMEmitter::Reg::r1, 1);
++  ldr(ARMEmitter::XReg::x3, ARMEmitter::Reg::rsp, SpillSize + 56);
++  auto CheckAddress = InsertNamedSymbolLiteral(LumenMemoryThunkPreserveAll ?
++    RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK_PRESERVE_ALL :
++    RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_LUMEN_MEMORY_HANDOFF_CHECK);
++  ldr(ARMEmitter::XReg::x16, &CheckAddress.Loc);
++  blr(ARMEmitter::Reg::r16);
++  str(ARMEmitter::XReg::x0.W(), ARMEmitter::Reg::rsp, SpillSize + 48);
++  if (HostSupportsSVE256) ptrue(ARMEmitter::SubRegSize::i8Bit, PRED_TMP_32B, ARMEmitter::PredicatePattern::SVE_VL32);
++  FillForABICall(LumenMemoryThunkPreserveAll);
++  ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP3, ARMEmitter::Reg::rsp, 0);
++  ldr(TMP4, ARMEmitter::Reg::rsp, 16);
++  msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++  msr(ARMEmitter::SystemRegister::FPCR, TMP3);
++  msr(FPSR, TMP4);
++  ldr(TMP2.W(), ARMEmitter::Reg::rsp, 48);
++  ldr(TMP4, ARMEmitter::Reg::rsp, 24);
++  ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 64);
++  br(TMP4);
++  Align(8);
++  PlaceNamedSymbolLiteral(CheckAddress);
+ #endif
+ }
+ 
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -107,6 +107,12 @@
+     ARMEmitter::ForwardLabel Label;
+   };
+   fextl::vector<PendingJumpThunk> PendingJumpThunks;
++
++  // One cold memory callback body per compiled unit, never shared across units.
++  ARMEmitter::ForwardLabel LumenMemoryThunk;
++  bool LumenMemoryThunkNeeded {};
++  bool LumenMemoryThunkPreserveAll {};
++  void EmitLumenMemoryThunk();
+ 
+   Utils::PoolBufferWithTimedRetirement<uint8_t*, 5000, 500> TempCodeBufferAllocator;
+ 
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -957,6 +957,9 @@
+   JumpTargets.clear();
+   CallReturnTargets.clear();
+   PendingJumpThunks.clear();
++  LumenMemoryThunk = {};
++  LumenMemoryThunkNeeded = false;
++  LumenMemoryThunkPreserveAll = false;
+   JumpTargets.resize(IR->GetHeader()->BlockCount, {});
+   Relocations.resize(PrevNumAllocations, FEXCore::CPU::Relocation::Default()); // Discard any relocations generated from a previous attempt
+ 
+@@ -1153,6 +1156,14 @@
+   }
+   PendingTargetLabel = nullptr;
+ 
++  uint32_t LumenMemoryThunkOffset {};
++  uint32_t LumenMemoryThunkSize {};
++  if (LumenMemoryThunkNeeded) {
++    LumenMemoryThunkOffset = GetCursorOffset();
++    EmitLumenMemoryThunk();
++    LumenMemoryThunkSize = GetCursorOffset() - LumenMemoryThunkOffset;
++  }
++
+   ARMEmitter::ForwardLabel l_ExitLink;
+   for (auto& PendingJumpThunk : PendingJumpThunks) {
+     // Align as 64-bit atomics are used on the HostCode field.
+@@ -1190,6 +1201,8 @@
+     .GuestSize = Size,
+     .SpinLockFutex = 0,
+     .SingleInst = SingleInst,
++    .LumenMemoryThunkOffset = LumenMemoryThunkOffset,
++    .LumenMemoryThunkSize = LumenMemoryThunkSize,
+   };
+ 
+   // Entries that live after the JITCodeTail.
+--- a/FEXCore/Source/Interface/Core/CPUBackend.h
++++ b/FEXCore/Source/Interface/Core/CPUBackend.h
+@@ -96,6 +96,12 @@
+       bool SingleInst;
+ 
+       uint8_t _Pad[3];
++
++      // Zero for generators without a shared memory thunk. Offsets are relative
++      // to BlockBegin and survive native-cache relocation. Within this range
++      // State.rip is the calling instruction, published by its cold entry.
++      uint32_t LumenMemoryThunkOffset {};
++      uint32_t LumenMemoryThunkSize {};
+     };
+ 
+     /**
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -150,6 +150,18 @@
+     // This is currently as close as FEX can get RIP reconstructions.
+     if (HostPC >= reinterpret_cast<uint64_t>(BlockBegin) && HostPC < reinterpret_cast<uint64_t>(BlockBegin + InlineTail->Size)) {
+ 
++      const uint64_t ThunkOffset = InlineTail->LumenMemoryThunkOffset;
++      const uint64_t ThunkSize = InlineTail->LumenMemoryThunkSize;
++      const uint64_t HostOffset = HostPC - BlockBegin;
++      // Bound the dynamic range to actual code, excluding the tail and RIP
++      // table. A malformed range never widens authority to the entire block.
++      if (ThunkSize != 0 && ThunkOffset >= sizeof(CPU::CPUBackend::JITCodeHeader) &&
++          (ThunkOffset & 3) == 0 && (ThunkSize & 3) == 0 && ThunkOffset < InlineHeader->OffsetToBlockTail &&
++          ThunkSize <= InlineHeader->OffsetToBlockTail - ThunkOffset &&
++          HostOffset >= ThunkOffset && HostOffset - ThunkOffset < ThunkSize) {
++        return Frame->State.rip;
++      }
++
+       auto RIPEntry =
+         reinterpret_cast<const uint8_t*>(Frame->State.InlineJITBlockHeader + InlineHeader->OffsetToBlockTail + InlineTail->OffsetToRIPEntries);
+ 

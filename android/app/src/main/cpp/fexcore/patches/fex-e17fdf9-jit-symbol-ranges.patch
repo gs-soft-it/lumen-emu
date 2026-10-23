@@ -1,0 +1,32 @@
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -899,6 +899,14 @@
+ 
+           LOGMAN_THROW_A_FMT(CachedHostCode != 0, "Couldn't find GuestRIP in Disk Cache entrypoints!");
+ 
++          // Cached blobs retain their exact allocation span, but not DebugData
++          // subblocks. Label the translation root without inventing guest PCs.
++          if (Config.BlockJITNaming()) {
++            const auto Name = fextl::fmt::format("{}[cached-root]", Region->FileInfo.Filename);
++            Symbols.Register(Thread->SymbolBuffer.get(), LoadedCode.BlockBegin, LoadedCode.Size, Name,
++                             GuestRIP - Region->FileStartVA);
++          }
++
+           FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedDiskCacheHitCount, 1);
+           return CachedHostCode;
+         }
+@@ -930,9 +938,13 @@
+ 
+     if (DebugData->Subblocks.size()) {
+       for (auto& Subblock : DebugData->Subblocks) {
++        // Empty IR blocks can share an address; they have no host span to name.
++        if (Subblock.HostCodeSize == 0) {
++          continue;
++        }
+         auto BlockBasePtr = FragmentBasePtr + Subblock.HostCodeOffset;
+         if (GuestRIPLookup) {
+-          Symbols.Register(Thread->SymbolBuffer.get(), BlockBasePtr, CompiledCode.Size, GuestRIPLookup->FileInfo.Filename,
++          Symbols.Register(Thread->SymbolBuffer.get(), BlockBasePtr, Subblock.HostCodeSize, GuestRIPLookup->FileInfo.Filename,
+                            GuestRIP - GuestRIPLookup->FileStartVA);
+         } else {
+           Symbols.Register(Thread->SymbolBuffer.get(), BlockBasePtr, GuestRIP, Subblock.HostCodeSize);

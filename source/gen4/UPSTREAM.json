@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/zenithblue-oss/shadps4-arm64",
+  "revision": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c",
+  "license": "GPL-2.0-or-later (GPL-2.0 selected for Lumen integration)",
+  "integration_license": "GPL-2.0-only",
+  "upstream_notices": "Original source copyright and SPDX notices retained; execution adapters may have their own MIT notices.",
+  "scope": "Core source tree; host entrypoints and platform adapters are integrated by Lumen.",
+  "project": "shadPS4",
+  "upstream_repository": "https://github.com/shadps4-emu/shadPS4",
+  "distribution": "Independent Lumen port optimised for Android, iOS and Mac (Apple Silicon); not an official upstream release."
+}

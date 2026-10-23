@@ -1,0 +1,144 @@
+diff --git a/FEXCore/Source/Interface/IR/Passes/LumenStructureTrace.h b/FEXCore/Source/Interface/IR/Passes/LumenStructureTrace.h
+new file mode 100644
+--- /dev/null
++++ b/FEXCore/Source/Interface/IR/Passes/LumenStructureTrace.h
+@@ -0,0 +1,82 @@
++// SPDX-License-Identifier: MIT
++// Original Lumen diagnostic. Reports structural counts only, never guest IR.
++#pragma once
++
++#include "Interface/IR/IREmitter.h"
++#include <algorithm>
++#include <array>
++#include <cstdint>
++#include <cstdlib>
++
++namespace FEXCore::IR::LumenStructureTrace {
++constexpr uint32_t BlockLimit = 4096;
++constexpr uint32_t NodeLimit = 65536;
++// blocks, invalid, end_missing, earlier_exit, trailing, empty, metadata,
++// state_memory, other, truncated. All entries are bounded counters/booleans.
++using Counts = std::array<uint32_t, 10>;
++
++inline bool Enabled() {
++  static const bool Value = [] {
++    const char* Env = std::getenv("LUMEN_FEX_STRUCTURAL_ASSERT_TRACE");
++    return Env && Env[0] == '1' && Env[1] == '\0';
++  }();
++  return Value;
++}
++
++inline Counts Inspect(IREmitter* Emit, uint32_t BlockCap = BlockLimit, uint32_t NodeCap = NodeLimit) {
++  BlockCap = std::min(BlockCap, BlockLimit);
++  NodeCap = std::min(NodeCap, NodeLimit);
++  Counts Result {};
++  const auto IR = Emit->ViewIR();
++  uint32_t Nodes = 0;
++  for (auto [BlockNode, Header] : IR.GetBlocks()) {
++    if (Result[0] == BlockCap) { Result[9] = 1; break; }
++    ++Result[0];
++    const auto Block = Header->C<IROp_CodeBlock>();
++    auto Tail = IR.at(Block->Last);
++    const auto [EndNode, EndOp] = Tail();
++    if (EndOp->Op != OP_ENDBLOCK) {
++      ++Result[1]; ++Result[2];
++      continue;
++    }
++    --Tail;
++    const auto [LastNode, LastHeader] = Tail();
++    const auto LastOp = LastHeader->Op;
++    if (IsBlockExit(LastOp)) continue;
++    ++Result[1];
++    switch (LastOp) {
++    case OP_BEGINBLOCK: ++Result[5]; break;
++    case OP_GUESTOPCODE: case OP_CONSTANT: case OP_INLINECONSTANT:
++      ++Result[6]; break;
++    case OP_STORECONTEXT: case OP_STORECONTEXTPAIR: case OP_STORECONTEXTINDEXED:
++    case OP_STOREREGISTER: case OP_STOREMEM: case OP_STOREMEMTSO:
++    case OP_SPILLREGISTER: case OP_FILLREGISTER:
++    case OP_GUESTMEMORYCHECK: case OP_GUESTMEMORYCHECKMASKED:
++      ++Result[7]; break;
++    default: ++Result[8]; break;
++    }
++    bool EarlierExit = false;
++    bool Trailing = false;
++    for (auto [Node, Op] : IR.GetCode(BlockNode)) {
++      (void)Node;
++      if (Nodes == NodeCap) { Result[9] = 1; break; }
++      ++Nodes;
++      if (Op->Op == OP_BEGINBLOCK || Op->Op == OP_ENDBLOCK) continue;
++      if (IsBlockExit(Op->Op)) EarlierExit = true;
++      else if (EarlierExit) Trailing = true;
++    }
++    Result[3] += EarlierExit;
++    Result[4] += Trailing;
++    if (Result[9]) break;
++  }
++  return Result;
++}
++
++inline void Report(uint32_t Stage, const Counts& Value) {
++  if (Value[1] == 0 && Value[9] == 0) return;
++  LogMan::Msg::EFmt("LUMEN_FEX_IR_STRUCTURE_V1 stage={} blocks={} invalid={} end_missing={} earlier_exit={} "
++                   "trailing={} empty={} metadata={} state_memory={} other={} truncated={}",
++                   Stage, Value[0], Value[1], Value[2], Value[3], Value[4],
++                   Value[5], Value[6], Value[7], Value[8], Value[9]);
++}
++} // namespace FEXCore::IR::LumenStructureTrace
+diff --git a/FEXCore/Source/Interface/IR/PassManager.cpp b/FEXCore/Source/Interface/IR/PassManager.cpp
+--- a/FEXCore/Source/Interface/IR/PassManager.cpp
++++ b/FEXCore/Source/Interface/IR/PassManager.cpp
+@@ -10,6 +10,7 @@
+ #include "Interface/Context/Context.h"
+ #include "Interface/IR/PassManager.h"
+ #include "Interface/IR/Passes.h"
++#include "Interface/IR/Passes/LumenStructureTrace.h"
+ #include "Interface/IR/Passes/RegisterAllocationPass.h"
+
+ #include <FEXCore/Config/Config.h>
+@@ -18,6 +19,17 @@
+
+ namespace FEXCore::IR {
+ class IREmitter;
++namespace {
++class LumenStructureTracePass final : public Pass {
++public:
++  explicit LumenStructureTracePass(uint32_t Stage) : Stage(Stage) {}
++  void Run(IREmitter* Emit) override {
++    LumenStructureTrace::Report(Stage, LumenStructureTrace::Inspect(Emit));
++  }
++private:
++  uint32_t Stage;
++};
++} // namespace
+
+ void PassManager::Finalize() {
+   if (!PassManagerDumpIR()) {
+@@ -69,19 +81,27 @@
+
+ void PassManager::AddDefaultPasses(Context::ContextImpl* ctx) {
+   FEX_CONFIG_OPT(DisablePasses, O0);
++  const auto Trace = [this](uint32_t Stage) {
++    if (LumenStructureTrace::Enabled()) InsertPass(fextl::make_unique<LumenStructureTracePass>(Stage));
++  };
++  Trace(0); // Frontend output; stage values are a closed diagnostic schema.
+
+   if (!ctx->HostFeatures.SupportsAFP) {
+     InsertPass(CreateDenormalPass());
++    Trace(1);
+   }
+
+   // We only specifically disable optimization passes if desired, as IR output should
+   // still be well-formed regardless of the modifications made to it.
+   if (!DisablePasses()) {
+     InsertPass(CreateX87StackOptimizationPass(ctx->HostFeatures, ctx->Config.Is64BitMode ? IR::OpSize::i64Bit : IR::OpSize::i32Bit));
++    Trace(2);
+     InsertPass(CreateDeadFlagCalculationEliminination());
++    Trace(3);
+   }
+
+   InsertPass(IR::CreateRegisterAllocationPass(&ctx->CPUID), "RA");
++  Trace(4);
+
+ #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
+   InsertValidationPass(Validation::CreateIRValidation(), "IRValidation");

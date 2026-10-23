@@ -1,0 +1,163 @@
+--- a/include/qemu/osdep.h
++++ b/include/qemu/osdep.h
+@@ -844,19 +844,146 @@
+  * Toggle write/execute on the pages marked MAP_JIT
+  * for the current thread.
+  */
++/*
++ * A library owner may explicitly scope execute-transition caching while all
++ * QEMU JIT writes use these wrappers. Entry, exit and unqualified external
++ * callbacks invalidate trust. The observed mode is separate from cache trust:
++ * a memory-query callback may run inside either translation or generated code
++ * and must restore WRITE or EXECUTE respectively before returning there.
++ * Outside an enabled scope setters remain unconditional; callback guards
++ * still restore the last observed mode with a real transition.
++ */
++enum QemuThreadJitMode {
++    QEMU_THREAD_JIT_UNKNOWN,
++    QEMU_THREAD_JIT_WRITE,
++    QEMU_THREAD_JIT_EXECUTE,
++};
++
++typedef struct QemuThreadJitStats {
++    uint64_t execute_calls;
++    uint64_t execute_skipped;
++    uint64_t write_calls;
++    uint64_t callback_restore_write;
++    uint64_t callback_restore_execute;
++    uint64_t callback_restore_unknown;
++} QemuThreadJitStats;
++
+ #ifdef __APPLE__
++typedef struct QemuThreadJitScope {
++    bool active;
++    bool execute_known;
++    bool trace;
++    unsigned mode;
++    QemuThreadJitStats stats;
++} QemuThreadJitScope;
++
++extern __thread QemuThreadJitScope qemu_thread_jit_scope;
++
++static inline void qemu_thread_jit_invalidate(void)
++{
++    qemu_thread_jit_scope.execute_known = false;
++    qemu_thread_jit_scope.mode = QEMU_THREAD_JIT_UNKNOWN;
++}
++
++static inline void qemu_thread_jit_scope_begin(bool enabled, bool trace)
++{
++    qemu_thread_jit_invalidate();
++    qemu_thread_jit_scope.active = enabled;
++    qemu_thread_jit_scope.trace = trace;
++    if (trace) {
++        memset(&qemu_thread_jit_scope.stats, 0, sizeof(QemuThreadJitStats));
++    }
++}
++
++static inline void qemu_thread_jit_scope_read(QemuThreadJitStats *stats)
++{
++    if (qemu_thread_jit_scope.trace) {
++        *stats = qemu_thread_jit_scope.stats;
++    } else {
++        memset(stats, 0, sizeof(*stats));
++    }
++}
++
++static inline void qemu_thread_jit_scope_end(void)
++{
++    qemu_thread_jit_invalidate();
++    qemu_thread_jit_scope.active = false;
++    qemu_thread_jit_scope.trace = false;
++}
++
+ static inline void qemu_thread_jit_execute(void)
+ {
++    if (qemu_thread_jit_scope.active && qemu_thread_jit_scope.execute_known) {
++        if (qemu_thread_jit_scope.trace) {
++            ++qemu_thread_jit_scope.stats.execute_skipped;
++        }
++        return;
++    }
+     pthread_jit_write_protect_np(true);
++    if (qemu_thread_jit_scope.trace) {
++        ++qemu_thread_jit_scope.stats.execute_calls;
++    }
++    /* Observed mode is independent of execute-transition caching. Memory
++     * callbacks also run inside ordinary, uncached translation/execution. */
++    qemu_thread_jit_scope.mode = QEMU_THREAD_JIT_EXECUTE;
++    qemu_thread_jit_scope.execute_known = qemu_thread_jit_scope.active;
+ }
+ 
+ static inline void qemu_thread_jit_write(void)
+ {
++    /* Every write transition is real, including repeated writes. */
+     pthread_jit_write_protect_np(false);
++    if (qemu_thread_jit_scope.trace) {
++        ++qemu_thread_jit_scope.stats.write_calls;
++    }
++    qemu_thread_jit_scope.mode = QEMU_THREAD_JIT_WRITE;
++    qemu_thread_jit_scope.execute_known = false;
++}
++
++static inline unsigned qemu_thread_jit_callback_begin(void)
++{
++    unsigned mode = qemu_thread_jit_scope.mode;
++    qemu_thread_jit_invalidate();
++    return mode;
++}
++
++static inline void qemu_thread_jit_callback_end(unsigned mode)
++{
++    /* A callback may change MAP_JIT protection without using our wrappers.
++     * Restore an observed mode with an actual transition. Preserve WRITE for
++     * subsequent translation callbacks, but never carry execute-cache trust
++     * across arbitrary external code. UNKNOWN confers no mode assumption. */
++    qemu_thread_jit_invalidate();
++    if (mode == QEMU_THREAD_JIT_WRITE) {
++        qemu_thread_jit_write();
++        if (qemu_thread_jit_scope.trace) {
++            ++qemu_thread_jit_scope.stats.callback_restore_write;
++        }
++    } else if (mode == QEMU_THREAD_JIT_EXECUTE) {
++        qemu_thread_jit_execute();
++        if (qemu_thread_jit_scope.trace) {
++            ++qemu_thread_jit_scope.stats.callback_restore_execute;
++        }
++    } else if (qemu_thread_jit_scope.trace) {
++        ++qemu_thread_jit_scope.stats.callback_restore_unknown;
++    }
++    qemu_thread_jit_scope.execute_known = false;
+ }
+ #else
+ static inline void qemu_thread_jit_write(void) {}
+ static inline void qemu_thread_jit_execute(void) {}
++static inline void qemu_thread_jit_invalidate(void) {}
++static inline void qemu_thread_jit_scope_begin(bool enabled, bool trace) {}
++static inline void qemu_thread_jit_scope_end(void) {}
++static inline void qemu_thread_jit_scope_read(QemuThreadJitStats *stats)
++{
++    memset(stats, 0, sizeof(*stats));
++}
++static inline unsigned qemu_thread_jit_callback_begin(void)
++{
++    return QEMU_THREAD_JIT_UNKNOWN;
++}
++static inline void qemu_thread_jit_callback_end(unsigned mode) {}
+ #endif
+ 
+ /**
+--- a/util/cacheflush.c
++++ b/util/cacheflush.c
+@@ -12,6 +12,11 @@
+ #include "qemu/host-utils.h"
+ #include "qemu/atomic.h"
+ 
++
++#ifdef __APPLE__
++/* One state per native thread, shared by every JIT protection wrapper. */
++__thread QemuThreadJitScope qemu_thread_jit_scope;
++#endif
+ 
+ int qemu_icache_linesize = 0;
+ int qemu_icache_linesize_log;

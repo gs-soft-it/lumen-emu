@@ -1,0 +1,91 @@
+diff --git a/FEXCore/Source/Interface/IR/IREmitter.cpp b/FEXCore/Source/Interface/IR/IREmitter.cpp
+--- a/FEXCore/Source/Interface/IR/IREmitter.cpp
++++ b/FEXCore/Source/Interface/IR/IREmitter.cpp
+@@ -95,6 +95,13 @@
+ }
+ 
+ void IREmitter::ReplaceAllUsesWithRange(Ref Node, Ref NewNode, AllNodesIterator Begin, AllNodesIterator End) {
++  ReplaceUsesWithRangeLimit(Node, NewNode, Begin, End, UINT32_MAX);
++}
++
++uint32_t IREmitter::ReplaceUsesWithRangeLimit(Ref Node, Ref NewNode, AllNodesIterator Begin, AllNodesIterator End,
++                                           uint32_t MaximumReplacements) {
++  if (MaximumReplacements == 0) return 0;
++  uint32_t Remaining = MaximumReplacements;
+   uintptr_t ListBegin = DualListData.ListBegin();
+   auto NodeId = Node->Wrapped(ListBegin).ID();
+ 
+@@ -108,15 +115,19 @@
+         NewNode->AddUse();
+         IROp->Args[i].NodeOffset = NewNode->Wrapped(ListBegin).NodeOffset;
+ 
+-        // We can stop searching once all uses of the node are gone.
+-        if (Node->NumUses == 0) {
+-          return;
++        // A caller-provided limit may exclude protected uses before Begin.
++        // Only decrement after an actual argument replacement; zero was
++        // handled before entering the loop, so the budget cannot underflow.
++        --Remaining;
++        if (Remaining == 0 || Node->NumUses == 0) {
++          return MaximumReplacements - Remaining;
+         }
+       }
+     }
+ 
+     ++Begin;
+   }
++  return MaximumReplacements - Remaining;
+ }
+ 
+ void IREmitter::ReplaceNodeArgument(Ref Node, uint8_t Arg, Ref NewArg) {
+diff --git a/FEXCore/Source/Interface/IR/IREmitter.h b/FEXCore/Source/Interface/IR/IREmitter.h
+--- a/FEXCore/Source/Interface/IR/IREmitter.h
++++ b/FEXCore/Source/Interface/IR/IREmitter.h
+@@ -355,6 +355,23 @@
+   }
+ 
+   void ReplaceAllUsesWithRange(Ref Node, Ref NewNode, AllNodesIterator Begin, AllNodesIterator End);
++
++  // Replace at most MaximumReplacements matching argument occurrences in
++  // [Begin, End), returning the number changed. No ordering of other uses is
++  // assumed. A caller expecting a complete rewrite must supply a conservative
++  // upper bound for matching occurrences in this range. Excluded uses may keep
++  // NumUses nonzero, and reaching End before the budget is valid.
++  uint32_t ReplaceUsesWithRangeLimit(Ref Node, Ref NewNode, AllNodesIterator Begin, AllNodesIterator End,
++                                    uint32_t MaximumReplacements);
++
++  uint32_t ReplaceUsesWithAfterLimit(Ref Node, Ref NewNode, Ref After, uint32_t MaximumReplacements) {
++    auto Wrapped = After->Wrapped(DualListData.ListBegin());
++    AllNodesIterator It = AllNodesIterator(DualListData.ListBegin(), DualListData.DataBegin(), Wrapped);
++    ++It;
++    return ReplaceUsesWithRangeLimit(Node, NewNode, It,
++                                    AllNodesIterator(DualListData.ListBegin(), DualListData.DataBegin()),
++                                    MaximumReplacements);
++  }
+ 
+   void ReplaceUsesWithAfter(Ref Node, Ref NewNode, AllNodesIterator After) {
+     ++After;
+diff --git a/FEXCore/Source/Interface/IR/Passes/DenormalPass.cpp b/FEXCore/Source/Interface/IR/Passes/DenormalPass.cpp
+--- a/FEXCore/Source/Interface/IR/Passes/DenormalPass.cpp
++++ b/FEXCore/Source/Interface/IR/Passes/DenormalPass.cpp
+@@ -276,6 +276,11 @@
+           E->ReplaceNodeArgument(Node, Index, Flush(E, Input, S.InputElement, CurrentDAZ, S.Scalar));
+         }
+         if (S.Output && S.OutputElement >= OpSize::i32Bit) {
++          // Snapshot the preexisting occurrences before Flush introduces uses
++          // which must retain the raw result. Those new uses precede Result;
++          // the count is therefore a conservative bound for the suffix even
++          // if some preexisting uses also lie outside that suffix.
++          const uint32_t ExistingUseLimit = Node->NumUses;
+           E->SetWriteCursor(Node);
+           Ref CurrentFTZ;
+           if (S.AlwaysFlush) {
+@@ -287,7 +292,7 @@
+           }
+           Ref Result = Flush(E, Node, S.OutputElement, CurrentFTZ, S.Scalar, S.UpperOutput);
+           Result = FlushRoundedBoundary(E, IR, Node, Result, Op, S, CurrentFTZ);
+-          E->ReplaceUsesWithAfter(Node, Result, Result);
++          E->ReplaceUsesWithAfterLimit(Node, Result, Result, ExistingUseLimit);
+         }
+       }
+     }

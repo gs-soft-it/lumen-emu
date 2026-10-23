@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "files": {
+    "SOURCE.json": "dc20a116d0351b68e0b9b49443300bf3fc0d855e6a0615a4222cf7226ac2c272",
+    "licenses/android-ndk-toolchain-NOTICE.txt": "f96f763beb66a7ba7a667647fc64c0226ace875e590c831fdd9579ec1c1d91e1",
+    "licenses/bachata-driver-packaging-APACHE-2.0.txt": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "licenses/mesa/Apache-2.0": "7e4d3fba250d15e9e0afa380d4b611828fa2560cc8fdebe95bcf2f01a487de12",
+    "licenses/mesa/BSL-1.0": "9b9fea7520a816107fcac2598b7c0155222f16bc430e989706b22f4367f1df7d",
+    "licenses/mesa/GPL-1.0-or-later": "8ff76f1528e6e4e9400c0f6b1f2d19d4979aaac3bcc44bb707a55389132825c4",
+    "licenses/mesa/GPL-2.0-only": "6667ad4063569cd53b13500550d93fcd3dc11bcf82c5514296af013a0b720ba5",
+    "licenses/mesa/MIT": "323c587d0ccf10e376f8bf9a7f31fb4ca6078105194b42e0b1e0ee2bc9bde71f",
+    "licenses/mesa/SGI-B-2.0": "686bf035a1fd22076416fd3b90370ac67771e884bf57f55693d51f8ce7c710a7",
+    "licenses/mesa/exceptions/Linux-Syscall-Note": "9b4084655174654608fd037e9ddb4feeadfada01cd042e9c17b05aa7105b2b9f",
+    "licenses/mesa-license-overview.rst": "0d1a0472ecc81830e75c20d59b0ea02841e3db21255e0ebad97ab682c54d6615",
+    "licenses/reference-glibc-release-NOTICE.txt": "6488409f1914cb632ac31b34258302b2b30d80f40f132be42bf5448cb2dc3a44"
+  }
+}

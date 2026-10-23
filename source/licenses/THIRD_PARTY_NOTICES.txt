@@ -1,0 +1,143 @@
+Lumen third-party notices
+
+Lumen Emu is a port optimised for Android, iOS and Mac (Apple Silicon), based on shadPS4, Kyty and
+KytyPS5. It is an independent derivative, not an official upstream release.
+
+shadPS4: https://github.com/shadps4-emu/shadPS4
+  PS4 source through https://github.com/zenithblue-oss/shadps4-arm64, revision
+  be6bc2e9c60799e071dd2fafa6216e8d80ec619c. Original shadPS4 Emulator Project
+  and contributor copyrights are retained. GPL-2.0-or-later source selects
+  GPL version 2 for this integration; per-file exceptions remain applicable.
+Kyty: https://github.com/InoriRus/Kyty
+  Original emulator work and inherited MIT portions, Copyright (c) 2021
+  InoriRus. The complete MIT notice follows below.
+KytyPS5: https://github.com/KytyPS5/KytyPS5
+  GPL-2.0-only. Original import b3e419ff1101999525fa2d061ada1d102cf788b1;
+  active Android direct engine fe3857a1715551e4f554b2ec29cc1ca3286287a1.
+  Original copyright notices and the inherited Kyty MIT licence are retained.
+
+Project integration: GPL-2.0-only; see the root LICENSE, NOTICE and LICENSES.md.
+Pre-existing files and third-party components retain their own copyright
+and license terms. Their license texts are preserved with their sources.
+
+Kyty source portions originally licensed under MIT:
+
+MIT License
+
+Copyright (c) 2021 InoriRus
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Printf implementation
+
+Portions of source/emulator/src/Libs/Printf.cpp derive from mpaland/printf,
+Copyright (c) 2014 Marco Paland, under the MIT terms reproduced above.
+
+SPIRV-Cross
+
+Selected implementation files at commit
+d8e3e2b141b8c8a167b2e3984736a6baacff316c use the MIT option of their
+Apache-2.0 OR MIT license. The applicable copyright and license notices
+are retained in source/3rdparty/vulkan/SPIRV-Cross-MIT.txt and
+source/3rdparty/vulkan/SPIRV-Cross-Khronos-Headers.txt. The current
+17-file selection and hashes are in
+source/3rdparty/vulkan/SPIRV-Cross-selection.json.
+
+FEX runtime dependencies
+
+FEX, fmt, xxHash, unordered_dense, rpmalloc, SoftFloat-3e, and cephes
+retain their applicable upstream licenses in android/app/src/fexLab/assets/Legal.
+Local modifications to FEX retain the MIT license of the modified files.
+The upstream source is pinned at e17fdf9e90a49614e16ac8414a687477fb9e4f7c
+in source/3rdparty/fex. Its four runtime submodules retain their upstream
+pins and licenses. Platform patches are applied to separate generated trees.
+
+Optional QEMU TCG CPU provider
+
+QEMU 11.1.2 is obtained from the official source archive pinned by
+source/cpu/qemu/source-lock.json. Lumen selects GPL version 2 where the
+CPU/TCG closure permits it and preserves other applicable per-file licenses.
+The native recipes build GLib 2.88.3, PCRE2 10.47 and the libintl runtime
+from gettext 1.0 as static PIC dependencies. They preserve their upstream
+license texts and notices; gettext command-line programs are not linked.
+Archive hashes and checked local patches are recorded in
+source/cpu/qemu/dependency-lock.json. The Android recipe records actual
+compiled/header preambles and toolchain notices with a hash manifest under
+assets/Legal/QEMU-TCG. QEMU's own source is prepared outside this repository;
+no guest firmware, guest OS or game is part of the provider. Complete
+corresponding source, dependency notices and applicable relinking materials
+remain obligations for any future distribution. This optional provider does
+not certify the full Lumen binary's license compatibility or distribution.
+
+PS5 Android engine dependencies
+
+The APK carries the selected PS5 component notices under assets/Legal/ps5.
+android/ps5-legal-sources.json maps each packaged notice to its canonical
+source. Additional fetched dependency pins and license hashes are recorded
+in source/licenses/ps5/PROVENANCE.json.
+
+SDL3 3.4.16, commit fa2c02bb6e21974a89ea9824bc53c9932abe5f9c,
+retains its zlib license and original notices. Lumen leaves the vendored
+source unchanged and alters its generated Android copy: a distinct Java/JNI
+namespace, a process-local Vulkan host loader, and a blocking event-wait
+pump that avoids waking itself through the internal poll sentinel. These
+are Lumen alterations, not an official SDL release. The event-wait patch is in
+source/gen4/gen5/tools/sdl3-android-wait.patch; its pin and exact source hashes are
+checked by source/gen4/gen5/cmake/ApplyAndroidSdl3WaitPatch.cmake, with production-body
+regressions in source/gen4/gen5/tests/Sdl3AndroidWaitTests.py. The SDL license text is packaged as
+Legal/ps5/SDL3/LICENSE.txt.
+
+Android FFmpeg is built from the source at the Kyty ext-ffmpeg-core pin
+9ac4cfd195f192ed8b08566f49c28dbb48d08341, with GPL, version3 and nonfree
+options disabled. Its LGPL-2.1-or-later text, copyright, source archive hash
+and build recipe are preserved under source/licenses/ps5/FFmpeg.
+
+The optional Android Vulkan host loader uses unmodified libadrenotools
+8fae8ce254dfc1344527e05301e43f37dea2df80 and liblinkernsbypass
+aa3975893d83ef1bc84c321ec60c65fbf1287887, Copyright (c) 2021 Billy Laws,
+under BSD-2-Clause. Complete notices and source archive references are in
+source/licenses/ps5/AdrenoTools. Loader-enabled APKs package the accepted Mesa Turnip Mojo/Bionic driver
+from a verified external artifact into generated assets. Its source lock,
+local build recipe and notices are in android/gpu-drivers/turnip-mojo-bionic;
+the packaged license texts and toolchain notices are under
+Legal/Vulkan/turnip-mojo-bionic. No driver binary is stored in Git. The
+driver retains its own component licences and is not relicensed by Lumen.
+
+These notices do not resolve the GPL-2.0-only / Apache-2.0 issue in the PS5
+SPIRV-Tools linkage or the Gen4 FDK AAC licence compatibility issue.
+Complete corresponding source and applicable relinking/component materials
+remain required. The planned public core snapshot is not yet available;
+a future source-publication promise does not satisfy a current binary
+distribution obligation. See LICENSES.md for scope and remaining issues.
+
+Active PS4 core (source/gen4)
+----------------------------
+The shadPS4-derived core, through the shadps4-arm64 fork, is pinned to
+be6bc2e9c60799e071dd2fafa6216e8d80ec619c.
+Source provenance is recorded in source/gen4/UPSTREAM.json. Original copyright
+notices and GPL-2.0-or-later declarations are retained; this integration
+selects GPL version 2. Lumen supplies the dashboard, managed entrypoints,
+shared CPU boundary and native Metal host adapter. The complete dependency
+pin list, component notice texts and embedded font notices are preserved
+under source/licenses/gen4 and packaged under Legal/gen4. This includes
+the active direct FEX pin f2b679f6028ce1c38875233aecfcf5d3f8ebecec,
+shared by Android Gen4 and direct Gen5. The e17fdf9 FEX pin above covers
+the retained legacy/facade paths. The manifest
+records the exact notice bytes. Host adapters are modified source, not an
+unmodified upstream binary release.

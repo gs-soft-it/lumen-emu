@@ -1,0 +1,18 @@
+--- a/target/i386/cpu.c
++++ b/target/i386/cpu.c
+@@ -8980,6 +8980,15 @@
+         }
+         break;
+     }
++    case 0x15: /* TSC and virtual crystal clock frequency */
++        *eax = *ebx = *ecx = *edx = 0;
++        if (env->tsc_khz > 0 && env->tsc_khz <= UINT32_MAX / 1000) {
++            /* The virtual crystal and TSC share the configured clock domain. */
++            *eax = 1;
++            *ebx = 1;
++            *ecx = (uint32_t)env->tsc_khz * 1000;
++        }
++        break;
+     case 0x1C: /* Last Branch Records Information Leaf */
+         *eax = 0;
+         *ebx = 0;

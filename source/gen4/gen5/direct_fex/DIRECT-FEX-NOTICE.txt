@@ -1,0 +1,17 @@
+PS5 adaptation of the Gen4 direct FEX integration
+
+DirectFexRuntime.cpp includes the existing, unmodified Gen4 direct engine:
+  source/gen4/src/core/fex/fex_guest_engine_direct.cpp
+That engine and its associated Gen4 headers carry SPDX-License-Identifier: MIT.
+Their original copyright and license notices remain in those sources.
+
+The translated CPU core is the unmodified FEX source at:
+  f2b679f6028ce1c38875233aecfcf5d3f8ebecec
+  source/3rdparty/fex-gen4
+FEX is MIT licensed. Its full license and dependency notices are packaged
+separately by the existing FEX legal inventory. The PS5 C13 facade overlay
+is not applied to this direct CPU build.
+
+The PS5 ABI adapter in this directory is GPL-2.0-only, consistent with the
+PS5 integration. This notice describes source provenance, not gameplay,
+performance, memory-coherence, or instruction-set qualification.

@@ -1,0 +1,270 @@
+diff --git a/FEXCore/include/FEXCore/Core/CoreState.h b/FEXCore/include/FEXCore/Core/CoreState.h
+--- a/FEXCore/include/FEXCore/Core/CoreState.h
++++ b/FEXCore/include/FEXCore/Core/CoreState.h
+@@ -351,6 +351,11 @@
+   uint64_t LUDIV {};
+   uint64_t LDIV {};
+   uint64_t ThunkCallbackRet {};
++#ifdef __APPLE__
++  // Embedding callback loaded through STATE, so cached host code never bakes
++  // a process-specific helper address into a translation.
++  uint64_t LumenDirectUnalignedTso {};
++#endif
+
+   // Handles returning/calling ARM64EC code from the JIT, expects the target PC in TMP3
+   uint64_t ExitFunctionEC {};
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -541,6 +541,10 @@
+                                  std::optional<ARMEmitter::VRegister> VectorIndexHigh, ARMEmitter::VRegister MaskReg,
+                                  IR::OpSize VectorIndexSize, size_t DataElementOffsetStart, size_t IndexElementOffsetStart,
+                                  uint8_t OffsetScale, IR::OpSize AddrSize);
++  void EnsureLumenJITSpace(uint64_t RequiredSpace);
++  bool EmitLumenDirectUnalignedTso(IR::OpSize Size, ARMEmitter::Register Base,
++                                    IR::OrderedNodeWrapper Offset, ARMEmitter::Register Data,
++                                    bool Write, ARMEmitter::ForwardLabel* Done);
+   bool HasLumenGuestMemoryChecks() const;
+   void EmitLumenGuestMemoryCheckBytes(uint64_t Bytes, ARMEmitter::Register Base,
+                                      int64_t Displacement, bool Write);
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -21,6 +21,12 @@
+ #ifdef __APPLE__
+ // Diagnostic-only link hook. The default provider returns no callback, keeping
+ // direct code generation and the uniform-host-page VM contract in the product.
++extern "C" __attribute__((weak, noinline)) uint32_t FEXLumenDirectUnalignedTsoEnabledV1() noexcept {
++  return 0;
++}
++
++extern "C" __attribute__((weak, noinline)) void FEXLumenDirectUnalignedTsoRestartV1() noexcept {}
++
+ using LumenMemoryCheck = uint32_t (*)(uint64_t Address, uint64_t Bytes,
+                                      uint32_t Write, uint64_t GuestRIP) noexcept;
+ extern "C" __attribute__((weak, noinline)) LumenMemoryCheck FEXLumenGuestMemoryCheckProviderV1() noexcept {
+@@ -31,6 +37,117 @@
+ extern "C" bool FEXLumenGuestMemoryChecksEnabled() noexcept {
+ #ifdef __APPLE__
+   return FEXLumenGuestMemoryCheckProviderV1() != nullptr;
++#else
++  return false;
++#endif
++}
++
++// Reserve before writing to the temporary emitter buffer: the embedding signal
++// adapter routes guest faults and does not longjmp out of native code generation.
++void Arm64JITCore::EnsureLumenJITSpace(uint64_t RequiredSpace) {
++#ifdef __APPLE__
++  if (FEXLumenDirectUnalignedTsoEnabledV1() == 0) return;
++  const auto Cursor = GetCursorOffset();
++  const auto Capacity = GetBufferSize();
++  if (Cursor > Capacity || Capacity - Cursor < RequiredSpace) {
++    FEXLumenDirectUnalignedTsoRestartV1();
++    FEXCore::UncheckedLongJump::LongJump(ThreadState->RestartJump,
++      FEXCore::ToUnderlying(RestartOptions::Control::NeedsLargerJITSpace));
++  }
++#endif
++}
++
++bool Arm64JITCore::EmitLumenDirectUnalignedTso(IR::OpSize Size, ARMEmitter::Register Base,
++                                             IR::OrderedNodeWrapper Offset, ARMEmitter::Register Data,
++                                             bool Write, ARMEmitter::ForwardLabel* Done) {
++#ifdef __APPLE__
++  const auto Bytes = IR::OpSizeToSize(Size);
++  if (FEXLumenDirectUnalignedTsoEnabledV1() == 0 ||
++      (Bytes != 2 && Bytes != 4 && Bytes != 8)) return false;
++  LOGMAN_THROW_A_FMT(Done != nullptr, "Direct unaligned TSO requires a continuation");
++  // Scalar split-granule sequence, including the complete ABI spill/fill, is
++  // bounded by 4096 bytes. Reserve before its first instruction.
++  EnsureLumenJITSpace(4096);
++  uint64_t Constant = 0;
++  if (!Offset.IsInvalid()) {
++    LOGMAN_THROW_A_FMT(IsInlineConstant(Offset, &Constant), "TSO offset must be immediate");
++  }
++  mov(ARMEmitter::Size::i64Bit, TMP2, Base);
++  if (Constant != 0) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP1, Constant);
++    add(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP1);
++  }
++  // AND/ADD/TBZ leave NZCV intact. Naturally aligned and intra-granule
++  // accesses retain the original native acquire/release instruction.
++  and_(ARMEmitter::Size::i64Bit, TMP1, TMP2, 15);
++  add(ARMEmitter::Size::i64Bit, TMP1, TMP1, Bytes - 1);
++  ARMEmitter::ForwardLabel Native;
++  tbz_OrRestart(TMP1, 4, &Native);
++
++  constexpr auto FPSR = static_cast<ARMEmitter::SystemRegister>(
++    ARMEmitter::GenSystemReg<0b11, 0b011, 0b0100, 0b0100, 0b001>);
++  constexpr uint32_t FrameSize = 160;
++  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  str(TMP2, ARMEmitter::Reg::rsp, 32);
++  str(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  if (Write) str(Data.X(), ARMEmitter::Reg::rsp, 48);
++  stp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  if (HostSupportsSVE256) {
++    mov(TMP1, 96);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++    mov(TMP1, 128);
++    st1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B, ARMEmitter::Reg::rsp, TMP1);
++  } else {
++    stp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++  }
++  mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++  str(TMP1, ARMEmitter::Reg::rsp, 0);
++  mrs(TMP1, ARMEmitter::SystemRegister::FPCR);
++  str(TMP1, ARMEmitter::Reg::rsp, 8);
++  mrs(TMP1, FPSR);
++  str(TMP1, ARMEmitter::Reg::rsp, 16);
++  const auto SpillSize = SpillForABICall(false, TMP1);
++  ldr(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 32);
++  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, Bytes);
++  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r2, Write ? 1 : 0);
++  if (Write) ldr(ARMEmitter::XReg::x3, ARMEmitter::Reg::rsp, SpillSize + 48);
++  else mov(ARMEmitter::XReg::x3, 0);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::XReg::x4, ARMEmitter::Reg::rsp, SpillSize + 56);
++  LOGMAN_THROW_A_FMT(!DebugData->GuestOpcodes.empty(), "Direct helper requires a precise guest opcode");
++  InsertGuestRIPMove(ARMEmitter::Reg::r5, Entry + DebugData->GuestOpcodes.back().GuestEntryOffset);
++  ldr(ARMEmitter::XReg::x16, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.LumenDirectUnalignedTso));
++  blr(ARMEmitter::XReg::x16);
++  str(ARMEmitter::XReg::x0, ARMEmitter::Reg::rsp, SpillSize + 24);
++  FillForABICall(false);
++  if (HostSupportsSVE256) {
++    mov(TMP1, 96);
++    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP1.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++    mov(TMP1, 128);
++    ld1b<ARMEmitter::SubRegSize::i8Bit>(VTMP2.Z(), PRED_TMP_32B.Zeroing(), ARMEmitter::Reg::rsp, TMP1);
++  } else {
++    ldp<ARMEmitter::IndexType::OFFSET>(VTMP1.Q(), VTMP2.Q(), ARMEmitter::Reg::rsp, 96);
++  }
++  ldr(TMP1, ARMEmitter::Reg::rsp, 0);
++  msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 8);
++  msr(ARMEmitter::SystemRegister::FPCR, TMP1);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 16);
++  msr(FPSR, TMP1);
++  ldr(ARMEmitter::XReg::x30, ARMEmitter::Reg::rsp, 40);
++  ldp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, ARMEmitter::Reg::rsp, 64);
++  ldr(TMP1, ARMEmitter::Reg::rsp, 24);
++  ARMEmitter::ForwardLabel Allowed;
++  cbnz_OrRestart(ARMEmitter::Size::i64Bit, TMP1, &Allowed);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  // Permission rejection is precise and occurs before the FEX helper can
++  // read or modify any guest byte. Registers and status are already restored.
++  brk(0x4c55);
++  BindOrRestart(&Allowed);
++  if (!Write) ldr(Data.X(), ARMEmitter::Reg::rsp, 56);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, FrameSize);
++  b_OrRestart(Done);
++  BindOrRestart(&Native);
++  return true;
+ #else
+   return false;
+ #endif
+@@ -920,6 +1037,10 @@
+     LOGMAN_THROW_A_FMT(Op->OffsetType == IR::MemOffsetType::SXTX, "unexpected offset type");
+   }
+
++  ARMEmitter::ForwardLabel DirectDone;
++  const bool DirectUnaligned = Op->Class == IR::RegClass::GPR &&
++    EmitLumenDirectUnalignedTso(OpSize, MemReg, Op->Offset, GetReg(Node), false, &DirectDone);
++
+   if (CTX->HostFeatures.SupportsTSOImm9 && Op->Class == IR::RegClass::GPR) {
+     const auto Dst = GetReg(Node);
+     uint64_t Offset = 0;
+@@ -994,6 +1115,7 @@
+       dmb(ARMEmitter::BarrierScope::ISHLD);
+     }
+   }
++  if (DirectUnaligned) BindOrRestart(&DirectDone);
+ }
+
+
+@@ -2020,6 +2142,10 @@
+     LOGMAN_THROW_A_FMT(Op->OffsetType == IR::MemOffsetType::SXTX, "unexpected offset type");
+   }
+
++  ARMEmitter::ForwardLabel DirectDone;
++  const bool DirectUnaligned = Op->Class == IR::RegClass::GPR &&
++    EmitLumenDirectUnalignedTso(OpSize, MemReg, Op->Offset, GetZeroableReg(Op->Value), true, &DirectDone);
++
+   if (CTX->HostFeatures.SupportsTSOImm9 && Op->Class == IR::RegClass::GPR) {
+     const auto Src = GetZeroableReg(Op->Value);
+     uint64_t Offset = 0;
+@@ -2079,6 +2205,7 @@
+     default: LOGMAN_MSG_A_FMT("Unhandled StoreMemTSO size: {}", OpSize); break;
+     }
+   }
++  if (DirectUnaligned) BindOrRestart(&DirectDone);
+ }
+
+ DEF_OP(MemSet) {
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -848,6 +848,8 @@
+   FEXCORE_PROFILE_SCOPED("Arm64::CompileCode");
+
+   const auto PrevNumAllocations = Relocations.size();
++  const auto PrevGuestOpcodes = DebugData->GuestOpcodes.size();
++  const auto PrevSubblocks = DebugData->Subblocks.size();
+
+   this->Entry = Entry;
+   this->DebugData = DebugData;
+@@ -877,6 +879,10 @@
+   JumpTargets.resize(IR->GetHeader()->BlockCount, {});
+   Relocations.resize(PrevNumAllocations, FEXCore::CPU::Relocation::Default()); // Discard any relocations generated from a previous attempt
+
++  // RIP/subblock metadata belongs to the completed attempt, just like relocations.
++  // Both buffer growth and far-branch retries discard any partially emitted data.
++  DebugData->GuestOpcodes.resize(PrevGuestOpcodes);
++  DebugData->Subblocks.resize(PrevSubblocks);
+   CodeData.EntryPoints.clear();
+
+   // Fairly excessive buffer range to make sure we don't overflow
+@@ -937,6 +943,7 @@
+     LOGMAN_THROW_A_FMT(BlockIROp->Header.Op == IR::OP_CODEBLOCK, "IR type failed to be a code block");
+ #endif
+
++    EnsureLumenJITSpace(4096);
+     auto BlockStartHostCode = GetCursorAddress<uint8_t*>();
+     {
+       const auto Node = IR->GetID(BlockNode);
+@@ -982,6 +989,9 @@
+     }
+
+     for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
++      // Protect ordinary SSA operations too, including long non-helper tails.
++      // The direct sequence has its own preflight for any future caller.
++      EnsureLumenJITSpace(4096);
+       switch (IROp->Op) {
+ #define REGISTER_OP(op, x) \
+   case FEXCore::IR::IROps::OP_##op: Op_##x(IROp, CodeNode); break
+@@ -997,6 +1007,27 @@
+     DebugData->Subblocks.push_back({static_cast<uint32_t>(BlockStartHostCode - CodeData.BlockBegin),
+                                     static_cast<uint32_t>(GetCursorAddress<uint8_t*>() - BlockStartHostCode)});
+   }
++
++#ifdef __APPLE__
++  // Metadata is encoded directly, bypassing the instruction emitter. Reserve its
++  // maximum size as well as the final branch, exit literal and alignments before
++  // writing any tail bytes. A thunk uses <= 48 bytes (8B alignment + 4 insns +
++  // 3 literals); a vl64pair is at most 17 bytes for two signed 64-bit deltas.
++  uint64_t TailSpace = 128 + sizeof(JITCodeTail);
++  constexpr uint64_t MaxThunkSize = 48;
++  constexpr uint64_t MaxRIPEntrySize = 17;
++  if (PendingJumpThunks.size() > (UINT64_MAX - TailSpace) / MaxThunkSize) {
++    EnsureLumenJITSpace(UINT64_MAX);
++  } else {
++    TailSpace += PendingJumpThunks.size() * MaxThunkSize;
++    if (DebugData->GuestOpcodes.size() > (UINT64_MAX - TailSpace) / MaxRIPEntrySize) {
++      EnsureLumenJITSpace(UINT64_MAX);
++    } else {
++      TailSpace += DebugData->GuestOpcodes.size() * MaxRIPEntrySize;
++      EnsureLumenJITSpace(TailSpace);
++    }
++  }
++#endif
+
+   // Make sure last branch is generated. It certainly can't be eliminated here.
+   if (PendingTargetLabel) {

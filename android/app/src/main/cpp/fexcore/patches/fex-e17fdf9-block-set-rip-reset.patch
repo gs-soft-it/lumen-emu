@@ -1,0 +1,31 @@
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 0a8e0a5..129f46b 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -589,6 +589,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
+ 
+       // Reset any block-specific state
+       Thread->OpDispatcher->StartNewBlock();
++      Thread->OpDispatcher->BeginBlockDecode();
+ 
+       const uint64_t InstsInBlock = Block.NumInstructions;
+       if (InstsInBlock == 0) {
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index 94efddd..d14f6ca 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -311,6 +311,14 @@ public:
+   void ResetDecodeFailure() {
+     NeedsBlockEnd = DecodeFailure = false;
+   }
++
++  // Called once at the start of every decoded block, before its first
++  // instruction is dispatched. The early block-end path in GenerateIR emits
++  // the exit but skips FinishOp, which normally clears BlockSetRIP, so the
++  // flag must not leak into the next decoded block.
++  void BeginBlockDecode() {
++    BlockSetRIP = false;
++  }
+   bool HadDecodeFailure() const {
+     return DecodeFailure;
+   }

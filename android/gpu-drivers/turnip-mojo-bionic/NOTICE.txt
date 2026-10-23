@@ -1,0 +1,13 @@
+Mesa Turnip Android Bionic baseline
+
+Mesa source: https://github.com/whitebelyash/mesa-unified
+Revision: 08e74439b86d87df4b705edc00e47a5ef1e3b637
+The source archive retains all original copyright notices and licenses.
+
+KGSL zero-timeout poll patch by JICA98, from revision
+02c560395409ad96c28544ffad5d4dbb01e1d24b, licensed under Apache-2.0.
+The patch is included unchanged. See LICENSE-APACHE-2.0.txt.
+The modified Mesa source retains its Google, Inc. copyright and MIT license.
+
+The build recipe keeps the complete Mesa license directory and Android NDK
+toolchain notice alongside its output. No prebuilt driver is stored here.

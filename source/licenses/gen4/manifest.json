@@ -1,0 +1,706 @@
+{
+  "schema": 1,
+  "sources": {
+    "dependencies/CLI11/LICENSE": {
+      "sha256": "009a05a07c254fe5a3bd8da28c8b8db91995e9447a2edb54b302ee5b46d8fa18",
+      "origin": {
+        "repository": "https://github.com/shadexternals/CLI11.git",
+        "commit": "12ba4ac4dbaa6489cb07e01be796e2bc074ef4f4",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/CLI11/tests/module_test/LICENSE": {
+      "sha256": "4787081af8a65a29fc570485a77e258426483f564e61ec535e570ab803500ca7",
+      "origin": {
+        "repository": "https://github.com/shadexternals/CLI11.git",
+        "commit": "12ba4ac4dbaa6489cb07e01be796e2bc074ef4f4",
+        "path": "tests/module_test/LICENSE"
+      }
+    },
+    "dependencies/ImGuiFileDialog/LICENSE": {
+      "sha256": "a97c94756bd574ce459c1dc7aaaf116ca826a8b9e617016e6aa9472c8be97ffc",
+      "origin": {
+        "repository": "https://github.com/shadexternals/ImGuiFileDialog.git",
+        "commit": "6e3ddeb485e8804beefae6e6d690b7709084bacd",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/ImGuiFileDialog/dirent/LICENSE": {
+      "sha256": "2f414f6c48e8c25ffb5d03cddd6043b3b613187f758d0a6964ca2ad7ed749e50",
+      "origin": {
+        "repository": "https://github.com/shadexternals/ImGuiFileDialog.git",
+        "commit": "6e3ddeb485e8804beefae6e6d690b7709084bacd",
+        "path": "dirent/LICENSE"
+      }
+    },
+    "dependencies/ImGuiFileDialog/stb/LICENSE": {
+      "sha256": "bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63",
+      "origin": {
+        "repository": "https://github.com/shadexternals/ImGuiFileDialog.git",
+        "commit": "6e3ddeb485e8804beefae6e6d690b7709084bacd",
+        "path": "stb/LICENSE"
+      }
+    },
+    "dependencies/LibAtrac9/LICENSE": {
+      "sha256": "cdb280ff931233bdefef0dfdd1d884217d97cb24a96530a41ce7848790df86f7",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/ext-LibAtrac9.git",
+        "commit": "ec8899dadf393f655f2871a94e0fe4b3d6220c9a",
+        "path": "LICENSE"
+      },
+      "effective_source": {
+        "path": "source/3rdparty/libatrac9",
+        "provenance": "source/3rdparty/libatrac9/UPSTREAM.md",
+        "license": "source/3rdparty/libatrac9/LICENSE",
+        "changes": "Input-bounded decoding and cloneable decoder history from the existing Lumen source tree; compiled with the gen4 target toolchain."
+      }
+    },
+    "dependencies/aacdec/fdk-aac/NOTICE": {
+      "sha256": "95ec80da40b4af12ad4c4f3158c9cfb80f2479f3246e4260cb600827cc8c7836",
+      "origin": {
+        "repository": "https://android.googlesource.com/platform/external/aac",
+        "commit": "ee76460efbdb147e26d804c798949c23f174460b",
+        "path": "NOTICE"
+      }
+    },
+    "dependencies/cpp-httplib/LICENSE": {
+      "sha256": "4b45cbe16d7b71b89ae6127e26e0d90a029198ca5e958ad8e3d0b8bbed364d8b",
+      "origin": {
+        "repository": "https://github.com/shadexternals/cpp-httplib.git",
+        "commit": "28f8264d134a576422cd0f99f19719c2749d9e47",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/date/LICENSE.txt": {
+      "sha256": "c90f6c00fb961170560299cbda28ca2d45804913aa8b2a9f36dbb8e0028d6930",
+      "origin": {
+        "repository": "https://github.com/HowardHinnant/date.git",
+        "commit": "a45ea7c17b4a7f320e199b71436074bd624c9e15",
+        "path": "LICENSE.txt"
+      }
+    },
+    "dependencies/dear_imgui/LICENSE.txt": {
+      "sha256": "c80c5789748d955c4a650562baa0d750494e2c7128c2ca66aaebe2e3c4e198bf",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/ext-imgui.git",
+        "commit": "f4d9359095eff3eb03f685921edc1cf0e37b1687",
+        "path": "LICENSE.txt"
+      }
+    },
+    "dependencies/dear_imgui/examples/libs/glfw/COPYING.txt": {
+      "sha256": "da2fb2c802537710cdebe8881b55356d07b88a6dbd7e4b912ac3091f8e6b5f6a",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/ext-imgui.git",
+        "commit": "f4d9359095eff3eb03f685921edc1cf0e37b1687",
+        "path": "examples/libs/glfw/COPYING.txt"
+      }
+    },
+    "dependencies/epoll-shim/LICENSE": {
+      "sha256": "9d06735b690d68e0953a704d0764f93608f5630237c8a5cb23679fe69f4a1b6b",
+      "origin": {
+        "repository": "https://github.com/jiixyj/epoll-shim.git",
+        "commit": "18159584bb3d17e601b9315a7398ace018251bdc",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/epoll-shim/doc/musl/COPYRIGHT": {
+      "sha256": "0e5a681801da4a53b594b17f66dad5f56730e2c0d2b22df9f0a1b36e8aab3dd2",
+      "origin": {
+        "repository": "https://github.com/jiixyj/epoll-shim.git",
+        "commit": "18159584bb3d17e601b9315a7398ace018251bdc",
+        "path": "doc/musl/COPYRIGHT"
+      }
+    },
+    "dependencies/epoll-shim/external/microatf/cmake/Copyright.txt": {
+      "sha256": "dc628fb936a5d229296d42083f9a8218aa32204c016919e784404c9ec58776e9",
+      "origin": {
+        "repository": "https://github.com/jiixyj/epoll-shim.git",
+        "commit": "18159584bb3d17e601b9315a7398ace018251bdc",
+        "path": "external/microatf/cmake/Copyright.txt"
+      }
+    },
+    "dependencies/ext-boost/LICENSE_1_0.txt": {
+      "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/ext-boost.git",
+        "commit": "ca6f230e67be7cc45fc919057f07b2aee64dadc1",
+        "path": "LICENSE_1_0.txt"
+      }
+    },
+    "dependencies/fmt/LICENSE": {
+      "sha256": "07580f2a3b35709ce703d523f447b242f6dfec7582a8c0df102c7fa2849375f8",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/ext-fmt.git",
+        "commit": "ec73fb72477d80926c758894a3ab2cb3994fd051",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/freetype/LICENSE.TXT": {
+      "sha256": "bd36c8b474855fa294c2ec5c184544478ef3720aad37d65a6296a4f264fd2d3b",
+      "origin": {
+        "repository": "https://github.com/freetype/freetype.git",
+        "commit": "b91f75bd02db43b06d634591eb286d3eb0ce3b65",
+        "path": "LICENSE.TXT"
+      }
+    },
+    "dependencies/freetype/docs/FTL.TXT": {
+      "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f",
+      "origin": {
+        "repository": "https://github.com/freetype/freetype.git",
+        "commit": "b91f75bd02db43b06d634591eb286d3eb0ce3b65",
+        "path": "docs/FTL.TXT"
+      }
+    },
+    "dependencies/freetype/docs/GPLv2.TXT": {
+      "sha256": "c4120c6752c910c299e3bd9cb3a46ff262c268303ca2069b61f92f10a5656c18",
+      "origin": {
+        "repository": "https://github.com/freetype/freetype.git",
+        "commit": "b91f75bd02db43b06d634591eb286d3eb0ce3b65",
+        "path": "docs/GPLv2.TXT"
+      }
+    },
+    "dependencies/freetype/subprojects/dlg/LICENSE": {
+      "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+      "origin": {
+        "repository": "https://github.com/freetype/freetype.git",
+        "commit": "b91f75bd02db43b06d634591eb286d3eb0ce3b65",
+        "path": "subprojects/dlg/LICENSE"
+      }
+    },
+    "dependencies/glslang/LICENSE.txt": {
+      "sha256": "adb783e734e906d1f46db5df29991dbde84bdb0ceab502ac2febb44fe3c2b5f4",
+      "origin": {
+        "repository": "https://github.com/KhronosGroup/glslang.git",
+        "commit": "ba1640446f3826a518721d1f083f3a8cca1120c3",
+        "path": "LICENSE.txt"
+      }
+    },
+    "dependencies/half/LICENSE.txt": {
+      "sha256": "1269110471a5506d5cc9c115c57b855206f69a90cc57bbbf27860907067ed946",
+      "origin": {
+        "repository": "https://github.com/ROCm/half.git",
+        "commit": "1ddada225144cac0de8f6b5c0dd9acffd99a2e68",
+        "path": "LICENSE.txt"
+      }
+    },
+    "dependencies/half/docs/license.rst": {
+      "sha256": "8964a592b0b32583c1358fdefa60567399e2ba3506dc0437179a875666a2822d",
+      "origin": {
+        "repository": "https://github.com/ROCm/half.git",
+        "commit": "1ddada225144cac0de8f6b5c0dd9acffd99a2e68",
+        "path": "docs/license.rst"
+      }
+    },
+    "dependencies/hwinfo/LICENSE": {
+      "sha256": "d57a8bbbf9786567525ca0a8e998551a635762b6091413f4973e0c5abfe57892",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/ext-hwinfo",
+        "commit": "8660006e0ca4aae5dda7a29e585968b50b0273b7",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/json/LICENSE.MIT": {
+      "sha256": "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603",
+      "origin": {
+        "repository": "https://github.com/nlohmann/json.git",
+        "commit": "55f93686c01528224f448c19128836e7df245f72",
+        "path": "LICENSE.MIT"
+      }
+    },
+    "dependencies/json/docs/mkdocs/docs/home/license.md": {
+      "sha256": "d4b7ed0261c2c840e9ccc7d483b3b659bfddc8be797f3007da080f0c4a78d960",
+      "origin": {
+        "repository": "https://github.com/nlohmann/json.git",
+        "commit": "55f93686c01528224f448c19128836e7df245f72",
+        "path": "docs/mkdocs/docs/home/license.md"
+      }
+    },
+    "dependencies/libpng/LICENSE": {
+      "sha256": "7317e078e2d3b5d7ba5a6159e650945153262b44b76f6700f8e9edb261c5143e",
+      "origin": {
+        "repository": "https://github.com/pnggroup/libpng",
+        "commit": "c1cc0f3f4c3d4abd11ca68c59446a29ff6f95003",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/libpng/ci/LICENSE_MIT.txt": {
+      "sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1",
+      "origin": {
+        "repository": "https://github.com/pnggroup/libpng",
+        "commit": "c1cc0f3f4c3d4abd11ca68c59446a29ff6f95003",
+        "path": "ci/LICENSE_MIT.txt"
+      }
+    },
+    "dependencies/libpng/contrib/gregbook/COPYING": {
+      "sha256": "d6cb0e9e560f51085556949a84af12b79a00f10ab8b66c752537faf7cd665572",
+      "origin": {
+        "repository": "https://github.com/pnggroup/libpng",
+        "commit": "c1cc0f3f4c3d4abd11ca68c59446a29ff6f95003",
+        "path": "contrib/gregbook/COPYING"
+      }
+    },
+    "dependencies/libpng/contrib/gregbook/LICENSE": {
+      "sha256": "b6a03c1803eb58ffb1f1278d5c7d4096c4c116e66dce8a7553e8c77d163c3438",
+      "origin": {
+        "repository": "https://github.com/pnggroup/libpng",
+        "commit": "c1cc0f3f4c3d4abd11ca68c59446a29ff6f95003",
+        "path": "contrib/gregbook/LICENSE"
+      }
+    },
+    "dependencies/libpng/contrib/pngexif/LICENSE_MIT.txt": {
+      "sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1",
+      "origin": {
+        "repository": "https://github.com/pnggroup/libpng",
+        "commit": "c1cc0f3f4c3d4abd11ca68c59446a29ff6f95003",
+        "path": "contrib/pngexif/LICENSE_MIT.txt"
+      }
+    },
+    "dependencies/libpng/contrib/pngminus/LICENSE.txt": {
+      "sha256": "1806f1f10d393e9e377b3a8d1b968452b54f1a90378f14eeef45426946ace330",
+      "origin": {
+        "repository": "https://github.com/pnggroup/libpng",
+        "commit": "c1cc0f3f4c3d4abd11ca68c59446a29ff6f95003",
+        "path": "contrib/pngminus/LICENSE.txt"
+      }
+    },
+    "dependencies/libressl/COPYING": {
+      "sha256": "9853507b8821c3f277aa60bf554eade41441ef06b2df538d247183ad28789b7f",
+      "origin": {
+        "repository": "https://github.com/shadexternals/libressl",
+        "commit": "b0504086dbbc186724b0cc92e6ba1832c245de0b",
+        "path": "COPYING"
+      }
+    },
+    "dependencies/libusb/COPYING": {
+      "sha256": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a",
+      "origin": {
+        "repository": "https://github.com/shadexternals/libusb.git",
+        "commit": "d087ea86539ab1f1ec42faf86e2357e2fad126a6",
+        "path": "COPYING"
+      }
+    },
+    "dependencies/magic_enum/LICENSE": {
+      "sha256": "bd227b8a5586dc73012262abfc0fc4eb84c2a91ad3f93b3591f8148fe17324d3",
+      "origin": {
+        "repository": "https://github.com/Neargye/magic_enum.git",
+        "commit": "a413fcc9c46a020a746907136a384c227f3cd095",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/magic_enum/test/3rdparty/Catch2/LICENSE": {
+      "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+      "origin": {
+        "repository": "https://github.com/Neargye/magic_enum.git",
+        "commit": "a413fcc9c46a020a746907136a384c227f3cd095",
+        "path": "test/3rdparty/Catch2/LICENSE"
+      }
+    },
+    "dependencies/minimp3/LICENSE": {
+      "sha256": "6a1ee543e5282cd9061881edf462e6fdab181f328da71fc2c9a6950a80e94d01",
+      "origin": {
+        "repository": "https://github.com/lieff/minimp3",
+        "commit": "7b590fdcfa5a79c033e76eacc05d0c3e4c79f536",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/miniupnp/LICENSE": {
+      "sha256": "52bdad87d7aefe3eab35cb02426aa748510f9398a1e2d520d93bcbb18f10dd11",
+      "origin": {
+        "repository": "https://github.com/miniupnp/miniupnp.git",
+        "commit": "bf4215a7574f88aa55859db9db00e3ae58cf42d6",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/miniz/LICENSE": {
+      "sha256": "0115478d567121238cf6cc1c0c361926cf07a49d9e4c9e66da97fac6a01646b3",
+      "origin": {
+        "repository": "https://github.com/richgel999/miniz",
+        "commit": "174573d60290f447c13a2b1b3405de2b96e27d6c",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/openal-soft/COPYING": {
+      "sha256": "d808ce217e5b611854da622b57ec29fe545584c48bc5352fae72a4b6e5074a15",
+      "origin": {
+        "repository": "https://github.com/shadexternals/openal-soft.git",
+        "commit": "83ea7236c6f23fc98e2b62eb9c5b3abfd4b2be86",
+        "path": "COPYING"
+      }
+    },
+    "dependencies/openal-soft/LICENSE-pffft": {
+      "sha256": "64056328b3e7bc104e24ef96accc1a7abead156f0c02d1b87c97e3f3a28030de",
+      "origin": {
+        "repository": "https://github.com/shadexternals/openal-soft.git",
+        "commit": "83ea7236c6f23fc98e2b62eb9c5b3abfd4b2be86",
+        "path": "LICENSE-pffft"
+      }
+    },
+    "dependencies/openal-soft/fmt-11.2.0/LICENSE": {
+      "sha256": "07580f2a3b35709ce703d523f447b242f6dfec7582a8c0df102c7fa2849375f8",
+      "origin": {
+        "repository": "https://github.com/shadexternals/openal-soft.git",
+        "commit": "83ea7236c6f23fc98e2b62eb9c5b3abfd4b2be86",
+        "path": "fmt-11.2.0/LICENSE"
+      }
+    },
+    "dependencies/openal-soft/gsl/LICENSE": {
+      "sha256": "4c21dc82a1c7186ea754fd59d504c00947953a3401fe8e24eaa44109ef8e2555",
+      "origin": {
+        "repository": "https://github.com/shadexternals/openal-soft.git",
+        "commit": "83ea7236c6f23fc98e2b62eb9c5b3abfd4b2be86",
+        "path": "gsl/LICENSE"
+      }
+    },
+    "dependencies/pugixml/LICENSE.md": {
+      "sha256": "0d0b3772af2fa45628a548a3b34583707ebcc68bb6f83ec48ca273aab4a510f1",
+      "origin": {
+        "repository": "https://github.com/zeux/pugixml.git",
+        "commit": "caade5a28aad86b92a4b5337a9dc70c4ba73c5eb",
+        "path": "LICENSE.md"
+      }
+    },
+    "dependencies/robin-map/LICENSE": {
+      "sha256": "11f2c685ba565a31aef1219f63a7a8845602c97bff70016b9e3278dfe51a2ec5",
+      "origin": {
+        "repository": "https://github.com/Tessil/robin-map.git",
+        "commit": "4ec1bf19c6a96125ea22062f38c2cf5b958e448e",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/sdl3/LICENSE.txt": {
+      "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",
+      "origin": {
+        "repository": "https://github.com/shadexternals/sdl3.git",
+        "commit": "d5af35e3fbb5bb6555ed00e69740d52af2a4e877",
+        "path": "LICENSE.txt"
+      }
+    },
+    "dependencies/sdl3/src/hidapi/LICENSE-bsd.txt": {
+      "sha256": "30eb1bef29b46f8ba7ab8b416035dbd93cb034a45481dd97815b944284582cd2",
+      "origin": {
+        "repository": "https://github.com/shadexternals/sdl3.git",
+        "commit": "d5af35e3fbb5bb6555ed00e69740d52af2a4e877",
+        "path": "src/hidapi/LICENSE-bsd.txt"
+      }
+    },
+    "dependencies/sdl3/src/hidapi/LICENSE-gpl3.txt": {
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "origin": {
+        "repository": "https://github.com/shadexternals/sdl3.git",
+        "commit": "d5af35e3fbb5bb6555ed00e69740d52af2a4e877",
+        "path": "src/hidapi/LICENSE-gpl3.txt"
+      }
+    },
+    "dependencies/sdl3/src/hidapi/LICENSE-orig.txt": {
+      "sha256": "fb5436aa63d1b71a8dfbf74ecaf1a5b4e1ec4df7f80074d11fec99284f69ca5f",
+      "origin": {
+        "repository": "https://github.com/shadexternals/sdl3.git",
+        "commit": "d5af35e3fbb5bb6555ed00e69740d52af2a4e877",
+        "path": "src/hidapi/LICENSE-orig.txt"
+      }
+    },
+    "dependencies/sdl3/src/hidapi/LICENSE.txt": {
+      "sha256": "7d3b087c34f35d4d538e3bcddd1ff8f66e92f9ef336881999482800ddf840913",
+      "origin": {
+        "repository": "https://github.com/shadexternals/sdl3.git",
+        "commit": "d5af35e3fbb5bb6555ed00e69740d52af2a4e877",
+        "path": "src/hidapi/LICENSE.txt"
+      }
+    },
+    "dependencies/sdl3/src/video/yuv2rgb/LICENSE": {
+      "sha256": "f7d74004cc75778cae46c5f0139f244d67c07ef64cf51937e8272352197dcb18",
+      "origin": {
+        "repository": "https://github.com/shadexternals/sdl3.git",
+        "commit": "d5af35e3fbb5bb6555ed00e69740d52af2a4e877",
+        "path": "src/video/yuv2rgb/LICENSE"
+      }
+    },
+    "dependencies/sdl3/test/COPYING": {
+      "sha256": "d5a549e4a7b88cb696d0db15b21830061131ed361257ab399a33ca08ce0b33d5",
+      "origin": {
+        "repository": "https://github.com/shadexternals/sdl3.git",
+        "commit": "d5af35e3fbb5bb6555ed00e69740d52af2a4e877",
+        "path": "test/COPYING"
+      }
+    },
+    "dependencies/sdl3/test/LICENSE.txt": {
+      "sha256": "129fbd972915047e54d88f6f1884a13bf6d79c18eeb40646193d7241c9270ae5",
+      "origin": {
+        "repository": "https://github.com/shadexternals/sdl3.git",
+        "commit": "d5af35e3fbb5bb6555ed00e69740d52af2a4e877",
+        "path": "test/LICENSE.txt"
+      }
+    },
+    "dependencies/sirit/LICENSE.txt": {
+      "sha256": "85037eeef55658177becb552477576a41bbc933705534b529c4c4818bb490480",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/sirit.git",
+        "commit": "c58f4d441cfdb6905d011a906704716833485486",
+        "path": "LICENSE.txt"
+      }
+    },
+    "dependencies/sirit/externals/SPIRV-Headers/LICENSE": {
+      "sha256": "ff04ae7e6a468587fe59434fee2e67c0e2a749b592c794b764ff80f30b94a084",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/sirit.git",
+        "commit": "c58f4d441cfdb6905d011a906704716833485486",
+        "path": "externals/SPIRV-Headers/LICENSE"
+      }
+    },
+    "dependencies/spdlog/LICENSE": {
+      "sha256": "4ccecab18d1ff0b61174fe3d6c430541625d3ddb865b0d5887db296f883c76e7",
+      "origin": {
+        "repository": "https://github.com/gabime/spdlog.git",
+        "commit": "b8944a4bcd478ee03375c9c50dc8d6c741f43f7b",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/toml11/LICENSE": {
+      "sha256": "b547d41695cdfbc1d054b5044578e476a0e9d756849f1e0cb3864cfc83e50a9e",
+      "origin": {
+        "repository": "https://github.com/ToruNiina/toml11.git",
+        "commit": "a01fe3b4c14c6d7b99ee3f07c9e80058c6403097",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/toml11/docs/themes/hugo-book/LICENSE": {
+      "sha256": "450c3f8358cc7b0fd3465e59a79ed8c7eed68eeff189bd002843e40c394d6be3",
+      "origin": {
+        "repository": "https://github.com/ToruNiina/toml11.git",
+        "commit": "a01fe3b4c14c6d7b99ee3f07c9e80058c6403097",
+        "path": "docs/themes/hugo-book/LICENSE"
+      }
+    },
+    "dependencies/toml11/tests/extlib/doctest/LICENSE.txt": {
+      "sha256": "0fe0b331fa1513dcce8604ff1fa925f32d1cea17d8aeb1c2471fad40d291adc5",
+      "origin": {
+        "repository": "https://github.com/ToruNiina/toml11.git",
+        "commit": "a01fe3b4c14c6d7b99ee3f07c9e80058c6403097",
+        "path": "tests/extlib/doctest/LICENSE.txt"
+      }
+    },
+    "dependencies/toml11/tests/extlib/json/LICENSE.MIT": {
+      "sha256": "86b998c792894ccb911a1cb7994f7a9652894e7a094c0b5e45be2f553f45cf14",
+      "origin": {
+        "repository": "https://github.com/ToruNiina/toml11.git",
+        "commit": "a01fe3b4c14c6d7b99ee3f07c9e80058c6403097",
+        "path": "tests/extlib/json/LICENSE.MIT"
+      }
+    },
+    "dependencies/toml11/tests/extlib/json/docs/mkdocs/docs/home/license.md": {
+      "sha256": "08c345dca1019879171c2c465410f7bee984bbfbdb177afd2d95bf9ff6267602",
+      "origin": {
+        "repository": "https://github.com/ToruNiina/toml11.git",
+        "commit": "a01fe3b4c14c6d7b99ee3f07c9e80058c6403097",
+        "path": "tests/extlib/json/docs/mkdocs/docs/home/license.md"
+      }
+    },
+    "dependencies/tracy/LICENSE": {
+      "sha256": "b04d971f616a03d75b51ae90bc1db6a3dd9ae195b68636d481539c008e013594",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/tracy.git",
+        "commit": "143a53d1985b8e52a7590a0daca30a0a7c653b42",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/tracy/public/libbacktrace/LICENSE": {
+      "sha256": "ef8a9b3247488f8901ca60de9b17b745d7bd67e5ec1e622f80d62364572200d8",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/tracy.git",
+        "commit": "143a53d1985b8e52a7590a0daca30a0a7c653b42",
+        "path": "public/libbacktrace/LICENSE"
+      }
+    },
+    "dependencies/vma/LICENSE.txt": {
+      "sha256": "8d70e4cf2a9941f6454da71cd60e38484dd3e34810c824760d550e982af6d97a",
+      "origin": {
+        "repository": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git",
+        "commit": "f378e7b3f18f6e2b06b957f6ba7b1c7207d2a536",
+        "path": "LICENSE.txt"
+      }
+    },
+    "dependencies/vulkan-headers/LICENSE.md": {
+      "sha256": "ac24e5ea920e4318e4d02c4086ae51f53cfb03feed06c18df1019e7ada1ec7bc",
+      "origin": {
+        "repository": "https://github.com/KhronosGroup/Vulkan-Headers.git",
+        "commit": "ee3b5caaa7e372715873c7b9c390ee1c3ca5db25",
+        "path": "LICENSE.md"
+      }
+    },
+    "dependencies/xbyak/COPYRIGHT": {
+      "sha256": "7e411d5c5d38501a504843f58afb6824439c828872b35d2ff1e892e73fd1a30d",
+      "origin": {
+        "repository": "https://github.com/herumi/xbyak.git",
+        "commit": "44a72f369268f7d552650891b296693e91db86bb",
+        "path": "COPYRIGHT"
+      }
+    },
+    "dependencies/xxhash/LICENSE": {
+      "sha256": "6ffedbc0f7878612d2b23589f1ff2ab15633e1df7963a5d9fc750ec5500c7e7a",
+      "origin": {
+        "repository": "https://github.com/Cyan4973/xxHash.git",
+        "commit": "953a09abc39096da9e216b6eb0002c681cdc1199",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/xxhash/cli/COPYING": {
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+      "origin": {
+        "repository": "https://github.com/Cyan4973/xxHash.git",
+        "commit": "953a09abc39096da9e216b6eb0002c681cdc1199",
+        "path": "cli/COPYING"
+      }
+    },
+    "dependencies/xxhash/tests/bench/LICENSE": {
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+      "origin": {
+        "repository": "https://github.com/Cyan4973/xxHash.git",
+        "commit": "953a09abc39096da9e216b6eb0002c681cdc1199",
+        "path": "tests/bench/LICENSE"
+      }
+    },
+    "dependencies/xxhash/tests/collisions/LICENSE": {
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+      "origin": {
+        "repository": "https://github.com/Cyan4973/xxHash.git",
+        "commit": "953a09abc39096da9e216b6eb0002c681cdc1199",
+        "path": "tests/collisions/LICENSE"
+      }
+    },
+    "dependencies/zlib-ng/LICENSE.md": {
+      "sha256": "6c9f0d975b41afaa34d22f55bb8986ce69e5cb7ad327cb2b28820cd425edf5ee",
+      "origin": {
+        "repository": "https://github.com/shadps4-emu/ext-zlib-ng.git",
+        "commit": "fd0d263cedab1a136f40d65199987e3eaeecfcbd",
+        "path": "LICENSE.md"
+      }
+    },
+    "dependencies/zydis/LICENSE": {
+      "sha256": "e5e99718209e94baaf3e9cbf6f64aa3329c9e73c63b1ab47e10f29d81974e6f3",
+      "origin": {
+        "repository": "https://github.com/zyantific/zydis.git",
+        "commit": "120e0e705f8e3b507dc49377ac2879979f0d545c",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/zydis/dependencies/zycore/LICENSE": {
+      "sha256": "7991ec4481a82c51d196f7440fda34c578aab51f8b9c7023935c6e03b57638bd",
+      "origin": {
+        "repository": "https://github.com/zyantific/zydis.git",
+        "commit": "120e0e705f8e3b507dc49377ac2879979f0d545c",
+        "path": "dependencies/zycore/LICENSE"
+      }
+    },
+    "core/BSD-3-Clause.txt": {
+      "sha256": "3cf06aba3588c41c514f6946bb2d757b413ff6491647d474800f55edca75dcb4",
+      "origin": {
+        "path": "source/gen4/LICENSES/BSD-3-Clause.txt",
+        "commit": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c"
+      }
+    },
+    "core/BSL-1.0.txt": {
+      "sha256": "84c6ef3ea9e3254a54d0acf5d3e0c61ae011b8fef7dd6940591cf060e6380a8f",
+      "origin": {
+        "path": "source/gen4/LICENSES/BSL-1.0.txt",
+        "commit": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c"
+      }
+    },
+    "core/CC0-1.0.txt": {
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+      "origin": {
+        "path": "source/gen4/LICENSES/CC0-1.0.txt",
+        "commit": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c"
+      }
+    },
+    "core/GPL-2.0-or-later.txt": {
+      "sha256": "aaf135472f81c5b4a0dca9367e5bb5e9750032b5bebe5442b36e4c0a47430df3",
+      "origin": {
+        "path": "source/gen4/LICENSES/GPL-2.0-or-later.txt",
+        "commit": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c"
+      }
+    },
+    "core/LGPL-2.1-or-later.txt": {
+      "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+      "origin": {
+        "path": "source/gen4/LICENSES/LGPL-2.1-or-later.txt",
+        "commit": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c"
+      }
+    },
+    "core/MIT.txt": {
+      "sha256": "b85dcd3e453d05982552c52b5fc9e0bdd6d23c6f8e844b984a88af32570b0cc0",
+      "origin": {
+        "path": "source/gen4/LICENSES/MIT.txt",
+        "commit": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c"
+      }
+    },
+    "core/OFL-1.1.txt": {
+      "sha256": "8eea8287e5876b539670cadb82e99f9a7afddec6f6730811be1daf25d2e9bcfd",
+      "origin": {
+        "path": "source/gen4/LICENSES/OFL-1.1.txt",
+        "commit": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c"
+      }
+    },
+    "core/Vortek-LGPL-2.1.txt": {
+      "sha256": "20c17d8b8c48a600800dfd14f95d5cb9ff47066a9641ddeab48dc54aec96e331",
+      "origin": {
+        "path": "source/gen4/LICENSES/Vortek-LGPL-2.1.txt",
+        "commit": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c"
+      }
+    },
+    "core/libdeflate-NOTICE.txt": {
+      "sha256": "b5f6ad8bae408a30e16c8233171fdff44aed8498c276e6f7253216ed46282bf3",
+      "origin": {
+        "path": "source/gen4/LICENSES/libdeflate-NOTICE.txt",
+        "commit": "be6bc2e9c60799e071dd2fafa6216e8d80ec619c"
+      }
+    },
+    "UPSTREAM.json": {
+      "sha256": "8d0b0c21a7f8b74148f7fd2cdb00a6a06c112f4180beecfbdddcd72ed4af8414",
+      "origin": {
+        "path": "source/gen4/UPSTREAM.json"
+      }
+    },
+    "dependencies.lock.json": {
+      "sha256": "9260164aab08d6b972fcd4810711b607be838e2a9ae03f67b0564f70721e9103",
+      "origin": {
+        "path": "source/gen4/tools/dependencies.lock.json"
+      }
+    },
+    "bundled-source-notices.txt": {
+      "sha256": "1c9f3c17c9ef2bdf5b6c476f69c34dd04f12735d841d97ed9c02055cda8cc22e",
+      "origin": {
+        "scope": "Verbatim license/copyright comment blocks from bundled externals"
+      }
+    },
+    "fonts/embedded-notices.txt": {
+      "sha256": "f8cbc6b4226341936aed08239bfcae826b414433b986f364a2e6d7d637c7e5d7",
+      "origin": {
+        "scope": "Embedded font copyright, license and license URL name records"
+      }
+    },
+    "dependencies/zarchive/LICENSE": {
+      "sha256": "efe6b7a9113e0dbe3a8922026fc72ae3ee835c163d182967a015783f7d72e562",
+      "origin": {
+        "repository": "https://github.com/shadexternals/ZArchive.git",
+        "commit": "965b66c8d67b6b7e30fd63b3b75aa91a99ff303b",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/zstd/LICENSE": {
+      "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
+      "origin": {
+        "repository": "https://github.com/shadexternals/zstd.git",
+        "commit": "5c7b7bad26808e6b40ac3b3d0075466e27738a9d",
+        "path": "LICENSE"
+      }
+    },
+    "dependencies/zstd/COPYING": {
+      "sha256": "f9c375a1be4a41f7b70301dd83c91cb89e41567478859b77eef375a52d782505",
+      "origin": {
+        "repository": "https://github.com/shadexternals/zstd.git",
+        "commit": "5c7b7bad26808e6b40ac3b3d0075466e27738a9d",
+        "path": "COPYING"
+      }
+    }
+  }
+}

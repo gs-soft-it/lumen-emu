@@ -1,0 +1,45 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -38,6 +38,11 @@
+ #include <cstring>
+ #include <unistd.h>
+ 
++// Optional embedding diagnostic, called only after a discarded code-emission
++// attempt. It observes compilation retries; it has no execution-state access.
++extern "C" __attribute__((weak, noinline)) void
++FEXLumenJitCompilationRestartedV1(uint32_t) noexcept {}
++
+ namespace {
+ struct DivRem {
+   uint64_t Quotient;
+@@ -858,11 +863,15 @@
+   case RestartOptions::Control::Incoming:
+     // Nothing
+     break;
+-  case RestartOptions::Control::EnableFarARM64Jumps: RequiresFarARM64Jumps = true; break;
++  case RestartOptions::Control::EnableFarARM64Jumps:
++    RequiresFarARM64Jumps = true;
++    FEXLumenJitCompilationRestartedV1(1);
++    break;
+   case RestartOptions::Control::NeedsLargerJITSpace:
+     // Get rid of the claimed buffer immediately, we can't fit in it at all.
+     TempCodeBufferAllocator.UnclaimBuffer();
+     SSANodeMultiplier *= 2;
++    FEXLumenJitCompilationRestartedV1(2);
+     break;
+   default: LOGMAN_MSG_A_FMT("Unhandled Arm64 restart condition!");
+   }
+@@ -875,6 +884,12 @@
+   Relocations.resize(PrevNumAllocations, FEXCore::CPU::Relocation::Default()); // Discard any relocations generated from a previous attempt
+ 
+   CodeData.EntryPoints.clear();
++  // Guest-PC maps and subblock extents describe only the surviving emission.
++  // A far-branch or buffer restart rewinds the host cursor to zero; retaining
++  // the discarded attempt creates a non-monotonic PC map and can reconstruct
++  // a different guest instruction at a real interrupt boundary.
++  DebugData->GuestOpcodes.clear();
++  DebugData->Subblocks.clear();
+ 
+   // Fairly excessive buffer range to make sure we don't overflow
+   // One page baseline, plus SSANodeMultipler bytes, plus another page for guard page.

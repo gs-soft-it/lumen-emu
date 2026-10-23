@@ -1,0 +1,22 @@
+PS5 candidate: C13 FEX integration, 2026-10-18
+
+When this notice is packaged, the isolated PS5 runtime uses FEX commit
+f2b679f6028ce1c38875233aecfcf5d3f8ebecec from https://github.com/FEX-Emu/FEX,
+under its retained MIT license. This replaces the legacy PS5 e17fdf9
+provenance described in FEXCORE-NOTICE.md for this candidate. Gen4 retains
+its separately documented direct FEX integration.
+
+Lumen's local PS5 overlay adapts translated-block lifecycle and retry metadata,
+app-owned JIT symbol output, conditional-branch mutation safepoints,
+independent SSE/AVX denormal modes, and the exclusive-publication embedding ABI.
+The integration preserves the PS5 HLE/VM facade. Interval instrumentation
+is unavailable. Persistent
+translation disk cache and 16-KiB host pages are not qualified or admitted.
+This is a local derivative, not an upstream FEX release.
+
+Pinned dependencies: fmt 407c905e45ad75fc29bf0f9bb7c5c2fd3475976f,
+xxHash e626a72bc2321cd320e953a0ccf1584cad60f363,
+unordered_dense 3234af2c03549bc85656bfd3a86993bf1cd8aef1,
+rpmalloc 1d85c246cd827ead6865f4f880d4fef53f2b1864.
+Applicable license texts remain in the sibling Legal directories; the C13
+fmt license is included at Legal/gen4/cpu/fmt/LICENSE.

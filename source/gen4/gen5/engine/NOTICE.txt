@@ -1,0 +1,33 @@
+PS5 direct engine source
+
+The core, renderer, virtual memory and services in this directory originate
+from KytyPS5, revision fe3857a1715551e4f554b2ec29cc1ca3286287a1,
+https://github.com/KytyPS5/KytyPS5.git, under GPL-2.0-only.
+Original copyright and license notices are retained in the sources and in
+the project's existing Kyty and third-party notices.
+
+Lumen's modifications adapt the original engine to Android ARM64, its host
+window and UI bridges, and the isolated Gen4 direct FEX CPU implementation.
+The existing legacy PS5 renderer, memory publication and facade optimization
+paths are not part of this source selection. Source identities and host
+adaptations are recorded in UPSTREAM.json.
+
+Lumen removes Tracy profiler instrumentation from Android direct-FEX native
+builds outside the Debug configuration. Profiler lifecycle functions become
+no-ops and disabled instrumentation macros do not evaluate their arguments.
+Debug, desktop and legacy build defaults retain their existing behavior.
+UPSTREAM.json preserves the original upstream hashes alongside the modified
+source identities for this adaptation.
+
+Additional Lumen changes provide four independent performance options,
+enabled by default: an empty pending-signal fast path, an ARM64 SRT walker,
+indexed typed HLE dispatch, and asynchronous driver pipeline-cache persistence.
+These adapt the PS5 boundary and resource plans; the shared Gen4 CPU engine
+and the vendored translator are not modified by these options. Each option
+can be disabled individually with its explicit environment selector.
+
+An additional Gen5 host adaptation can generate fragment barycentric
+coordinates through a geometry stage for supported triangle-list pipelines.
+Its native default is disabled. Android direct Gen5/FEX selects it by default
+only for Minecraft PS5 (title ID PPSA17221), preserving explicit overrides.
+It does not expose unsupported native Vulkan barycentric features.

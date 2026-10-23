@@ -1,0 +1,7 @@
+This software uses FFmpeg under the GNU LGPL version 2.1 or later.
+This software is based in part on the work of the Independent JPEG Group.
+Core recipe: https://github.com/KytyPS5/ext-ffmpeg-core/tree/9ac4cfd195f192ed8b08566f49c28dbb48d08341
+Patched source: https://github.com/KytyPS5/ext-ffmpeg-core/releases/download/9ac4cfd195f1/ffmpeg-source-macos-arm64.tar.gz
+Source SHA-256: 3222a17b900456acca57d46cf495867a353a37ae8ee2a5d3c8317f8c266d3699
+Local Android recipe: source/gen4/gen5/tools/BuildAndroidFfmpeg.py
+Local use only; public binary distribution remains unqualified.

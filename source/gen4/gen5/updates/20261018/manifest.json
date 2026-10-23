@@ -1,0 +1,476 @@
+{
+  "schema": "lumen.ps5.upstream-candidate.v1",
+  "upstream_repository": "https://github.com/KytyPS5/KytyPS5.git",
+  "upstream_commit": "fe3857a1715551e4f554b2ec29cc1ca3286287a1",
+  "upstream_tree": "9ecce47919ed57efcf7d1505688968da3630eb02",
+  "retrieved_on": "2026-10-18",
+  "baseline": "main 2943cc85 with selected Kyty 1cfb9522",
+  "activation": "LUMEN_PS5_UPSTREAM_20261018=ON; default OFF",
+  "scope": "Adapted graphics/shader update; not complete upstream replacement",
+  "excluded": [
+    "controller and input",
+    "launcher/updater/UI",
+    "kernel VM rewrite",
+    "fault-driven dirty tracking and BDA queue",
+    "AGC fixed-address allocation",
+    "ZMask synthesis"
+  ],
+  "patch_sha256": "22ed468d29a24873516852fff7203c6bde895231d18d0ababfd678a6d5bad7b1",
+  "files": [
+    {
+      "path": "src/graphics/guest_gpu/command_processor/pm4Dispatch.cpp",
+      "before_sha256": "f978948cbfdcb3ff073c0c6565af48b5f3c1d003a86774bf4acbb782950e4a6d",
+      "after_sha256": "5e72bd35c5a59cdbd8b920decd5dd7343063a620efe64ec88cfce71206281468"
+    },
+    {
+      "path": "src/graphics/guest_gpu/command_processor/pm4Handlers.cpp",
+      "before_sha256": "bfe207d7865e4af4ff7770208835da77dfe7b146a1e6906799a0bacb0d3bf4d5",
+      "after_sha256": "d8bd8511bf5ca43acabe7a5b74783521542961daa924855e5c22660eda33d4fb"
+    },
+    {
+      "path": "src/graphics/guest_gpu/gpu_format.cpp",
+      "before_sha256": "dfe9272bc674e300a1043e94e55e6d0856508a759118ab66c4ef33a67713cad3",
+      "after_sha256": "ce257ab63418ede7e5a50c7f240c4d5bc34404719660975a42eead49d0f52fcf"
+    },
+    {
+      "path": "src/graphics/guest_gpu/graphicsRun.cpp",
+      "before_sha256": "742a5b0487c4728871e5cf75f6300910dac9a5844d3ffc83f062480239681836",
+      "after_sha256": "06969ebadaf77a88d3226b5294541dd83a5f0b9211c33033a4f34f36de430063"
+    },
+    {
+      "path": "src/graphics/guest_gpu/hardwareContext.h",
+      "before_sha256": "fae199e46f886f8a81a64bf5f5a56bf204ea36ccec0ace75b0f43c054bb4efd5",
+      "after_sha256": "01fed8f1d3bbf821bba7bf63187ff601fd81506794802af72da5ff0e49c26b17"
+    },
+    {
+      "path": "src/graphics/guest_gpu/pm4.cpp",
+      "before_sha256": "58ee51ff199948c371d574e00324e819323a5b734975de0c0b9d2938b62048a7",
+      "after_sha256": "3839531cdaaf9b7b1c13b55d1d3df44b5f0f932f07269fb49bc6ec405a5544e0"
+    },
+    {
+      "path": "src/graphics/guest_gpu/pm4.h",
+      "before_sha256": "00ed9a093f4f87eba9862b6bddae22c5de25e3d4502b9e430bcf79ae114c3bd8",
+      "after_sha256": "e5db534fbfb33319a6067a4f1f31846dd8ff0a690b5dc3ab935cc8dc36306367"
+    },
+    {
+      "path": "src/graphics/guest_gpu/tile.cpp",
+      "before_sha256": "85d8608df32c82af907362fa3cf3dfc48f1c4c26128868bdc34522d8218ef40f",
+      "after_sha256": "16753af6ce6a718575d0f279ae83a810a7cb670ba8b6139c9895da83cef6b982"
+    },
+    {
+      "path": "src/graphics/host_gpu/graphicContext.h",
+      "before_sha256": "0b8d60c8ef3e886c8c42387cb818c0519cd149772e35cd8ab67e3c41dc0db4b4",
+      "after_sha256": "3be861f9036d7d955e414dcfdb13bfa1104927111ee4fa4de6f290b8f0a741e7"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/cache/bufferCache.cpp",
+      "before_sha256": "13c0ee684ecbceca78af9038b81d3794ff13f021f5c89d663b8214f79037a3fc",
+      "after_sha256": "963e8e6b79e4f850973d3c9144c1a07bca47beb69859d6e2778c2fc9678fd25e"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/cache/streamBuffer.cpp",
+      "before_sha256": "cbbe4458faeef4d0e314b3a56ae61a8416490292bb68830d8749ad60bda81e7f",
+      "after_sha256": "d227d261fb64f70b5920640fedc67198fb36b43b88beb367ad17cc1849074fc0"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/cache/textureCache.cpp",
+      "before_sha256": "9cb8179c327c90e267523d02c0946d81dc5d6eab8739e6d352cd44e4769e2751",
+      "after_sha256": "1e35090d21c65cc75719a8bcda176119f074bd03681eb67a3beb615be5304db4"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/cache/textureCache.h",
+      "before_sha256": "26d982eafb57e4f07b28e6408c0de0a56a453a902a7478ab23c28561d6870a57",
+      "after_sha256": "c6f2020e670647f8eeb99a06ddb0176741f63d65cc7653c9899ab47e9b7ba300"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/colorRenderTarget.cpp",
+      "before_sha256": "202a87ac652a3a9e91ac1db4c42847894aa7fe5860283cbada9f54933d67ae06",
+      "after_sha256": "f2f42b9fd3fd61ce419213137009ea3ee768bf8e52628bfcf0ba11dab4eb427e"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/debug.cpp",
+      "before_sha256": "627a491b73de46ae0323030357b81b6f252f8f7d2be524d4226ecfef27ef6d44",
+      "after_sha256": "db92e60fa4988c8600e9e85eeaada80141ab8bc1a20b4b8ddc8ee24107111817"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/depthRenderTarget.cpp",
+      "before_sha256": "170d36e4035d68e8f899f82ecfc034cc161e8e372a69aabdc7693e6ba9888f54",
+      "after_sha256": "b0e72a64d47a1a88deb6b71446c3dff01adc058ab31fece2f8ec5251f1d0d651"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/depthRenderTarget.h",
+      "before_sha256": "71ea4a172dfe55a37a6c9ce4857cc06dc24547c781f2919e6c7d4cda1215bf86",
+      "after_sha256": "a31e27c0bd940718d1bd3b295ebf20b699f09ec23059f8c3cef8a89aaaf89bdf"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/image/image.h",
+      "before_sha256": "c07bd94bcd37a86da5234609746451110499e8f5be7c3be0f8288fee05c83b3f",
+      "after_sha256": "4e3367e23a06386a3d669b165f4a423e4e4e420b8241aafd3b58c683364c482d"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/image/imageInfo.cpp",
+      "before_sha256": "28f319d8ee5e4e8c220bc089cf8b42b0e01910d1fef5d0342f79b4bc452eb05f",
+      "after_sha256": "40ae68a9f876141910d0805a65a808b4ae0305b1f25a35f0898c9269b2b6f44c"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/image/imageInfo.h",
+      "before_sha256": "4691496921dc1f8ea232b58f0bf1b124680fc7057bc186108d6f02dc55b32bb0",
+      "after_sha256": "b47d80db7089a47a026dfe1d21d5c94578d115c9b4050a87d3ce73b77fe1d6f6"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/image/imageView.h",
+      "before_sha256": "d380c7043b09d60e496a1eb979d96beabadef22a85ae442685dea6b328dc554f",
+      "after_sha256": "06c5841d8c429f8f49310c8f12dd29b7c68eb55537f4d8f5c5671591cf9bc487"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/image/textureCommon.cpp",
+      "before_sha256": "4a64c8d9857c6fa491ba78a2060a5c1ed02bf7b4c10b28012a8a2021c2181910",
+      "after_sha256": "f0c591f26dd72739ca71a6f0edcdc1fee00327943cea92e494503f1961785aca"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/pipeline/descriptors.cpp",
+      "before_sha256": "342e20c9f3b23e7919f99c6b3c5444d0241bc3710c3386d14a5a3229c155a119",
+      "after_sha256": "0b54df9e1a8dc2da0536fa14f7f0846133affd996ec550ea1ed36061a5b1a686"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp",
+      "before_sha256": "6feec4ad84b8b6d081c4f999b33aa4863dad762d9eeba8f7c3ff7ac34a12cbe4",
+      "after_sha256": "44770503095405bac194145a543dc7a54a32952a0d2d734a5b51c57db578d42f"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/pipeline/pipelineCache.h",
+      "before_sha256": "1b7f2029327f296ede73e8cbc95e9d55cb34ad92b168b37fa543e1449fef67bb",
+      "after_sha256": "b5834f5f179b45a2fe4c2e9589ed429436526f3de2ac275a3bfb6abd2c05b0f4"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/pipeline/shaders.cpp",
+      "before_sha256": "77bd9a9404f10bf22db4d6e825b5d94e1012ea02cac20208b08b181e128eca9a",
+      "after_sha256": "b4f63d27d822f355d15a08e1347836e239cae234ed0e7be2f93edb4324e420e4"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/render.h",
+      "before_sha256": "7629d49898678c648e261885842a461c13ea21ac38f951d2db4bb8a3c3584885",
+      "after_sha256": "6332c2f3d6d0878d1e052f676e237c09c4a90ccad2d69eb7627f69bfcc7050d1"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/renderCompute.cpp",
+      "before_sha256": "0caac66764f909305b95e7be2f662887bf6d37693d9a1053a083d8effe5a67e9",
+      "after_sha256": "b08a6d39fe694f9c5f1cba2ebf55a4d681d8741817eea2eaa9a2a074af7abb64"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/renderDraw.cpp",
+      "before_sha256": "6aedd37fe2686c9f9507bfbc6fee29f1ff892fa2a5ef68bc36f371ea617fd5a9",
+      "after_sha256": "84e9f000461df55cb4e505600334dea966a7297ec7af66788ed13183485d19a0"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/sync.cpp",
+      "before_sha256": "e10b497b0258c146411969725102a11d9c26df2e2aa4aea8eb3bf52b883b3653",
+      "after_sha256": "eb26d56fa25007852fd9e228724531f94d3898ab460cc47bcfbf75737a6fd89b"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/sync.h",
+      "before_sha256": "53f7a23ffc0cbb3a94156b78b2cc4dd2ba75a5bdf72ee9139ee37cead648638f",
+      "after_sha256": "e31c101d9e5d6901e872e1ea617cdaef4bb88aaf017e42f0566f9ab9d1eb715e"
+    },
+    {
+      "path": "src/graphics/host_gpu/spirvModuleAdmission.h",
+      "before_sha256": "aea77af4f5bb81ed6d34379cd1d343430427eb92930e56c7c5223086045ec803",
+      "after_sha256": "732cfdfd9f2619435dafc6547aeb4936cbb97226d03b21d0f2cd171732698dd1"
+    },
+    {
+      "path": "src/graphics/host_gpu/vma.cpp",
+      "before_sha256": "ce74452c18d26a949c8b4b019fcfce0eb8133aa30f7cdcf3dd2e06ca644472c7",
+      "after_sha256": "ae5c7aaf3a84d0c9509a1ab39d8ddb6ed4bb6c6071283f0d35356d5a08abd7e2"
+    },
+    {
+      "path": "src/graphics/host_gpu/vulkanCommon.cpp",
+      "before_sha256": "6bd5dbfb2b547e5bb15aa8e5e067dcca13eb1d453e6e031b06d9a15607254136",
+      "after_sha256": "c3b74c3e6eb7f4185e37190e526793a330cb699ff11a137da8204a578eb3ecf0"
+    },
+    {
+      "path": "src/graphics/host_gpu/vulkanCommon.h",
+      "before_sha256": "d48bd345ce1e29a855e5c8725cc7bb2db5450ef93eb9c6ec004c28aa8866972b",
+      "after_sha256": "1d8ac3c54f3862f3846e707b9db05933e2a1c2d48c7d5087a3129acf62b57f59"
+    },
+    {
+      "path": "src/graphics/presentation/window/vulkanWindow.cpp",
+      "before_sha256": "3a61f40344d5ddadae4cdfbc0776ebed37bbdcdae30e5f5bc28812ab6fb8444d",
+      "after_sha256": "81b5cb130d123567300e12796e7011292222b14e20069129043ed556615fabcc"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ShaderRecompiler.cpp",
+      "before_sha256": "a078a7b08d7873b5892923473eaebbeb8008fa8a5071028517da1f24cdcfe625",
+      "after_sha256": "48b4ffecbd24849ea7576db0f5f025d154e9951536babcc01a242841cac50ce7"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ShaderRecompiler.h",
+      "before_sha256": "4322938e09842e97d9f77a4400cd96dc7bdd1690fc4c0259a769228a004a3da0",
+      "after_sha256": "a2f24d6e06bf8585e273e2f443133c2c8a847f42a11b040cffdd6136e71a0c8a"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/Tessellation.cpp",
+      "before_sha256": "34c0ee746ea31e99282276f843364ee836cc40399156861e31e406827c1c53b9",
+      "after_sha256": "b62ed8d9519df5e1a607ab8dd62e333115b9cff2689a312b8efedf137504d0f5"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/SpirvBuilder.cpp",
+      "before_sha256": "5ce9f2be52f31b32922217af4529018da2dfbd316add2c61228c216d897eb3e7",
+      "after_sha256": "ae1c633f20920466ce320afd924ff33497758beb819a98d3ac992ec2df524530"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/SpirvBuilder.h",
+      "before_sha256": "47ad3e32b206ff22a3cc9bf886b58fe1f22e90a037501fd6c4269f0720544d4a",
+      "after_sha256": "a51ab06974eb30b15ba8870fb06116592c079107af7b04fdc1b297b435d41e7b"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/SpirvEmitter.cpp",
+      "before_sha256": "d6c8e5ad10277fa536e304e1132c457fde932e419d7373b17ca91ca1f9dea6cb",
+      "after_sha256": "844115e8bb6c3a1c2adc761bd2b9f8cd56dd1108efbdd45a55a51bf54806ce10"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/SpirvEmitter.h",
+      "before_sha256": "c99511d9bdc725a89596ade512047d4522ddc1662e3847f4ca0e3d5d9b154c1a",
+      "after_sha256": "af3ff291d73c429361b91ebb41396b99bd366c7c5a52f01bfc7afd14ee091834"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterAlu.cpp",
+      "before_sha256": "eb9a37d0185352792178e33d1c0fe4c8c006d8ccae4a40031d4caf8e2295d29c",
+      "after_sha256": "52bf7035f40e2e7f1ae643fdf8fdbfc8dc34b5d87cdeae59c755c5b13ae4f059"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterAluHelpers.cpp",
+      "before_sha256": "d3174d4f0efea50fe5e06861bca25b74986a25accb7b87ba3d69b140dcdc3643",
+      "after_sha256": "a49e8c4a9c28017159c0e6ffa765aa4b66691a69b6c10ac1ff27cb4b5b1fd617"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterAnalysis.cpp",
+      "before_sha256": "170e0aa16d08b83079a6d9e1d05d52e4d51e26a3d2479c146fd6c454ec2300f8",
+      "after_sha256": "9e91460a779ae03e80adf54f0409e0e43fda8ac08971c1c106ff602070629876"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterFlow.cpp",
+      "before_sha256": "a2148d2873dc70aac685a94f45a5d1883211ebb559841ef75ed4da5ea1b1da2b",
+      "after_sha256": "69b119cb091278273e0901ab74a9805f90c7efb33ec456a322af3951e25dbd93"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterImage.cpp",
+      "before_sha256": "3932f8a21b10631f2044c31bdf4ac1e66a39806e702e7fa7353163f82c73399d",
+      "after_sha256": "36d3c7129c869388c42f272dda3854e61611c12a3d562c10e646daaf5075bb3d"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h",
+      "before_sha256": "1d1d1ade6aa65556a95bf3d3341a938b0f865076ade0396cbd5cf0ec11e24d5f",
+      "after_sha256": "4e28c754d8be1e003d5b0e4dd138333565fe3ba7e2cdab7a745a9af97e55256f"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h",
+      "before_sha256": "f4c0e1add1a1ddaab57489852d5ff7a0c5b25b40b59f127efcbe122c9495bccd",
+      "after_sha256": "c0fe52afabe29747dc8dbd007e770a869626a553f9193aedc669677f55d10e67"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterMemory.cpp",
+      "before_sha256": "f9924b0ccdc327d7f8f6a29d7fa47c3da7760381e88ff396bc743e8eb2197a39",
+      "after_sha256": "fcb1b6e47d4254e85d468a25fcf35348fc036681cef569b13290b6977fc86ab6"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterMemoryHelpers.cpp",
+      "before_sha256": "28444b26cab93feee7adaa86ffab226731c6d953daed0b56665d1c14e880afb7",
+      "after_sha256": "728a3092a07d17a5fc81697e581afe8485a1097962513522dc68d339aaadaf41"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterModule.cpp",
+      "before_sha256": "8260ab5bc91e51f0ac004ec8405385d5111d7bca6ee74320cd92c9413bbb57d3",
+      "after_sha256": "46b8e2fcb294d9dddf3d1a8c2fee19af01b6171b395801433dd52ddbb281388e"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterProgram.cpp",
+      "before_sha256": "f83764ceb79750b522255c4ceefc91789047778ef22a278a1a38d13e54f5bf98",
+      "after_sha256": "ed747ccf6ec001b597ba13a02cef6aa2e3b461aaa57077751c197d42eee8d77e"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/frontend/decode/ImageOps.cpp",
+      "before_sha256": "a295508f51530336a782b7864af952a60e70ff20e16a5526d63f749a2fa03bc7",
+      "after_sha256": "37764049e86c7c5ab0e220b379a1ab02ec885eec585921c06a42a3c58fc57244"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/frontend/decode/MemoryOps.cpp",
+      "before_sha256": "5079d33b7f8961e54f1e48b13b863783ad8431e0b4c70bb8ee1d96a741f65795",
+      "after_sha256": "d874d5cfd9501e08d6b305aa52647263a2f3d53dbabe6021b80913d3df966320"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/frontend/decode/ShaderDecoder.cpp",
+      "before_sha256": "707755e18f4e6723415ca68bfd742c511b9752bd55d46c96d1fc2ff1b254041a",
+      "after_sha256": "9c744aaa429d23f245a9e9d85065bcd1813f322391fb3ba778499dd6da2d506f"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/frontend/decode/ShaderDecoder.h",
+      "before_sha256": "1ad7ef52a8aa6630fe23285c9f103e83338038121fa5380a41e3eddaba65750b",
+      "after_sha256": "9d01adf5c433bbbec20b04f2d3b4b7f33642804e712723835aacf4eb67817d8a"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/frontend/decode/VectorAluOps.cpp",
+      "before_sha256": "2b728c9dc4077f703e8e5a3267dfe15f84621457217ce295522718be76b4ac74",
+      "after_sha256": "3a2573b08d3d06681708bc973dc9190be25ff85ca7d43cdcbb98b79d7955a2ac"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/frontend/translate/Float.cpp",
+      "before_sha256": "4d608cb7eb26f5fb11cb537e8ae9bf8aa90e6d7511f75eb920eef2b85cc8af68",
+      "after_sha256": "85c5b3b5b05cda811f33e80fafb532593d833c661952e7754377140c3e3720c3"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/frontend/translate/Memory.cpp",
+      "before_sha256": "c4e38df35f09d3f5622410ab7642f4d57cb25fbb79dec896dfb2e2a761f095c2",
+      "after_sha256": "c4adabf6b4bb6a614f2ba256352cf611c9b5e3d8868e8c1c199a53413ea140bc"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/frontend/translate/Translate.cpp",
+      "before_sha256": "fbd4bbc0bc7e3755d9f72a643b0d68601f609f88092428a21cfe68f130de66dd",
+      "after_sha256": "782fcacebaa25661cdd863b81460a1e6c08eb40153e9804bcd6ff4d7dfc9c7f0"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/Program.cpp",
+      "before_sha256": "3e7534d2fc6a534b948033a0d8ee0b09cec5bba44df6df619545a862fabc7742",
+      "after_sha256": "0d1b2ad7b1da84e341060b00efe1fa4262dde52fd3e547cd9a50750dccdb4c7c"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/ResourceSnapshot.h",
+      "before_sha256": "f2fa699ce3054f56c8cd037634dfae3b3a14f78cc46274b3b098ddf0a4428418",
+      "after_sha256": "68880d8fce3a30c840ce36b3bb7c54ff837d11a41eb678f72b93881ff18ea901"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/ShaderIR.h",
+      "before_sha256": "7a9fb08b0c1b6ec6fecdf27dfe44e06b333d685dfaa31c9434bcaed98d53a184",
+      "after_sha256": "3bf0f0c3c8d097bec7c4ff7017179846ea8d4855bb02f21e3f78070fb29a9bbf"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/Value.h",
+      "before_sha256": "59e5ecb5e3b9f2bf666577d450bfbaebde6d8e2c946ac944f23610eb5e8fd91f",
+      "after_sha256": "8a471d9e1c0b678897781405a404aaeb64d0f46ab61030ec493eead8eb998d48"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/opcodes/ValueOpcodes.cpp",
+      "before_sha256": "894e675b1aa691b8c33eb249321f61f1ed5eb7d1af7707155ebedc3e958e4eea",
+      "after_sha256": "02dd57513eb61412ef4ab3eec648140c217ea810038ce07a03898aaebd3505ec"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/opcodes/ValueOpcodes.inc",
+      "before_sha256": "51fc92ce33d8671ad7ce6d2b32be1f5b1e59fdc0145e68f395d98e42decec4c1",
+      "after_sha256": "4e013c532c2e87aad7abe063190dffe96eb40aedc7c4e7b7ef5b682e8866dbf8"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/ConstantPropagation.cpp",
+      "before_sha256": "8ce0e6d99966d17e05005473db81e83567a121b91e09ebfca1c969b10c949327",
+      "after_sha256": "7a16acce882668255ac10294a46d8d1939d4a6b630fd58677687ab4e11c28f81"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/DeadCodeElimination.cpp",
+      "before_sha256": "aaab461311b8e4f2f9fd04742e420b2d468620d394264f4816a292e1288ea8c1",
+      "after_sha256": "a8156e98fdad84438e56d8ccafe301be18bfa7b974c619533c79c14f4f8339fa"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/DeadCodeElimination.h",
+      "before_sha256": "85a1aa52613bef765b0cd2b58b6dc91cbc8c4c0df48837855f29a71d71cc9fc6",
+      "after_sha256": "58f09e781099ca7adff9b5c10dfdadf1db59a90aea28d0165c94ea44625f6d8f"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/ReadLaneElimination.cpp",
+      "before_sha256": "a6e4b36e85e66c8433214d88430eeaff443286db52823f779c312410cb89d478",
+      "after_sha256": "096932f64dd3a7bf42e8424f721fa997549d9179165d51e6e947fd0754d8641a"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/ReadLaneElimination.h",
+      "before_sha256": "f3d24095f2ddf9d78503fa7361b28ffe2beb7ea6b86b78269e7cafdd1fa98d43",
+      "after_sha256": "cc19045cf6b8b8cc1f6c7a9599e9fe8149482400e053938fe4950259c4b01ed3"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/ResourceMaterialization.cpp",
+      "before_sha256": "07b82bcdb7b58c35ee5ca2d5eb6d9190ea2f4f468b8bf129bb4305ae67a297a5",
+      "after_sha256": "7f74fb3706d83a7079c1af192b1d6af6e603ba2cc2ba6481810089457adc6aee"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/ResourceMaterialization.h",
+      "before_sha256": "de6faaa55e467bdbdd3c32b67cf0bb605ae5dbd396e9f434bc7f3a84f175e293",
+      "after_sha256": "49a9265c646a4f76b490e6ba1f54efeb9bf1fbf42d2211a97f9030bbdfdf5ab5"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/ResourceTracking.cpp",
+      "before_sha256": "9d57cb55b44b90ad8ff1c4194e9f08a5cd8ffc83418cd7d87fe6405e16c71fa9",
+      "after_sha256": "f5a2f42ff6b07df39ec2e077de9fc56f18578bee27ffc45fd1b7fc7b09cd618f"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/ResourceTracking.h",
+      "before_sha256": "bfd9b7bfec9e19635849f857da495d49eec17edbfcd502a8becd13f233820b1b",
+      "after_sha256": "c067b4986aa8c3eba99a4a82ada5c3f7bfb47c0948ac6c6c55acc2831d460650"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/ShaderInfoCollection.cpp",
+      "before_sha256": "2c8f1a0e507ec1a30a9060240bc80b95fb00281a5d5d11d99e7e224fddc9d5ff",
+      "after_sha256": "3a75275a4483264434ff0f7374e80f385c07dcac758bac59393b38b875954465"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/SrtWalker.cpp",
+      "before_sha256": "80b6843eb3d38c3ec7bcb0413591c44077cd40e105c691b891024fe03ea0eb5d",
+      "after_sha256": "90c268e14d872e98ad75fa2201d7c441bcf42dc000c0c9cd50480311eb406d24"
+    },
+    {
+      "path": "src/graphics/shader/recompiler/ir/passes/SrtWalker.h",
+      "before_sha256": "8cc99ad012ef6ad9cc93391f636b309a080085cb1576c6ab69304c0d2063fdc5",
+      "after_sha256": "95da134e5b1dc4bcd6c917dc56140e0834214f467021fe0380d227da2512caf0"
+    },
+    {
+      "path": "src/graphics/shader/shader.cpp",
+      "before_sha256": "1ca515352047116471bdbfdf15e0d58691e6c994fc8385d5c59821a8a7cb07c3",
+      "after_sha256": "5f1a22beeee5cef10655690f4722e13d0e0a71d52249ad47c27b8d4c59a6957c"
+    },
+    {
+      "path": "src/graphics/shader/shader.h",
+      "before_sha256": "2ce81463320270dde1905d63ceb722cc8657629b747b40277d236a328a46e6df",
+      "after_sha256": "6df56ec777bad616069a4ec3248fb915b2ba3a6e9f9304f6fad65c57acc4ded3"
+    },
+    {
+      "path": "src/libs/agc.cpp",
+      "before_sha256": "8a771cefbe01d23487c4fa2d0d164d0601d71ebe1b5d61623a357ce42a2af721",
+      "after_sha256": "4016a9f7a5338389c96501fac9dfd09ec4755c53ee0cff902c9a21254c924745"
+    },
+    {
+      "path": "src/libs/agc.h",
+      "before_sha256": "65782e1575e6d815f363020dc2d438b2b4c2ed7b94bfba6cb4aed59356e50ab1",
+      "after_sha256": "e5719a048b42859c94855adb463ead57982abb6efd9124a56581d5100788dc33"
+    },
+    {
+      "path": "src/libs/libAgcDriver.cpp",
+      "before_sha256": "f5634c1f7eca10892459b3ccfec27615a2f3506c0796b9df89e424a493ab80e1",
+      "after_sha256": "ffb4249a1649a57ea099edd712136036778e29a7b0ebcf841f481752c15cbfd9"
+    },
+    {
+      "path": "tests/ResourceMaterializationTests.cpp",
+      "before_sha256": "13101fc25a1f72ec04ed87c62cd656f0234b1f95ad53ff0a3b1deece115f0ec9",
+      "after_sha256": "3470781cf0644688c33762860e37448b20e4e06913918306a6196108878ef0dd"
+    },
+    {
+      "path": "tests/ResourceTrackingTests.cpp",
+      "before_sha256": "b94c1333f647144a9a4b408a2cada297d820665e7124d54bee4fef8fd1679fed",
+      "after_sha256": "2092c441455910b73a9616971a211f26b9947f83709921b6cea945c38b5c00ca"
+    },
+    {
+      "path": "tests/ScalarProvenanceTests.cpp",
+      "before_sha256": "b1fbacc46a779bde95515a4575a567724af49f7b9208dbdabe27050e9c238801",
+      "after_sha256": "272729142dda68ab484f4ab09e273a941436364379c21b1dc320edebd71a2f6d"
+    },
+    {
+      "path": "tests/ShaderRecompilerComputeTests.cpp",
+      "before_sha256": "cde9a4dde39108e781a6078e78576a270e6f074f0a19b22a82899bbd77e55f95",
+      "after_sha256": "eb7584c19386a88c8115c1e3616305e965c2b5a6c266697bb38db9e0cf1ac2b8"
+    },
+    {
+      "path": "tests/SpirvModuleAdmissionTests.cpp",
+      "before_sha256": "6468a816617aa3e42f004c20b665fc03df804657e9a633f12d16377b8e166a83",
+      "after_sha256": "171b695ea9a7ff92ea67dd373dae47feefea80e55f5cf6fea37408fd8b264190"
+    },
+    {
+      "path": "tests/shaderCfgTests.cpp",
+      "before_sha256": "be95b538577bd663f87c2f825096e431061b19de5741503b4b0ed6d2935e4a1e",
+      "after_sha256": "b2db9eaaeed62486b02923a3bd6659ee5866fe013f4c92b727301ced2199ab4f"
+    }
+  ]
+}
