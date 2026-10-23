@@ -1,5 +1,6 @@
 /*
 !/.gitignore
+!/.github/
 !/CMakeLists.txt
 !/LICENSE
 !/LICENSES.md
