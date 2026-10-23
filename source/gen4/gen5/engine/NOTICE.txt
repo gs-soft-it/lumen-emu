@@ -19,6 +19,13 @@ Debug, desktop and legacy build defaults retain their existing behavior.
 UPSTREAM.json preserves the original upstream hashes alongside the modified
 source identities for this adaptation.
 
+Lumen enables Vulkan buffer 64-bit atomics only when the host supports them.
+Guest shaders that require buffer atomics, including shared-memory atomics
+lowered to storage buffers, are rejected before native shader creation when
+the feature is unavailable. Games that do not use these operations can start
+on devices without that optional feature. Android fatal reports are mirrored
+to logcat even when ordinary runtime diagnostics are disabled.
+
 Additional Lumen changes provide four independent performance options,
 enabled by default: an empty pending-signal fast path, an ARM64 SRT walker,
 indexed typed HLE dispatch, and asynchronous driver pipeline-cache persistence.

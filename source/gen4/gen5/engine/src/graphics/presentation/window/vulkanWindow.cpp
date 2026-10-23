@@ -64,7 +64,6 @@ vk::PhysicalDeviceVulkan12Features WindowContext::RequiredVulkan12Features() noe
 	features.shaderOutputLayer         = VK_TRUE;
 	features.shaderOutputViewportIndex = VK_TRUE;
 	features.bufferDeviceAddress       = VK_TRUE;
-	features.shaderBufferInt64Atomics  = VK_TRUE;
 	features.storageBuffer8BitAccess   = VK_TRUE;
 	features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 	features.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
@@ -527,6 +526,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.shader_image_int64_atomics_enabled = image_atomic_int64.shaderImageInt64Atomics;
 
 	auto features12 = WindowContext::RequiredVulkan12Features();
+	// Buffer atomics are required by particular shaders, not by every game.
+	// Preserve native 64-bit atomic semantics only when the device supports them.
+	features12.shaderBufferInt64Atomics = supported_features12.shaderBufferInt64Atomics;
 	features12.shaderSharedInt64Atomics = supported_features12.shaderSharedInt64Atomics;
 	vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR workgroup_layout {};
 	workgroup_layout.workgroupMemoryExplicitLayout =
@@ -705,6 +707,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		return nullptr;
 	}
 	// Record the feature actually enabled in the successful device-create chain.
+	graphics.shader_buffer_int64_atomics_enabled = features12.shaderBufferInt64Atomics == VK_TRUE;
 #if !defined(__APPLE__)
 	graphics.fragment_shader_barycentric_enabled = barycentric_supported;
 #endif

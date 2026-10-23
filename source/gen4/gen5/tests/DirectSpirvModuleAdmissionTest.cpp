@@ -8,6 +8,7 @@
 
 namespace {
 using Libs::Graphics::AdmitSpirvModule;
+using Libs::Graphics::AdmitShaderBufferInt64Atomics;
 using Libs::Graphics::SpirvModuleAdmission;
 using Words = std::vector<uint32_t>;
 unsigned checks = 0;
@@ -76,6 +77,26 @@ void Malformed(const Words& words, const char* message) {
 } // namespace
 
 int main() {
+    // An older GPU can run shaders with 32-bit atomics or ordinary 64-bit
+    // arithmetic. Shared atomics need the buffer feature only when LDS spills.
+    for (bool enabled : {false, true}) {
+        Check(AdmitShaderBufferInt64Atomics(enabled, false, false, false) ==
+                  SpirvModuleAdmission::Allowed, "ordinary shader needs no buffer64 atomics");
+        Check(AdmitShaderBufferInt64Atomics(enabled, false, false, true) ==
+                  SpirvModuleAdmission::Allowed, "LDS storage alone needs no buffer64 atomics");
+        Check(AdmitShaderBufferInt64Atomics(enabled, false, true, false) ==
+                  SpirvModuleAdmission::Allowed, "native Workgroup atomics use a separate feature");
+        const auto expected = enabled ? SpirvModuleAdmission::Allowed
+                                     : SpirvModuleAdmission::BufferInt64AtomicsUnavailable;
+        for (bool shared : {false, true}) {
+            for (bool lds_storage : {false, true}) {
+                Check(AdmitShaderBufferInt64Atomics(enabled, true, shared, lds_storage) == expected,
+                      "buffer64 atomic operations and coherent pair loads require enabled support");
+            }
+        }
+        Check(AdmitShaderBufferInt64Atomics(enabled, false, true, true) == expected,
+              "shared64 atomics lowered to SSBO require buffer64 support");
+    }
     auto words = Module();
     const auto original = words;
     for (const bool supported : {false, true})

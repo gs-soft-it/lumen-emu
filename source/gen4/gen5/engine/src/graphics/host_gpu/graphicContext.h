@@ -34,6 +34,7 @@ struct GraphicContext {
 	bool                               fragment_shader_barycentric_enabled   = false;
 	bool                               geometry_shader_enabled               = false;
 	bool                               barycentric_fallback_enabled          = false;
+	bool                               shader_buffer_int64_atomics_enabled   = false;
 	bool                               shader_image_int64_atomics_enabled    = false;
 	// bool fp64_denorm_preserve = false; // Temporarily disabled.
 	bool                               attachment_feedback_loop_enabled      = false;

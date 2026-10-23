@@ -4,6 +4,11 @@
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -62,6 +67,22 @@ void WriteStdout(std::string_view text, fmt::text_style style = {}) {
 		std::fwrite(text.data(), 1, text.size(), stdout);
 	}
 	std::fflush(stdout);
+}
+
+void WriteAndroidFatal(std::string_view text) {
+#if defined(__ANDROID__)
+	// Release sessions normally discard stdout. Keep fatal reports available
+	// even when ordinary logging is silent, including long Vulkan rejections.
+	constexpr size_t max_chunk = 3000;
+	while (!text.empty()) {
+		const auto size = std::min(text.size(), max_chunk);
+		__android_log_print(ANDROID_LOG_ERROR, "LumenAndroidPs5", "%.*s",
+		                    static_cast<int>(size), text.data());
+		text.remove_prefix(size);
+	}
+#else
+	(void)text;
+#endif
 }
 
 } // namespace
@@ -138,6 +159,7 @@ void WriteToConsoleAndLog(std::string_view text) {
 }
 
 void WriteFatal(std::string_view text) {
+	WriteAndroidFatal(text);
 	if (g_direction == Direction::Silent || !g_initialized) {
 		WriteStdout(text);
 	} else {
@@ -148,6 +170,7 @@ void WriteFatal(std::string_view text) {
 }
 
 void WriteFatal(fmt::text_style style, std::string_view text) {
+	WriteAndroidFatal(text);
 	if (g_direction == Direction::Silent || !g_initialized) {
 		WriteStdout(text, style);
 	} else {

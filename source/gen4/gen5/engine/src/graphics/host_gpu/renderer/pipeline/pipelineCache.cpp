@@ -17,6 +17,7 @@
 #include "graphics/host_gpu/renderer/pipeline/driverCacheCheckpoint.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/spirvModuleAdmission.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "graphics/shader/barycentricFallback.h"
@@ -314,6 +315,21 @@ struct PipelineCache::ProgramCache {
 		                                         Common::DebugCounters::Peak::ShaderCompileNs);
 		auto result = ShaderRecompiler::CompileProgram(std::move(translated), options,
 		                                               specialization, push_data_start_dword);
+		// Every guest module is admitted before publication into the per-device
+		// permutation cache. The disk cache stores driver pipelines, not SPIR-V,
+		// and cannot bypass this path. Generated helper modules use no buffer64 atomics.
+		const auto& requirements = result.program.info;
+		const bool lds_storage = options.stage == ShaderType::Compute &&
+		                         options.input_info.compute != nullptr &&
+		                         options.input_info.compute->lds_storage;
+		if (AdmitShaderBufferInt64Atomics(graphics.shader_buffer_int64_atomics_enabled,
+		                                  requirements.buffer_int64_atomics,
+		                                  requirements.shared_int64_atomics, lds_storage) !=
+		    SpirvModuleAdmission::Allowed) {
+			EXIT("PS5_SHADER_MODULE_ADMISSION_DENIED reason=shaderBufferInt64Atomics "
+			     "featureEnabled=0 stage=%s hash=0x%016" PRIx64
+			     " nativeShaderModule=NOT_CREATED\n", stage_name, options.shader_hash);
+		}
 		std::shared_ptr<const BarycentricFallback::FragmentPlan> barycentric_plan;
 		std::shared_ptr<const BarycentricFallback::MeshPlan> mesh_barycentric_plan;
 		std::shared_ptr<const std::vector<uint32_t>> retained_vertex_spirv;

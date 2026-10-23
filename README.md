@@ -10,7 +10,7 @@ Experimental **PS4 and PS5 emulation for Android**, with **macOS (Apple Silicon)
 
 <p align="center">
   <a href="https://lumen-emu.com"><strong>Official website</strong></a> ·
-  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.0-spike-fexlab/lumen-emu-release.apk"><strong>Download Android APK</strong></a> ·
+  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.1-spike-fexlab/lumenemu-0.1.1-spike-fexlab-v2.apk"><strong>Download Android APK</strong></a> ·
   <a href="https://lumen-emu.com/support/"><strong>Support development</strong></a> ·
   <a href="#compatibility"><strong>Compatibility list</strong></a> ·
   <a href="#prepare-the-source"><strong>Build the cores</strong></a>
@@ -125,7 +125,9 @@ The Lumen dashboard, game-library UI, Android Java/resources/Gradle application,
 
 ## Android download
 
-**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.0-spike-fexlab/lumen-emu-release.apk)** ([experimental release 0.1.0-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.0-spike-fexlab)). Requires Android 15/API 35 or newer and an ARM64 device (`arm64-v8a`). This project-provided APK is the only application binary offered here. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
+**Latest update — 0.1.1-spike-fexlab (version code 2):** fixes a PS5 startup failure on Adreno 730 devices by enabling Vulkan `shaderBufferInt64Atomics` only when supported, checks shader requirements before use and improves fatal-error diagnostics. See the [changelog](CHANGELOG.md) for details and the limits of the reported device tests.
+
+**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.1-spike-fexlab/lumenemu-0.1.1-spike-fexlab-v2.apk)** ([experimental release 0.1.1-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.1-spike-fexlab)). Requires Android 15/API 35 or newer and an ARM64 device (`arm64-v8a`). This project-provided APK is the only application binary offered here. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
 
 ## Prepare the source
 

@@ -20782,6 +20782,7 @@ private:
     m_runtime_context.physical_device_memory_properties = m_memory_properties;
     m_runtime_context.queue_family = m_queue_family;
     m_runtime_context.queue = m_queue;
+    m_runtime_context.shader_buffer_int64_atomics_enabled = true;
     m_runtime_context.shader_image_int64_atomics_enabled = m_image_int64_enabled;
     m_runtime_context.fragment_shader_barycentric_enabled = m_barycentric_enabled;
     m_runtime_context.geometry_shader_enabled = m_geometry_shader_enabled;
@@ -21186,6 +21187,8 @@ private:
     device_info.pQueueCreateInfos = &queue_info;
     auto device_features11 = WindowContext::RequiredVulkan11Features();
     auto device_features12 = WindowContext::RequiredVulkan12Features();
+    // This fixture exercises 64-bit atomics and already checks device support.
+    device_features12.shaderBufferInt64Atomics = VK_TRUE;
     device_features12.shaderSharedInt64Atomics = m_shared_int64_enabled;
     vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR workgroup_layout{};
     workgroup_layout.workgroupMemoryExplicitLayout = m_workgroup_layout_enabled;

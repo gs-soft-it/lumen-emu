@@ -7,8 +7,15 @@
     "source/gen4/gen5/compatibility/3rdparty/CMakeLists.txt",
     "source/gen4/gen5/engine/NOTICE.txt",
     "source/gen4/gen5/engine/UPSTREAM.json",
+    "source/gen4/gen5/engine/src/common/logging/log.cpp",
     "source/gen4/gen5/engine/src/common/profiler.cpp",
-    "source/gen4/gen5/engine/src/common/profiler.h"
+    "source/gen4/gen5/engine/src/common/profiler.h",
+    "source/gen4/gen5/engine/src/graphics/host_gpu/graphicContext.h",
+    "source/gen4/gen5/engine/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp",
+    "source/gen4/gen5/engine/src/graphics/host_gpu/spirvModuleAdmission.h",
+    "source/gen4/gen5/engine/src/graphics/presentation/window/vulkanWindow.cpp",
+    "source/gen4/gen5/engine/tests/ShaderRecompilerComputeTests.cpp",
+    "source/gen4/gen5/tests/DirectSpirvModuleAdmissionTest.cpp"
   ],
   "excluded_paths": [
     ".gitmodules",
@@ -207,7 +214,48 @@
     "full_compilation_performed": false,
     "game_execution_performed": false,
     "dependency_bootstrap": "syntax/help and 13 locked original checkouts passed; local Git fetch/preservation fixture passed",
-    "publication_checks": "Source checksum inventory, core/application boundary audit, removed-symbol references, modified-file whitespace, native Metal build graph and dependency bootstrap --help passed; no full platform compilation performed."
+    "publication_checks": "Source checksum inventory, core/application boundary audit, removed-symbol references, modified-file whitespace, native Metal build graph and dependency bootstrap --help passed; no full platform compilation performed.",
+    "export_build_adjustments": "Reused unchanged adaptations after checking original build files against previous source revision.",
+    "update_archive_integrity": "All 13,390 archive manifest entries and 516 PS5 engine provenance records verified before import.",
+    "update_regression_test": {
+      "test": "DirectSpirvModuleAdmissionTest",
+      "result": "passed",
+      "checks": 168,
+      "compiler": "Clang 22.1.8, C++20, Windows/MSVC target",
+      "flags": "-std=c++20 -Wall -Wextra -Werror -Wno-c++11-narrowing",
+      "note": "The narrowing-warning exception is needed for three unchanged pre-existing SPIR-V enum initializer expressions on this host. Test sources were not modified."
+    },
+    "update_full_emulator_build_performed": false,
+    "update_device_execution_performed": false
   },
-  "public_repository": "https://github.com/gs-soft-it/lumen-emu"
+  "public_repository": "https://github.com/gs-soft-it/lumen-emu",
+  "export_timestamp": "2026-10-23T14:01:11+02:00",
+  "changed_source_files_since_previous_export": [
+    "source/gen4/gen5/engine/NOTICE.txt",
+    "source/gen4/gen5/engine/UPSTREAM.json",
+    "source/gen4/gen5/engine/src/common/logging/log.cpp",
+    "source/gen4/gen5/engine/src/graphics/host_gpu/graphicContext.h",
+    "source/gen4/gen5/engine/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp",
+    "source/gen4/gen5/engine/src/graphics/host_gpu/spirvModuleAdmission.h",
+    "source/gen4/gen5/engine/src/graphics/presentation/window/vulkanWindow.cpp",
+    "source/gen4/gen5/engine/tests/ShaderRecompilerComputeTests.cpp",
+    "source/gen4/gen5/tests/DirectSpirvModuleAdmissionTest.cpp"
+  ],
+  "previous_archive": "lumen-core-2026-10-23.zip",
+  "applied_update_archive": {
+    "file": "lumen-core-2026-10-23-1401-aggiornato.zip",
+    "sha256": "b6058e6b20912780efe16b8cbfc23114257be26485f76a2174ebf04a9a6f9902",
+    "imported_source_files": [
+      "source/gen4/gen5/engine/NOTICE.txt",
+      "source/gen4/gen5/engine/UPSTREAM.json",
+      "source/gen4/gen5/engine/src/common/logging/log.cpp",
+      "source/gen4/gen5/engine/src/graphics/host_gpu/graphicContext.h",
+      "source/gen4/gen5/engine/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp",
+      "source/gen4/gen5/engine/src/graphics/host_gpu/spirvModuleAdmission.h",
+      "source/gen4/gen5/engine/src/graphics/presentation/window/vulkanWindow.cpp",
+      "source/gen4/gen5/engine/tests/ShaderRecompilerComputeTests.cpp",
+      "source/gen4/gen5/tests/DirectSpirvModuleAdmissionTest.cpp"
+    ],
+    "selection": "Import the nine changed PS5 core files; retain public documentation, funding links and prior core-only export adjustments."
+  }
 }

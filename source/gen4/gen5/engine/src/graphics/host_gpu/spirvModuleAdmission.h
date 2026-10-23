@@ -9,7 +9,22 @@
 
 namespace Libs::Graphics {
 
-enum class SpirvModuleAdmission { Allowed, Malformed, FragmentBarycentricUnavailable };
+enum class SpirvModuleAdmission {
+    Allowed, Malformed, FragmentBarycentricUnavailable, BufferInt64AtomicsUnavailable
+};
+
+// Guest IR records both explicit buffer atomics and coherent paired buffer
+// loads, which become 64-bit OpAtomicLoad. Compute LDS can also be lowered to
+// a storage buffer; native Workgroup and image atomics have separate features.
+inline SpirvModuleAdmission AdmitShaderBufferInt64Atomics(bool buffer_atomics_enabled,
+                                                         bool uses_buffer_atomics,
+                                                         bool uses_shared_atomics,
+                                                         bool lds_uses_storage_buffer) noexcept {
+    const bool required = uses_buffer_atomics ||
+        (uses_shared_atomics && lds_uses_storage_buffer);
+    return required && !buffer_atomics_enabled
+        ? SpirvModuleAdmission::BufferInt64AtomicsUnavailable : SpirvModuleAdmission::Allowed;
+}
 
 // Inspect the final words for every native shader-module path. This bounded
 // requirements scan does not replace SPIR-V validation or rewrite guest semantics.

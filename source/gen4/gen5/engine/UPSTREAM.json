@@ -28,7 +28,8 @@
     "Native video plane publication executes atomically on the renderer owner after retiring prior GPU ownership, while texture edge tracking preserves CPU invalidation baselines",
     "Default-enabled proven uniform GPU metadata avoids synchronous color metadata downloads while preserving ordered GPU writes, alias and backing generation checks, conservative invalidation and explicit zero rollback",
     "Audio sample-clock recovery discards lateness beyond one block, preserving sub-block jitter and fractional cadence without repeatedly consuming a stale guest ring after burst device backpressure",
-    "Android direct-FEX native builds outside Debug omit Tracy profiler instrumentation; disabled lifecycle functions and macros retain no Tracy references or argument evaluation, while Debug, desktop and legacy defaults remain unchanged"
+    "Android direct-FEX native builds outside Debug omit Tracy profiler instrumentation; disabled lifecycle functions and macros retain no Tracy references or argument evaluation, while Debug, desktop and legacy defaults remain unchanged",
+    "Device-qualified optional buffer 64-bit atomics with guest shader requirement checks, including shared-memory storage-buffer lowering; Android fatal errors remain visible in logcat when ordinary diagnostics are disabled"
   ],
   "performance_opt_ins": {
     "default": true,
@@ -54,7 +55,7 @@
   "files": [
     {
       "path": "NOTICE.txt",
-      "sha256": "73fc61e4e6c3d40e2ae04a14ef9c3ce324340a89f46072d77bb34aa388416c28",
+      "sha256": "4037a7bf91ddc8184c2743430f9bd8d6289fa6e040a9607b7b3c4709b1fa061a",
       "origin": "integration"
     },
     {
@@ -442,9 +443,9 @@
     },
     {
       "path": "src/common/logging/log.cpp",
-      "sha256": "75ae2cfaa2d2551c578f946a3645e6a18757f05968a342247f06692b26c67295",
+      "sha256": "cd6b54ac5b11acde5a4d683af5e7183a4bde02ef23af22a4291b47f20400b394",
       "upstream_sha256": "75ae2cfaa2d2551c578f946a3645e6a18757f05968a342247f06692b26c67295",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/common/logging/log.h",
@@ -755,7 +756,7 @@
     },
     {
       "path": "src/graphics/host_gpu/graphicContext.h",
-      "sha256": "0c7d67b8984fbec3ca297c391c386847ef2e7f60e9bdeb3a762b61481809eb6b",
+      "sha256": "1aa6a0e58e4fb9c7e89ab05cf53e9266eb9cb050d0881ac49d3f7a30b19fcf54",
       "upstream_sha256": "e259fc4b6c21028e436ab02068a63ec80f3d1cb13db67812c9381b14ef7d0a1e",
       "origin": "host-adapted"
     },
@@ -1072,7 +1073,7 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp",
-      "sha256": "384c752bbbfdcb5958454319c4012177df404ad242c0f836694fe17e7c34e6d6",
+      "sha256": "91bcae37ed0de95cec1f2df587b21fe033e2f1754771599b5e23d63bf2a69610",
       "upstream_sha256": "5e99991c9062cdfff935bfb900a1b9ffe0c4fcf5402e3401d252c6c57aa35115",
       "origin": "host-adapted"
     },
@@ -1294,7 +1295,7 @@
     },
     {
       "path": "src/graphics/host_gpu/spirvModuleAdmission.h",
-      "sha256": "cf6720b4dab4b5a93d1c4cd0ca1737f65656406eb4f4e074fbb20e2a820f5f5a",
+      "sha256": "8ea4466b6cab4081927f7103e0cdc492448b8dc2800efeb40454e838634836d2",
       "origin": "host-adapter"
     },
     {
@@ -1407,7 +1408,7 @@
     },
     {
       "path": "src/graphics/presentation/window/vulkanWindow.cpp",
-      "sha256": "c9db9a9e8412fce3bf7f88c68029d887ad1358c72e6bd8518031d1a8dbcec754",
+      "sha256": "1fbf2df04725fb07c5095a38f1a17ef657535edb6f53cb3d6b0c6bc5d7ff22d4",
       "upstream_sha256": "52aeec5ff66d3ca2d5f083b55983ab2e911fec4839c56dd16d05c0ef2f5e265c",
       "origin": "host-adapted"
     },
@@ -3052,7 +3053,7 @@
     },
     {
       "path": "tests/ShaderRecompilerComputeTests.cpp",
-      "sha256": "a88eac33247bfdf6dd2347fe296c4f907edee1daae334d6a3b6556702472b558",
+      "sha256": "5a3f3240e24a3a21f53460cd7793fb8b60da022a9c6ccd0fdaea3c6c4cbac0ff",
       "upstream_sha256": "b811b1966ca00f70cdce49763a4026716a9292bebe19c32f6b473a93c34c8acd",
       "origin": "host-adapted"
     },
