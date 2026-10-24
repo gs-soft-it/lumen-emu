@@ -75,9 +75,9 @@ Use a suitably powerful device with adequate cooling, and stop if it becomes exc
 
 [Open the full compatibility list and report form](https://lumen-emu.com/compatibility/).
 
-These are developer-reported application results, updated **23 October 2026**, on a **realme GT 8 Pro 5G, Snapdragon 8 Elite Gen 5, 16 GB RAM / 512 GB storage, Android 16**.
+These are developer-reported application results, updated **23 October 2026**, on a **realme GT 8 Pro 5G, Snapdragon 8 Elite Gen 5, 16 GB RAM / 512 GB storage, Android 16**. All eight reports were tested with **Lumen Emu `0.1.0-spike-fexlab` (Android version code `1`)**, the first compiled version.
 
-| Game | Platform | Tested version | Title ID | Reported status |
+| Game | Platform | Game version | Title ID | Reported status |
 | --- | --- | --- | --- | --- |
 | Astro Bot | PS5 | `01.018.000` | `PPSA21564` | 🔴 Boots only |
 | Bloodborne | PS4 | `01.00` | `CUSA03173` | 🟡 Almost playable |
@@ -92,7 +92,7 @@ These are developer-reported application results, updated **23 October 2026**, o
 - **Almost playable:** runs with noticeable slowdown.
 - **Boots only:** starts, but severe slowdown prevents normal play.
 
-The initial reports did not record measured FPS, completion coverage or the exact emulator build. They are not independent certification and are not attributed specifically to the downloadable APK or a build of this source snapshot. Results can change with device, driver, game version, settings and emulator build. The SUCCI thresholds are separate from these qualitative game reports.
+The initial reports did not record measured FPS or completion coverage. They are developer reports, not independent certification. Results apply to the emulator version stated above and can change with device, driver, game version, settings and emulator build. The SUCCI thresholds are separate from these qualitative game reports.
 
 To contribute a report, use the [website report form](https://lumen-emu.com/compatibility/#report) or email [info@lumen-emu.com](mailto:info@lumen-emu.com). Include the game and exact version, device and Android version, emulator build, observed behaviour and reproduction steps. Screenshots and crash logs are useful; remove personal information and do not send game files or keys.
 
