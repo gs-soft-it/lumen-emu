@@ -14,6 +14,7 @@
 
 #include <bitset>
 #include <map>
+#include <memory>
 #include <type_traits>
 #include <unordered_set>
 #include <vector>
@@ -50,6 +51,8 @@ public:
 	~TextureCache();
 	KYTY_CLASS_NO_COPY(TextureCache);
 
+	// Immutable binding placeholders, outside guest tracking and cache eviction.
+	[[nodiscard]] vk::ImageView FindNullTexture(const ImageDesc& desc);
 	[[nodiscard]] ImageId       FindImage(ImageDesc& desc, bool exact_format = false);
 	void                        UpdateImage(ImageId id);
 	[[nodiscard]] ImageId       FindImageFromRange(uint64_t address, uint64_t size,
@@ -67,6 +70,7 @@ public:
 	[[nodiscard]] bool ClearImageFromBuffer(CommandBuffer& command, uint64_t address, uint64_t size,
 	                                        uint32_t packed_clear);
 	void               InvalidateMemory(uint64_t address, uint64_t size);
+	void               HandleWriteFault(uint64_t fault_address);
 	void               InvalidateMemoryFromGPU(uint64_t address, uint64_t size);
 	[[nodiscard]] bool IsRegionRegistered(uint64_t address, uint64_t size);
 
@@ -169,6 +173,7 @@ private:
 	TileManager                                       m_tiler;
 	BufferCache&                                      m_buffer_cache;
 	Common::SlotVector<Image>                         m_slot_images;
+	std::vector<std::unique_ptr<Image>>                m_null_images;
 	ImagePageTable                                    m_image_page_table;
 	Common::LeastRecentlyUsedCache<ImageId, uint64_t> m_lru_cache;
 	std::unordered_set<ImageId>                       m_download_images;

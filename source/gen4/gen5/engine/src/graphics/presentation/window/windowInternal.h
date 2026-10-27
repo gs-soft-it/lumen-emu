@@ -40,8 +40,9 @@ struct WindowContext {
 	[[nodiscard]] static vk::PhysicalDeviceVulkan13Features RequiredVulkan13Features() noexcept;
 	[[nodiscard]] static uint32_t InitialWindowFlags(bool fullscreen) noexcept;
 	void                                                    CreateVulkan();
-	void                                                    RecreateSurface();
-	void                                                    RefreshSurfaceCapabilities();
+	[[nodiscard]] bool                                      RecreateSurface();
+	[[nodiscard]] bool                                      RefreshSurfaceCapabilities();
+	[[nodiscard]] bool                                      IsPresentationSurfaceAvailable() const;
 	void                                                    UpdateIcon();
 	void UpdateTitle(uint64_t frame_num, double current_fps);
 	void                                                    Resize(int width, int height);
@@ -52,6 +53,9 @@ struct WindowContext {
 
 	GraphicContext                 graphic_ctx;
 	SDL_Window*                    window        = nullptr;
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	void*                          metal_view    = nullptr;
+#endif
 	vk::SurfaceKHR                 surface       = nullptr;
 	SurfaceCapabilities            surface_capabilities;
 	std::unique_ptr<RenderContext> render_context;

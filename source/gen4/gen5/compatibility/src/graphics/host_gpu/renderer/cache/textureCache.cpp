@@ -11,6 +11,7 @@
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "../../../../../../engine/src/common/memoryBudget.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
@@ -323,15 +324,10 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
       m_buffer_cache(buffer_cache),
       m_readback_linear_images(Config::ReadbackLinearImagesEnabled()) {
 	if (m_graphics.CanReportMemoryUsage()) {
-		constexpr int64_t GiB = 1024ll * 1024 * 1024;
-		const auto        budget =
-		    static_cast<int64_t>(std::min<uint64_t>(m_graphics.GetTotalMemoryBudget(), INT64_MAX));
-		const auto threshold = std::min<int64_t>(budget, 8 * GiB);
-		m_pressure_gc_memory = static_cast<uint64_t>(
-		    std::max<int64_t>(std::min(budget - 6 * threshold / 10, budget - GiB), GiB + GiB / 2));
-		m_critical_gc_memory = static_cast<uint64_t>(
-		    std::max<int64_t>(std::min(budget - 2 * threshold / 10, budget - GiB / 2), 3 * GiB));
-		m_trigger_gc_memory = static_cast<uint64_t>(std::max<int64_t>((budget - threshold) / 2, 0));
+		const auto thresholds = MemoryBudget::TextureThresholds(m_graphics.GetTotalMemoryBudget());
+		m_trigger_gc_memory = thresholds.trigger;
+		m_pressure_gc_memory = thresholds.pressure;
+		m_critical_gc_memory = thresholds.critical;
 	}
 }
 
@@ -2883,7 +2879,14 @@ void TextureCache::RunGarbageCollector() {
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
+		// Texture collection precedes buffer collection at each cache-maintenance point.
+		m_graphics.RefreshMemoryBudget(static_cast<uint32_t>(tick));
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
+		// Android/UMA budgets can shrink while a session is running.
+		const auto thresholds = MemoryBudget::TextureThresholds(m_graphics.GetTotalMemoryBudget());
+		m_trigger_gc_memory = thresholds.trigger;
+		m_pressure_gc_memory = thresholds.pressure;
+		m_critical_gc_memory = thresholds.critical;
 	}
 	if (m_total_used_memory < m_trigger_gc_memory) {
 		return;
@@ -2891,13 +2894,14 @@ void TextureCache::RunGarbageCollector() {
 	const auto collect = [&](bool allow_aggressive) {
 		bool           pressured  = m_total_used_memory >= m_pressure_gc_memory;
 		bool           aggressive = allow_aggressive && m_total_used_memory >= m_critical_gc_memory;
-		const uint64_t age       = std::min<uint64_t>(aggressive ? 160 : pressured ? 80 : 16, tick);
+		const auto cutoff = MemoryBudget::CollectionCutoff(tick, aggressive ? 160 : pressured ? 80 : 16);
+		if (!cutoff) return;
 		size_t         deletions = aggressive ? 40 : pressured ? 20 : 10;
 		std::vector<ImageId> candidates;
 		candidates.reserve(deletions);
 		// Deleting depth recursively deletes its stencil association, so finish LRU traversal
 		// first.
-		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
+		m_lru_cache.ForEachItemBelow(*cutoff, [&](ImageId id) {
 			candidates.push_back(id);
 			return candidates.size() == deletions;
 		});

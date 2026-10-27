@@ -45,6 +45,7 @@ rather than replaced by this summary:
 | FFmpeg static libraries | [Licence](source/licenses/ps5/FFmpeg/LICENSE.md), [LGPL-2.1](source/licenses/ps5/FFmpeg/COPYING.LGPLv2.1), [copyright](source/licenses/ps5/FFmpeg/copyright) and [source/build record](source/licenses/ps5/FFmpeg/SOURCE.txt); qualify the exact archive used by each platform |
 | Optional Adreno driver loader | [libadrenotools BSD-2-Clause](source/licenses/ps5/AdrenoTools/LICENSE), [liblinkernsbypass BSD-2-Clause](source/licenses/ps5/AdrenoTools/liblinkernsbypass-LICENSE) and [source record](source/licenses/ps5/AdrenoTools/SOURCE.txt) |
 | Mesa Turnip Mojo/Bionic driver | [Source lock](android/gpu-drivers/turnip-mojo-bionic/source-lock.json), [local-change notice](android/gpu-drivers/turnip-mojo-bionic/NOTICE.txt) and the verified external package's complete licence directory; loader-enabled APKs copy these materials to `Legal/Vulkan/turnip-mojo-bionic` |
+| Metal software tessellator | Microsoft D3D11 reference through Mesa 26.1.0, MIT, with Valve wrapper definitions; [modified MSL source and upstream SHA](source/emulator/src/Graphics/Metal/MetalSoftwareTessellatorSource.inc), full retained terms in [THIRD_PARTY_NOTICES.txt](source/licenses/THIRD_PARTY_NOTICES.txt) |
 | Desktop/shared additional components | Original notices under `source/3rdparty`, [desktop packaging list](source/legal_notices.cmake), and [supplemental macOS texts](macos/packaging/legal/notices.json) |
 
 The Gen4 and Gen5 inventories retain, among others, SDL, Dear ImGui, fmt,

@@ -1,9 +1,12 @@
 #include "kernel/memory.h"
 #include "common/uniformMetadata.h"
 #include "kernel/directMemoryMutation.h"
+#include "DirectPerformanceOptions.h"
 
 #include "common/assert.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
+#include "common/renderTiming.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
@@ -49,6 +52,11 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 namespace Libs::LibKernel::Memory {
@@ -423,6 +431,26 @@ public:
 		}
 
 		out->clear();
+		return false;
+	}
+
+	bool AllowsCpuAccess(uint64_t start, uint64_t size, int requested) {
+		Common::LockGuard lock(m_mutex);
+		if (start == 0 || size == 0 || size > UINT64_MAX - start ||
+		    (requested & ~(PROT_CPU_READ | PROT_CPU_WRITE | PROT_CPU_EXEC)) != 0) {
+			return false;
+		}
+		// The same complete, contiguous span as QuerySpan, without allocating or
+		// copying range names/backing metadata for a Boolean permission query.
+		const auto end = start + size;
+		auto current = start;
+		for (auto it = FindContaining(start); it != m_ranges.end(); ++it) {
+			const auto& range = it->second;
+			if (range.start > current || !IsCommittedRangeType(range.type) ||
+			    (range.protection & requested) != requested) return false;
+			current = std::min(end, End(range.start, range.size));
+			if (current == end) return true;
+		}
 		return false;
 	}
 
@@ -825,7 +853,8 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 		auto current = begin;
 		while (current < end && size <= end - current) {
 			const auto candidate =
-			    g_guest_address_space->FindFreeAligned(current, end, size, alignment);
+			    g_guest_address_space->FindFreeAligned(current, end, size, alignment,
+			                                           IsGuestNonIdentity(search_addr, 1));
 			if (candidate == 0) {
 				return uint64_t {0};
 			}
@@ -852,9 +881,20 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 	return addr;
 }
 
+// The caller retains the VM transaction lock through any subsequent data copy.
+// This only removes permission-query allocation; it does not cache rights or
+// admit reads from a backing alias that bypasses GPU fault/readback handling.
+static bool QueryGuestAccessLocked(uint64_t address, uint64_t size,
+                                   VirtualMemory::Mode mode) noexcept {
+	return g_virtual_ranges != nullptr &&
+	       g_virtual_ranges->AllowsCpuAccess(address, size, static_cast<int>(mode));
+}
+
 bool QueryGuestAccess(uint64_t address, uint64_t size, VirtualMemory::Mode mode) noexcept {
 	if (address == 0 || size == 0 || size > UINT64_MAX - address) return false;
 	std::lock_guard<std::recursive_mutex> lock(g_memory_operation_mutex);
+	if (Lumen::Ps5::DirectPerformance::Get().vm_access_query)
+		return QueryGuestAccessLocked(address, size, mode);
 	std::vector<VirtualRanges::Range> ranges;
 	if (g_virtual_ranges == nullptr || !g_virtual_ranges->QuerySpan(address, size, &ranges)) return false;
 	const int requested = static_cast<int>(mode);
@@ -876,19 +916,33 @@ uint32_t QueryGuestExecutable(void*, uint64_t address, uint64_t* base, uint64_t*
 bool ReadGuestMemory(void*, uint64_t address, void* destination, size_t size) noexcept {
 	if (destination == nullptr) return false;
 	std::lock_guard<std::recursive_mutex> lock(g_memory_operation_mutex);
-	if (!QueryGuestAccess(address, size, VirtualMemory::Mode::Read)) return false;
+	const auto allowed = Lumen::Ps5::DirectPerformance::Get().vm_access_query
+	    ? QueryGuestAccessLocked(address, size, VirtualMemory::Mode::Read)
+	    : QueryGuestAccess(address, size, VirtualMemory::Mode::Read);
+	if (!allowed) return false;
 	// Use the watched guest view. Reading the writable backing alias here would
 	// bypass the original page-fault GPU readback protocol.
-	std::memcpy(destination, reinterpret_cast<const void*>(address), size);
+	uint64_t host = 0;
+	if (!TranslateGuestMemory(address, size, &host)) return false;
+	Common::RenderTiming::ScopedReadbackOrigin origin(Common::RenderTiming::ReadbackOrigin::GuestMemoryRead);
+	std::memcpy(destination, reinterpret_cast<const void*>(host), size);
 	return true;
 }
 
 bool WriteGuestMemory(void*, uint64_t address, const void* source, size_t size) noexcept {
 	if (source == nullptr) return false;
 	std::lock_guard<std::recursive_mutex> lock(g_memory_operation_mutex);
-	if (!QueryGuestAccess(address, size, VirtualMemory::Mode::Write)) return false;
+	const auto allowed = Lumen::Ps5::DirectPerformance::Get().vm_access_query
+	    ? QueryGuestAccessLocked(address, size, VirtualMemory::Mode::Write)
+	    : QueryGuestAccess(address, size, VirtualMemory::Mode::Write);
+	if (!allowed) return false;
 	// Native writes take the same GPU write-fault path as translated stores.
-	std::memcpy(reinterpret_cast<void*>(address), source, size);
+	uint64_t host = 0;
+	if (!TranslateGuestMemory(address, size, &host)) return false;
+	{
+		Common::RenderTiming::ScopedReadbackOrigin origin(Common::RenderTiming::ReadbackOrigin::GuestMemoryWrite);
+		std::memcpy(reinterpret_cast<void*>(host), source, size);
+	}
 	// Fault handling and GPU completion have finished before code exclusion.
 	g_guest_address_space->InvalidateCodeAliases(address, size);
 	return true;
@@ -928,6 +982,19 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return TryReadBacking(vaddr, data, size);
 }
 
+bool TryReadShaderBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
+	if (data == nullptr || g_guest_address_space == nullptr ||
+	    !g_guest_address_space->CanReadShaderBacking(vaddr, size)) return false;
+	// The renderer owns byte-level dirty ranges. Never acquire the outer VM
+	// operation mutex here: a VM caller may be waiting for this GPU command lane.
+	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
+		if (!Graphics::GuestGpu::IsGpuThread()) return false;
+		auto& buffers = GetGpuResources().GetBufferCache();
+		if (buffers.HasGpuDirtyBytes(vaddr, size)) buffers.ReadMemory(vaddr, size);
+	}
+	return g_guest_address_space->TryReadShaderBacking(vaddr, data, size);
+}
+
 uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size) {
 	EXIT_IF(g_virtual_ranges == nullptr);
 
@@ -954,7 +1021,9 @@ void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
 }
 
 void InvalidateMemory(uint64_t vaddr, uint64_t size) {
-	if (size == 0) {
+	// File/service I/O also runs before a renderer is installed. As with
+	// MapGpuRange and PublishGpuMemory, no GPU owner exists in that phase.
+	if (size == 0 || g_gpu_resources == nullptr) {
 		return;
 	}
 	(void)GetGpuResources().InvalidateMemory(vaddr, size);
@@ -982,6 +1051,8 @@ void InstallGpuResources(Graphics::RenderContext* resources) noexcept {
 }
 
 bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept {
+	uint64_t guest = 0;
+	if (TranslateHostMemoryFault(fault_vaddr, &guest)) fault_vaddr = guest;
 	return g_gpu_resources != nullptr && g_gpu_resources->HandleFault(access, fault_vaddr);
 }
 
@@ -1077,10 +1148,19 @@ void Initialize() {
 	g_virtual_ranges      = std::make_unique<VirtualRanges>();
 	EXIT_IF(!g_guest_address_space->SelfTest());
 	EXIT_IF(!SelfTestSub64SharedPlaceholderAlias());
+	static const Common::HostException::TranslatedMemoryProvider translated_memory {
+	    IsGuestNonIdentity, TranslateGuestMemory, TranslateHostMemoryFault,
+	    QueryTranslatedGuestAccess, QueryTranslatedHostAccess,
+	    [](uint64_t guest, bool write) noexcept {
+		    return HandleGpuFault(write ? Graphics::PageFaultAccess::Write : Graphics::PageFaultAccess::Read, guest);
+	    }};
+	Common::HostException::SetTranslatedMemoryProvider(&translated_memory);
 	g_guest_memory_ready = true;
 }
 
 void Shutdown() {
+	// Runtime teardown has already stopped memory users and signal handlers.
+	Common::HostException::SetTranslatedMemoryProvider(nullptr);
 	g_guest_memory_ready = false;
 	g_pooled_memory.reset();
 	g_flexible_memory.reset();

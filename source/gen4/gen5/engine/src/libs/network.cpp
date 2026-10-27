@@ -32,6 +32,7 @@
 #include "common/logging/log.h"
 #include "common/threads.h"
 #include "kernel/pthread.h"
+#include "kernel/guestIoBuffer.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
@@ -836,6 +837,8 @@ bool Network::HttpSetAuthEnabled(Id id, int enable) {
 
 namespace Net {
 
+namespace GuestMemory = Libs::LibKernel::Memory;
+
 LIB_NAME("Net", "Net");
 
 #if defined(_WIN32)
@@ -970,6 +973,11 @@ static bool EnsureSocketBackend() {
 static int SetGuestSocketError(int error) {
 	*Posix::GetErrorAddr() = error;
 	return -1;
+}
+
+static int SetGuestIoError(GuestMemory::GuestIoError error) {
+	return SetGuestSocketError(error == GuestMemory::GuestIoError::NoMemory
+	    ? Posix::POSIX_ENOMEM : Posix::POSIX_EFAULT);
 }
 
 static int ConvertHostSocketError(int error) {
@@ -2180,8 +2188,13 @@ int KYTY_SYSV_ABI Getsockopt(int s, int level, int optname, void* optval, uint32
 #else
 	timeval timeout {};
 #endif
+	if (static_cast<uint64_t>(*optlen) > static_cast<uint64_t>(std::numeric_limits<SocketLength>::max()))
+		return SetGuestSocketError(Posix::POSIX_EINVAL);
 	SocketLength len = static_cast<SocketLength>(*optlen);
-	void*        value = optval;
+	GuestMemory::GuestIoBuffer io;
+	if (const auto error = io.Prepare(optval, *optlen, true); error != GuestMemory::GuestIoError::None)
+		return SetGuestIoError(error);
+	void* value = io.Data();
 	if (send_timeout) {
 		if (*optlen < sizeof(int)) {
 			return SetGuestSocketError(Posix::POSIX_EINVAL);
@@ -2201,13 +2214,14 @@ int KYTY_SYSV_ABI Getsockopt(int s, int level, int optname, void* optval, uint32
 #endif
 		const int guest_timeout =
 		    static_cast<int>(std::min<int64_t>(usec, std::numeric_limits<int>::max()));
-		std::memcpy(optval, &guest_timeout, sizeof(guest_timeout));
+		std::memcpy(io.Data(), &guest_timeout, sizeof(guest_timeout));
 		len = sizeof(guest_timeout);
 	}
 	if (socket_error && len >= static_cast<SocketLength>(sizeof(int))) {
-		auto* error = static_cast<int*>(optval);
+		auto* error = static_cast<int*>(io.Data());
 		*error = ConvertHostSocketError(*error);
 	}
+	if (!io.Commit(static_cast<uint64_t>(len))) return SetGuestSocketError(Posix::POSIX_EFAULT);
 	*optlen = static_cast<uint32_t>(len);
 	return 0;
 }
@@ -2309,8 +2323,13 @@ int KYTY_SYSV_ABI Setsockopt(int s, int level, int optname, const void* optval, 
 		optlen = sizeof(timeout);
 	}
 
+	if (static_cast<uint64_t>(optlen) > static_cast<uint64_t>(std::numeric_limits<SocketLength>::max()))
+		return SetGuestSocketError(Posix::POSIX_EINVAL);
+	GuestMemory::GuestIoBuffer io;
+	if (const auto error = io.Prepare(optval, optlen, false); error != GuestMemory::GuestIoError::None)
+		return SetGuestIoError(error);
 	if (::setsockopt(socket, ConvertSocketOptionLevel(level), optname,
-	                 static_cast<const char*>(optval), static_cast<SocketLength>(optlen)) != 0) {
+	                 static_cast<const char*>(io.Data()), static_cast<SocketLength>(optlen)) != 0) {
 		return SetHostSocketError();
 	}
 
@@ -2350,16 +2369,21 @@ int64_t KYTY_SYSV_ABI Sendto(int s, const void* buf, uint64_t len, int flags, co
 
 	const auto host_len = static_cast<SocketIoLength>(
 	    std::min<uint64_t>(len, std::numeric_limits<SocketIoLength>::max()));
+	if (static_cast<uint64_t>(host_len) > static_cast<uint64_t>(INT64_MAX))
+		return SetGuestSocketError(Posix::POSIX_EINVAL);
+	GuestMemory::GuestIoBuffer io;
+	if (const auto error = io.Prepare(buf, host_len, false); error != GuestMemory::GuestIoError::None)
+		return SetGuestIoError(error);
 	int64_t result = 0;
 	if (addr == nullptr) {
-		result = ::send(socket, static_cast<const char*>(buf), host_len, host_flags);
+		result = ::send(socket, static_cast<const char*>(io.Data()), host_len, host_flags);
 	} else {
 		sockaddr_storage host_addr {};
 		SocketLength     host_addrlen = 0;
 		if (ConvertGuestSockaddr(addr, addrlen, &host_addr, &host_addrlen) != 0) {
 			return -1;
 		}
-		result = ::sendto(socket, static_cast<const char*>(buf), host_len, host_flags,
+		result = ::sendto(socket, static_cast<const char*>(io.Data()), host_len, host_flags,
 		                  reinterpret_cast<const sockaddr*>(&host_addr), host_addrlen);
 	}
 	if (result < 0) {
@@ -2490,6 +2514,11 @@ int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* 
 
 	const auto host_len = static_cast<SocketIoLength>(
 	    std::min<uint64_t>(len, std::numeric_limits<SocketIoLength>::max()));
+	if (static_cast<uint64_t>(host_len) > static_cast<uint64_t>(INT64_MAX))
+		return SetGuestSocketError(Posix::POSIX_EINVAL);
+	GuestMemory::GuestIoBuffer io;
+	if (const auto error = io.Prepare(buf, host_len, true); error != GuestMemory::GuestIoError::None)
+		return SetGuestIoError(error);
 	sockaddr_storage host_addr {};
 	SocketLength     host_addrlen = sizeof(host_addr);
 	int64_t          result       = 0;
@@ -2499,7 +2528,7 @@ int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* 
 		    ::getpeername(socket, reinterpret_cast<sockaddr*>(&host_addr), &host_addrlen) != 0) {
 			return SetHostSocketError();
 		}
-		result = ReceiveStream(*state.transport, static_cast<char*>(buf), host_len, host_flags,
+		result = ReceiveStream(*state.transport, static_cast<char*>(io.Data()), host_len, host_flags,
 		                       (flags & 0x80) != 0);
 		if (result < 0) {
 			return result;
@@ -2509,9 +2538,9 @@ int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* 
 	{
 		state.transport.reset();
 		if (addr == nullptr) {
-			result = ::recv(socket, static_cast<char*>(buf), host_len, host_flags);
+			result = ::recv(socket, static_cast<char*>(io.Data()), host_len, host_flags);
 		} else {
-			result = ::recvfrom(socket, static_cast<char*>(buf), host_len, host_flags,
+			result = ::recvfrom(socket, static_cast<char*>(io.Data()), host_len, host_flags,
 			                    reinterpret_cast<sockaddr*>(&host_addr), &host_addrlen);
 		}
 	}
@@ -2524,6 +2553,8 @@ int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* 
 	if (result < 0) {
 		return SetHostSocketError();
 	}
+	if (!io.Commit(std::min<uint64_t>(static_cast<uint64_t>(result), host_len)))
+		return SetGuestSocketError(Posix::POSIX_EFAULT);
 	if (addr != nullptr && ConvertHostSockaddr(&host_addr, host_addrlen, addr, addrlen) != 0) {
 		return -1;
 	}

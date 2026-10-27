@@ -20,6 +20,8 @@ struct SrtRuntime {
 	SrtMemoryReader           read_specialization_memory = nullptr;
 	std::span<const uint32_t> workgroup_counts;
 	uint64_t                  indirect_args_address = 0;
+	bool                      null_descriptor_fallback = false;
+	bool                      explicit_image_bounds = false;
 };
 
 class SrtReadCapture {
@@ -129,6 +131,11 @@ private:
 	Value                           m_active_mask;
 	const std::vector<uint8_t>*      m_reachable_blocks = nullptr;
 	const SrtWalker*                m_session;
+	// Native refresh seeds read memos but cannot resume arbitrary cached address,
+	// EXEC or failed evaluations. All later operations keep the session evaluator.
+	mutable bool                    m_evaluation_started = false;
+	// A partial native walk has no complete pointer/unknown snapshot to resume.
+	mutable bool                    m_native_refresh_failed = false;
 	uint8_t                         m_read_policy;
 	ResourcePlan::EvaluationContext& m_context;
 };

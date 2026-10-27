@@ -4,6 +4,7 @@
 #include "graphics/host_gpu/rangeSet.h"
 
 #include <atomic>
+#include <barrier>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -284,6 +285,16 @@ void Release(uint8_t *memory) {
   Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
 }
 
+uint64_t HostPageStart(const PageManager &manager, uint64_t address) {
+  return address & ~(manager.GetHostPageSize() - 1);
+}
+
+uint64_t HostPageSpan(const PageManager &manager, uint64_t address, uint64_t size) {
+  const auto page_size = manager.GetHostPageSize();
+  return HostPageStart(manager, address + size - 1) + page_size -
+         HostPageStart(manager, address);
+}
+
 void TestRangeSet() {
   RangeSet ranges;
   ranges.Add(0x1000, 0x80);
@@ -517,6 +528,10 @@ void TestCleanUploadPreservesOwnership() {
         start, 2 * page_size, true,
         [&](uint64_t, uint64_t) noexcept { ranges++; },
         [&]() noexcept { completions++; });
+    // The dirty neighboring slices retain CPU ownership, but share physical
+    // protection with the GPU-owned slices on a 16 KiB host.
+    const auto neighbor_protection = harness.page_manager.GetHostPageSize() == page_size
+                                         ? PAGE_READWRITE : PAGE_NOACCESS;
     Check(ranges == 0 && completions == 2 &&
               tracker.IsRegionGpuModified(start, page_size) &&
               tracker.IsRegionGpuModified(start + page_size, page_size) &&
@@ -527,8 +542,8 @@ void TestCleanUploadPreservesOwnership() {
               tracker.IsRegionCpuModified(after, page_size) &&
               !tracker.IsRegionGpuModified(before, page_size) &&
               !tracker.IsRegionGpuModified(after, page_size) &&
-              IsWritable(reinterpret_cast<void *>(before)) &&
-              IsWritable(reinterpret_cast<void *>(after)),
+              Protection(reinterpret_cast<void *>(before)) == neighbor_protection &&
+              Protection(reinterpret_cast<void *>(after)) == neighbor_protection,
           "clean written upload lost GPU ownership or changed dirty neighbors");
     tracker.UnmarkRegionAsGpuModified(start, 2 * page_size);
   }
@@ -761,15 +776,19 @@ void TestGpuDownloadProtectionMirrors() {
         protected_during_download = Protection(memory) == PAGE_NOACCESS;
         visited.push_back({range_address, range_size});
       });
-  Check(protected_during_download && visited.size() == 1 &&
-            visited[0].first == address &&
-            visited[0].second == page_size && g_protection_log.size() == 1 &&
+  const bool shared_host_page = page_manager.GetHostPageSize() > 2 * page_size;
+  const bool partial_protection = shared_host_page
+      ? g_protection_log.empty() && Protection(memory) == PAGE_NOACCESS
+      : g_protection_log.size() == 1 &&
             g_protection_log[0].address == address &&
             g_protection_log[0].size == page_size &&
             g_protection_log[0].mode == Common::VirtualMemory::Mode::Read &&
+            Protection(memory) == PAGE_READONLY;
+  Check(protected_during_download && visited.size() == 1 &&
+            visited[0].first == address &&
+            visited[0].second == page_size && partial_protection &&
             !tracker.IsRegionGpuModified(address, page_size) &&
             tracker.IsRegionGpuModified(address + page_size * 2, page_size) &&
-            Protection(memory) == PAGE_READONLY &&
             Protection(memory + page_size * 2) == PAGE_NOACCESS,
         "partial download did not preserve the CPU/GPU protection mirrors");
 
@@ -790,12 +809,24 @@ void TestGpuDownloadProtectionMirrors() {
         "broad final unmark did not restore write-only tracking");
   ResetProtectionLog();
   tracker.MarkRegionAsCpuModified(address + 16, 32);
-  Check(
-      g_protection_log.size() == 1 && g_protection_log[0].address == address &&
+  const bool cpu_protection = shared_host_page
+      ? g_protection_log.empty() && Protection(memory) == PAGE_READONLY
+      : g_protection_log.size() == 1 && g_protection_log[0].address == address &&
           g_protection_log[0].size == page_size &&
           g_protection_log[0].mode == Common::VirtualMemory::Mode::ReadWrite &&
-          IsWritable(memory) && !IsWritable(memory + page_size),
+          IsWritable(memory);
+  Check(cpu_protection && tracker.IsRegionCpuModified(address, page_size) &&
+            !tracker.IsRegionCpuModified(address + page_size, 3 * page_size) &&
+            !IsWritable(memory + page_size),
       "CPU-dirty transition did not release only its write watcher");
+  if (shared_host_page) {
+    tracker.MarkRegionAsCpuModified(address + page_size, 3 * page_size);
+    Check(g_protection_log.size() == 1 && g_protection_log[0].address == address &&
+              g_protection_log[0].size == page_manager.GetHostPageSize() &&
+              g_protection_log[0].mode == Common::VirtualMemory::Mode::ReadWrite &&
+              IsWritable(memory) && IsWritable(memory + 3 * page_size),
+          "last logical write watcher did not release the shared host page");
+  }
 
   tracker.UntrackMemory(address, page_size * 4);
   Release(memory);
@@ -833,9 +864,17 @@ void TestCrossRegionUpload() {
                     (is_written ? PAGE_NOACCESS : PAGE_READONLY),
             "cross-region upload did not preserve final ownership and protection");
     }
-    Check(IsWritable(reinterpret_cast<void *>(boundary - 2 * page_size)) &&
-              IsWritable(reinterpret_cast<void *>(boundary + page_size)),
-          "cross-region upload changed neighboring pages");
+    const auto neighbor_protection = harness.page_manager.GetHostPageSize() == page_size
+        ? PAGE_READWRITE : (is_written ? PAGE_NOACCESS : PAGE_READONLY);
+    Check(Protection(reinterpret_cast<void *>(boundary - 2 * page_size)) == neighbor_protection &&
+              Protection(reinterpret_cast<void *>(boundary + page_size)) == neighbor_protection &&
+              tracker.IsRegionCpuModified(boundary - 2 * page_size, page_size) &&
+              tracker.IsRegionCpuModified(boundary + page_size, page_size) &&
+              !tracker.IsRegionGpuModified(boundary - 2 * page_size, page_size) &&
+              !tracker.IsRegionGpuModified(boundary + page_size, page_size) &&
+              IsWritable(reinterpret_cast<void *>(boundary - harness.page_manager.GetHostPageSize() - page_size)) &&
+              IsWritable(reinterpret_cast<void *>(boundary + harness.page_manager.GetHostPageSize())),
+          "cross-region upload changed neighboring ownership or unrelated host pages");
     tracker.UnmarkRegionAsGpuModified(boundary - page_size, 2 * page_size);
     tracker.UntrackMemory(address, region_size * 2);
   }
@@ -1026,8 +1065,8 @@ void TestGpuUnmarkUsesRegionMask() {
   tracker.UnmarkRegionAsGpuModified(sparse_begin, page_size * 3);
   Check(
       g_protection_calls == 1 && g_protection_log.size() == 1 &&
-          g_protection_log[0].address == sparse_begin &&
-          g_protection_log[0].size == page_size * 3 &&
+          g_protection_log[0].address == HostPageStart(page_manager, sparse_begin) &&
+          g_protection_log[0].size == HostPageSpan(page_manager, sparse_begin, page_size * 3) &&
           g_protection_log[0].mode == Common::VirtualMemory::Mode::Read &&
           !tracker.IsRegionGpuModified(sparse_begin, page_size * 3) &&
           Protection(reinterpret_cast<void *>(sparse_begin)) == PAGE_READONLY &&
@@ -1050,11 +1089,11 @@ void TestGpuUnmarkUsesRegionMask() {
   ResetProtectionLog();
   tracker.UnmarkRegionAsGpuModified(cross_begin, page_size * 2);
   Check(g_protection_calls == 2 && g_protection_log.size() == 2 &&
-            g_protection_log[0].address == cross_begin &&
-            g_protection_log[0].size == page_size &&
+            g_protection_log[0].address == HostPageStart(page_manager, cross_begin) &&
+            g_protection_log[0].size == page_manager.GetHostPageSize() &&
             g_protection_log[0].mode == Common::VirtualMemory::Mode::Read &&
             g_protection_log[1].address == boundary &&
-            g_protection_log[1].size == page_size &&
+            g_protection_log[1].size == page_manager.GetHostPageSize() &&
             g_protection_log[1].mode == Common::VirtualMemory::Mode::Read &&
             !tracker.IsRegionGpuModified(cross_begin, page_size * 2),
         "cross-region GPU unmark did not use one update per 4 MiB region");
@@ -1102,6 +1141,39 @@ void TestFullRegionGpuUnmarkBatching() {
 
   tracker.UntrackMemory(allocation_base, region_size * 2);
   Release(memory);
+}
+
+void TestTrackingLockContention() {
+  constexpr size_t worker_count = 8;
+  constexpr size_t rounds = 256;
+  Libs::Graphics::TrackingSpinLock lock;
+  std::barrier phase(worker_count);
+  std::atomic_uint32_t active{0};
+  uint64_t value = 0;
+  uint64_t complement = ~value;
+  std::vector<std::jthread> workers;
+  for (size_t i = 0; i < worker_count; ++i) {
+    workers.emplace_back([&] {
+      for (size_t round = 0; round < rounds; ++round) {
+        phase.arrive_and_wait();
+        std::scoped_lock guard(lock);
+        Check(active.fetch_add(1, std::memory_order_relaxed) == 0,
+              "tracking lock admitted overlapping owners");
+        Check(complement == ~value,
+              "tracking lock did not publish the previous owner's writes");
+        ++value;
+        complement = ~value;
+        Check(active.fetch_sub(1, std::memory_order_relaxed) == 1,
+              "tracking lock lost its exclusive owner");
+      }
+    });
+  }
+  for (auto &worker : workers) {
+    worker.join();
+  }
+  Check(value == worker_count * rounds && complement == ~value &&
+            active.load(std::memory_order_relaxed) == 0,
+        "tracking lock lost a contended hand-off");
 }
 
 [[noreturn]] void RunDeathCase(const char *name) {
@@ -1304,6 +1376,7 @@ int main(int argc, char **argv) {
   TestDownloadDoesNotSerializeDisjointRegion();
   TestGpuUnmarkUsesRegionMask();
   TestFullRegionGpuUnmarkBatching();
+  TestTrackingLockContention();
   TestFatalPaths();
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
   TestFaultOnProtectedStack();

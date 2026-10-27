@@ -68,13 +68,16 @@ class SpinGuard final {
 public:
 	explicit SpinGuard(std::atomic_flag& lock): m_lock(lock) {
 		while (m_lock.test_and_set(std::memory_order_acquire)) {
+			// Preserve the acquire hand-off without an exchange on every busy poll.
+			do {
 #if defined(__x86_64__) || defined(_M_X64)
-			_mm_pause();
+				_mm_pause();
 #elif defined(_M_ARM64)
-			__yield();
+				__yield();
 #elif defined(__aarch64__)
-			asm volatile("yield");
+				asm volatile("yield");
 #endif
+			} while (m_lock.test(std::memory_order_relaxed));
 		}
 	}
 	~SpinGuard() { m_lock.clear(std::memory_order_release); }
@@ -157,8 +160,8 @@ struct PageManager::Impl {
 			      static_cast<uint32_t>(info.dwPageSize));
 		}
 #elif defined(__APPLE__)
-		// Under Rosetta the host page size is 4 KB, matching TRACKER_PAGE_SIZE.
-		if (static_cast<uint64_t>(getpagesize()) != PAGE_SIZE) {
+		host_page_size = static_cast<uint64_t>(getpagesize());
+		if (host_page_size != PAGE_SIZE && host_page_size != 4 * PAGE_SIZE) {
 			Fatal("unsupported host page size 0x%08" PRIx32, static_cast<uint32_t>(getpagesize()));
 		}
 #else
@@ -213,6 +216,42 @@ struct PageManager::Impl {
 	void UpdateRegionWatchers(Region& region, uint64_t base_addr, size_t first, size_t last,
 	                          const RegionBits* mask = nullptr) {
 		SpinGuard lock(region.lock);
+		if (host_page_size != PAGE_SIZE) {
+			// Keep every logical 4 KiB watcher independent, but apply the strictest
+			// permission of the entire host page. Unwatching one slice must never
+			// reopen an adjacent slice still owned by the GPU.
+			const auto stride = static_cast<size_t>(host_page_size / PAGE_SIZE);
+			const auto begin = first / stride * stride;
+			const auto end = (last + stride - 1) / stride * stride;
+			uint64_t pending_address = 0;
+			uint64_t pending_size = 0;
+			auto pending_mode = Common::VirtualMemory::Mode::ReadWrite;
+			const auto flush = [&] {
+				if (pending_size != 0) Protect(pending_address, pending_size, pending_mode);
+				pending_size = 0;
+			};
+			for (auto group = begin; group < end; group += stride) {
+				auto old_bits = static_cast<uint32_t>(Common::VirtualMemory::Mode::ReadWrite);
+				auto new_bits = old_bits;
+				for (auto index = group; index < group + stride; ++index) {
+					auto& page = region.pages[index];
+					old_bits &= static_cast<uint32_t>(page.Perms());
+					if (index >= first && index < last && (!masked || mask->Get(index)))
+						page.AddDelta<track ? 1 : -1, is_read>(base_addr + index * PAGE_SIZE);
+					new_bits &= static_cast<uint32_t>(page.Perms());
+				}
+				const auto mode = static_cast<Common::VirtualMemory::Mode>(new_bits);
+				if (old_bits == new_bits || (pending_size != 0 && mode != pending_mode)) flush();
+				if (old_bits == new_bits) continue;
+				if (pending_size == 0) {
+					pending_address = base_addr + group * PAGE_SIZE;
+					pending_mode = mode;
+				}
+				pending_size += host_page_size;
+			}
+			flush();
+			return;
+		}
 		auto      perms                 = region.pages[first].Perms();
 		uint64_t  range_begin           = 0;
 		uint64_t  range_bytes           = 0;
@@ -282,6 +321,7 @@ struct PageManager::Impl {
 	std::unique_ptr<std::atomic<Region*>[]> regions;
 	std::vector<std::unique_ptr<Region>>    region_storage;
 	std::mutex                              region_mutex;
+	uint64_t                                host_page_size = PAGE_SIZE;
 };
 
 static_assert(std::atomic<void*>::is_always_lock_free);
@@ -292,6 +332,10 @@ PageManager::~PageManager() = default;
 
 uint64_t PageManager::GetPageSize() const {
 	return PAGE_SIZE;
+}
+
+uint64_t PageManager::GetHostPageSize() const {
+	return m_impl->host_page_size;
 }
 
 template <bool track>

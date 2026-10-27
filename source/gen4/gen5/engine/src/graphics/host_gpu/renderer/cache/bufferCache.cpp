@@ -9,6 +9,7 @@
 #include "common/videoUploadProbe.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "common/memoryBudget.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -163,7 +164,10 @@ void BufferCache::DeleteBuffer(BufferId id) {
 }
 
 template <bool async>
-bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t size) {
+bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t size,
+                                       bool caller_gpu_thread) {
+	const bool requested_dirty = !async && Common::RenderTiming::Enabled() &&
+	                             m_gpu_modified_ranges.Intersects(vaddr, size);
 	std::vector<vk::BufferCopy> copies;
 	uint64_t                    total_size     = 0;
 	const auto                  buffer_address = buffer.CpuAddress();
@@ -264,7 +268,8 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 			    .buffer_address = buffer_address, .buffer_size = buffer.Size(),
 			    .payload_bytes = payload_size, .staging_bytes = total_size,
 			    .native_wait_ns = native_wait_ns,
-			    .origin = Common::RenderTiming::CurrentReadbackOrigin()
+			    .origin = Common::RenderTiming::CurrentReadbackOrigin(),
+			    .caller_gpu_thread = caller_gpu_thread, .requested_dirty = requested_dirty
 			});
 		}
 	}
@@ -291,18 +296,11 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	    m_slot_buffers.insert(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0, AllFlags, 16);
 	EXIT_IF(null_id != NULL_BUFFER_ID);
 	SetVulkanObjectNameF(m_graphics.device, GetBuffer(null_id).Handle(), "Kyty.NullBuffer");
-	if (!m_graphics.CanReportMemoryUsage()) {
-		return;
+	if (m_graphics.CanReportMemoryUsage()) {
+		const auto thresholds = MemoryBudget::BufferThresholds(m_graphics.GetTotalMemoryBudget());
+		m_trigger_gc_memory = thresholds.trigger;
+		m_critical_gc_memory = thresholds.critical;
 	}
-	constexpr int64_t GiB              = 1024ll * 1024 * 1024;
-	constexpr int64_t target_threshold = 8 * GiB;
-	const auto        budget =
-	    static_cast<int64_t>(std::min<uint64_t>(m_graphics.GetTotalMemoryBudget(), INT64_MAX));
-	const auto threshold = std::min(budget, target_threshold);
-	const auto expected  = std::min(budget - 6 * threshold / 10, budget - GiB);
-	const auto critical  = std::min(budget - 2 * threshold / 10, budget - GiB / 2);
-	m_trigger_gc_memory  = static_cast<uint64_t>(std::max<int64_t>(expected, GiB));
-	m_critical_gc_memory = static_cast<uint64_t>(std::max<int64_t>(critical, 2 * GiB));
 }
 
 BufferCache::~BufferCache() {
@@ -334,7 +332,8 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		     vaddr, size);
 	}
 	const auto caller_origin = Common::RenderTiming::CurrentReadbackOrigin();
-	m_scheduler.Context().GetGpu().SendCommandSync([this, vaddr, size, is_write, caller_origin] {
+	const bool caller_gpu_thread = Common::RenderTiming::Enabled() && GuestGpu::IsGpuThread();
+	m_scheduler.Context().GetGpu().SendCommandSync([this, vaddr, size, is_write, caller_origin, caller_gpu_thread] {
 		// The faulting caller may be a guest CPU thread. Carry its diagnostic
 		// origin explicitly across the synchronous hand-off to the renderer.
 		using Origin = Common::RenderTiming::ReadbackOrigin;
@@ -345,7 +344,7 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		}
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
 
-		if (DownloadBufferMemory<false>(buffer, vaddr, size)) {
+		if (DownloadBufferMemory<false>(buffer, vaddr, size, caller_gpu_thread)) {
 			m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
 		}
 		if (is_write) {
@@ -606,8 +605,10 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	}
 	(void)m_texture_cache.ClearMeta(vaddr);
 	if (!IsRegionGpuModified(vaddr, size)) {
-		// Access the guest mapping so write faults invalidate cached buffers and images.
-		auto* destination = reinterpret_cast<uint32_t*>(vaddr);
+		// Access the watched mapping so write faults invalidate cached buffers and images.
+		uint64_t host = 0;
+		EXIT_IF(!LibKernel::Memory::TranslateGuestMemory(vaddr, size, &host));
+		auto* destination = reinterpret_cast<uint32_t*>(host);
 		std::fill(destination, destination + size / sizeof(uint32_t), value);
 		return;
 	}
@@ -674,7 +675,11 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	if (src_memory && dst_memory && !IsRegionGpuModified(dst_vaddr, size) &&
 	    !IsRegionGpuModified(src_vaddr, size) && !m_texture_cache.FindImageFromRange(src_vaddr, size)) {
 		Common::VideoUploadProbe::SnapshotScope video_snapshot(src_vaddr, size);
-		std::memcpy(reinterpret_cast<void*>(dst_vaddr), reinterpret_cast<const void*>(src_vaddr),
+		uint64_t dst_host = 0;
+		uint64_t src_host = 0;
+		EXIT_IF(!LibKernel::Memory::TranslateGuestMemory(dst_vaddr, size, &dst_host) ||
+		        !LibKernel::Memory::TranslateGuestMemory(src_vaddr, size, &src_host));
+		std::memcpy(reinterpret_cast<void*>(dst_host), reinterpret_cast<const void*>(src_host),
 		            size);
 		return;
 	}
@@ -722,6 +727,10 @@ void BufferCache::RunGarbageCollector() {
 	const auto tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
+		// Android/UMA budgets can shrink while a session is running.
+		const auto thresholds = MemoryBudget::BufferThresholds(m_graphics.GetTotalMemoryBudget());
+		m_trigger_gc_memory = thresholds.trigger;
+		m_critical_gc_memory = thresholds.critical;
 	}
 	if (m_total_used_memory < m_trigger_gc_memory) {
 		return;

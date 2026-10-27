@@ -30,8 +30,8 @@ namespace Libs {
 namespace {
 namespace Direct = Lumen::Ps5::DirectFex;
 namespace Fiber = Libs::Fiber;
-constexpr uint64_t Page = 4096;
-constexpr uint64_t CodeSize = Page * 4;
+uint64_t Page = 4096;
+constexpr uint64_t CodeSize = 16384;
 struct Region { uint64_t base, size; bool writable; };
 std::vector<Region> regions;
 uint64_t code;
@@ -150,7 +150,9 @@ bool QueryGuestAccess(uint64_t address, uint64_t size, Common::VirtualMemory::Mo
 }
 
 int main() {
-	Check(sysconf(_SC_PAGESIZE) == Page && Direct::Probe() == 0, "ARM64 direct FEX bootstrap");
+	const auto host_page = sysconf(_SC_PAGESIZE);
+	Check((host_page == 4096 || host_page == 16384) && Direct::Probe() == 0, "ARM64 direct FEX bootstrap");
+	Page = static_cast<uint64_t>(host_page);
 	code = reinterpret_cast<uint64_t>(Allocate(CodeSize, false));
 	auto& d = *static_cast<Data*>(Allocate(Page));
 	new (&d) Data;

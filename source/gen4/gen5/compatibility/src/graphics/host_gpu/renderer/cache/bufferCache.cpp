@@ -9,6 +9,7 @@
 #include "common/renderTiming.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "../../../../../../engine/src/common/memoryBudget.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -381,18 +382,11 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	    m_slot_buffers.insert(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0, AllFlags, 16);
 	EXIT_IF(null_id != NULL_BUFFER_ID);
 	SetVulkanObjectNameF(m_graphics.device, GetBuffer(null_id).Handle(), "Kyty.NullBuffer");
-	if (!m_graphics.CanReportMemoryUsage()) {
-		return;
+	if (m_graphics.CanReportMemoryUsage()) {
+		const auto thresholds = MemoryBudget::BufferThresholds(m_graphics.GetTotalMemoryBudget());
+		m_trigger_gc_memory = thresholds.trigger;
+		m_critical_gc_memory = thresholds.critical;
 	}
-	constexpr int64_t GiB              = 1024ll * 1024 * 1024;
-	constexpr int64_t target_threshold = 8 * GiB;
-	const auto        budget =
-	    static_cast<int64_t>(std::min<uint64_t>(m_graphics.GetTotalMemoryBudget(), INT64_MAX));
-	const auto threshold = std::min(budget, target_threshold);
-	const auto expected  = std::min(budget - 6 * threshold / 10, budget - GiB);
-	const auto critical  = std::min(budget - 2 * threshold / 10, budget - GiB / 2);
-	m_trigger_gc_memory  = static_cast<uint64_t>(std::max<int64_t>(expected, GiB));
-	m_critical_gc_memory = static_cast<uint64_t>(std::max<int64_t>(critical, 2 * GiB));
 }
 
 BufferCache::~BufferCache() {
@@ -1080,6 +1074,10 @@ void BufferCache::RunGarbageCollector() {
 	const auto tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
+		// Android/UMA budgets can shrink while a session is running.
+		const auto thresholds = MemoryBudget::BufferThresholds(m_graphics.GetTotalMemoryBudget());
+		m_trigger_gc_memory = thresholds.trigger;
+		m_critical_gc_memory = thresholds.critical;
 	}
 	if (m_total_used_memory < m_trigger_gc_memory) {
 		return;

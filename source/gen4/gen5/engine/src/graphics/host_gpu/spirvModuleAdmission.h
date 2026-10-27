@@ -10,7 +10,13 @@
 namespace Libs::Graphics {
 
 enum class SpirvModuleAdmission {
-    Allowed, Malformed, FragmentBarycentricUnavailable, BufferInt64AtomicsUnavailable
+    Allowed, Malformed, FragmentBarycentricUnavailable, BufferInt64AtomicsUnavailable,
+    CullDistanceUnavailable, MultiViewportUnavailable
+};
+
+struct SpirvOptionalFeatures {
+    bool cull_distance = true;
+    bool multi_viewport = true;
 };
 
 // Guest IR records both explicit buffer atomics and coherent paired buffer
@@ -29,10 +35,13 @@ inline SpirvModuleAdmission AdmitShaderBufferInt64Atomics(bool buffer_atomics_en
 // Inspect the final words for every native shader-module path. This bounded
 // requirements scan does not replace SPIR-V validation or rewrite guest semantics.
 inline SpirvModuleAdmission AdmitSpirvModule(std::span<const uint32_t> words,
-                                            bool fragment_barycentric_enabled) noexcept {
+                                            bool fragment_barycentric_enabled,
+                                            SpirvOptionalFeatures features = {}) noexcept {
     if (words.size() < 5 || words[0] != spv::MagicNumber || words[3] == 0 || words[4] != 0)
         return SpirvModuleAdmission::Malformed;
     bool requires_barycentric = false;
+    bool requires_cull_distance = false;
+    bool requires_multi_viewport = false;
     for (std::size_t cursor = 5; cursor < words.size();) {
         const auto count = words[cursor] >> spv::WordCountShift;
         const auto opcode = words[cursor] & spv::OpCodeMask;
@@ -42,6 +51,9 @@ inline SpirvModuleAdmission AdmitSpirvModule(std::span<const uint32_t> words,
         if (opcode == spv::OpCapability) {
             if (count != 2) return SpirvModuleAdmission::Malformed;
             requires_barycentric |= instruction[1] == spv::CapabilityFragmentBarycentricKHR;
+            requires_cull_distance |= instruction[1] == spv::CapabilityCullDistance;
+            requires_multi_viewport |= instruction[1] == spv::CapabilityMultiViewport ||
+                instruction[1] == spv::CapabilityShaderViewportIndex;
         } else if (opcode == spv::OpDecorate || opcode == spv::OpMemberDecorate ||
                    opcode == spv::OpDecorateId) {
             const std::size_t decoration = opcode == spv::OpMemberDecorate ? 3 : 2;
@@ -52,6 +64,10 @@ inline SpirvModuleAdmission AdmitSpirvModule(std::span<const uint32_t> words,
                 if (count != decoration + 2) return SpirvModuleAdmission::Malformed;
                 requires_barycentric |= instruction[decoration + 1] == spv::BuiltInBaryCoordKHR ||
                     instruction[decoration + 1] == spv::BuiltInBaryCoordNoPerspKHR;
+                // Glslang's default gl_PerVertex block contains unused cull
+                // members even in the full-screen triangle. Actual use needs
+                // the corresponding OpCapability, checked above; rejecting an
+                // inactive member would also reject ordinary blit shaders.
             }
         } else if (opcode == spv::OpExtension) {
             if (count < 2) return SpirvModuleAdmission::Malformed;
@@ -66,8 +82,13 @@ inline SpirvModuleAdmission AdmitSpirvModule(std::span<const uint32_t> words,
         }
         cursor += count;
     }
-    return requires_barycentric && !fragment_barycentric_enabled
-        ? SpirvModuleAdmission::FragmentBarycentricUnavailable : SpirvModuleAdmission::Allowed;
+    if (requires_barycentric && !fragment_barycentric_enabled)
+        return SpirvModuleAdmission::FragmentBarycentricUnavailable;
+    if (requires_cull_distance && !features.cull_distance)
+        return SpirvModuleAdmission::CullDistanceUnavailable;
+    if (requires_multi_viewport && !features.multi_viewport)
+        return SpirvModuleAdmission::MultiViewportUnavailable;
+    return SpirvModuleAdmission::Allowed;
 }
 
 } // namespace Libs::Graphics

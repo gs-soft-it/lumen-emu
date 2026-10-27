@@ -56,18 +56,27 @@ VideoOut::VideoOutDriver& RenderContext::GetVideoOut() const {
 }
 
 bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noexcept {
+	if (access != PageFaultAccess::Read && access != PageFaultAccess::Write) return false;
+	const auto fault_byte = fault_vaddr;
 	// The host reports the faulting byte, not the instruction's access width. Both caches
 	// resolve its page; guessing a width can cross the end of a valid guest mapping.
-	constexpr uint64_t fault_size = 1;
+	const auto host_page_size = m_page_manager.GetHostPageSize();
+	const auto fault_size = host_page_size > TRACKER_PAGE_SIZE ? host_page_size : 1;
+	if (fault_size != 1) {
+		// A neighboring logical slice may be responsible for this host fault.
+		// Resolve buffer ownership and image write watches on the whole host page
+		// before retrying the instruction, while retaining the exact fault byte.
+		fault_vaddr &= ~(host_page_size - 1);
+	}
 	if (!IsMapped(fault_vaddr, fault_size)) {
 		return false;
 	}
-	using Origin = Common::RenderTiming::ReadbackOrigin;
 	Common::RenderTiming::ScopedReadbackOrigin origin(
-	    access == PageFaultAccess::Write ? Origin::GuestWriteFault : Origin::GuestReadFault);
+	    Common::RenderTiming::ReadbackOriginForFault(access == PageFaultAccess::Write));
 	if (access == PageFaultAccess::Write) {
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
-		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
+		// Protection coverage is a host page; only the reported byte is known to be touched.
+		m_texture_cache.HandleWriteFault(fault_byte);
 	} else {
 		m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
 	}

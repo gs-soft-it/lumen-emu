@@ -1,4 +1,5 @@
 #include "MetalVulkanInternal.h"
+#include "MetalCullDistance.h"
 
 #import <TargetConditionals.h>
 
@@ -32,16 +33,157 @@
 namespace {
 
 constexpr uint32_t kPushConstantBufferIndex = 30;
+constexpr uint32_t kBufferSizeBufferIndex = 29;
 constexpr uint32_t kMaximumMetalBufferIndex = 30;
 constexpr uint32_t kMaximumMetalTextureIndex = 127;
 constexpr uint32_t kMaximumMetalSamplerIndex = 15;
+constexpr uint32_t kTessIndexBuffer = 21;
+constexpr uint32_t kTessInputBuffer = 22;
+constexpr uint32_t kTessPatchInputBuffer = 23;
+constexpr uint32_t kTessParamsBuffer = 24;
+constexpr uint32_t kTessFactorBuffer = 25;
+constexpr uint32_t kTessPatchOutputBuffer = 26;
+constexpr uint32_t kTessOutputBuffer = 27;
+
+struct TessInterfaceField
+{
+	uint32_t key = 0, offset = 0, size = 0;
+	std::string name;
+	uint32_t interpolationFlags = 0;
+};
+struct TessInterface
+{
+	uint32_t stride = 0;
+	bool valid = true;
+	std::vector<TessInterfaceField> fields;
+};
+struct TessCompile
+{
+	enum class Mode { Vertex, Control, Evaluation } mode = Mode::Vertex;
+	uint32_t controlPoints = 0;
+	bool triangles = true;
+	bool deferNative = false;
+	spirv_cross::CompilerMSL::Options::IndexType indexType = spirv_cross::CompilerMSL::Options::IndexType::None;
+	TessInterface input, output, patchInput, patchOutput;
+	std::string source, entry, outputType;
+};
+
+#include "MetalTessellationCapture.inc"
+#include "MetalSoftwareTessellatorSource.inc"
+
+MTLClearColor ToMTLClearColor(VkFormat format, const VkClearColorValue& value)
+{
+	// Vulkan selects the union member from the attachment's numeric format.
+	// Metal takes doubles even for integer attachments; a double retains every
+	// 32-bit integer exactly, unlike interpreting the same bits as a float.
+	switch (format)
+	{
+		case VK_FORMAT_R8_UINT:
+		case VK_FORMAT_R8G8_UINT:
+		case VK_FORMAT_R8G8B8A8_UINT:
+		case VK_FORMAT_R16_UINT:
+		case VK_FORMAT_R16G16_UINT:
+		case VK_FORMAT_R16G16B16A16_UINT:
+		case VK_FORMAT_R32_UINT:
+		case VK_FORMAT_R32G32_UINT:
+		case VK_FORMAT_R32G32B32A32_UINT:
+		case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+			return MTLClearColorMake(value.uint32[0], value.uint32[1], value.uint32[2], value.uint32[3]);
+		case VK_FORMAT_R8_SINT:
+		case VK_FORMAT_R8G8_SINT:
+		case VK_FORMAT_R8G8B8A8_SINT:
+		case VK_FORMAT_R16_SINT:
+		case VK_FORMAT_R16G16_SINT:
+		case VK_FORMAT_R16G16B16A16_SINT:
+		case VK_FORMAT_R32_SINT:
+		case VK_FORMAT_R32G32_SINT:
+		case VK_FORMAT_R32G32B32A32_SINT:
+			return MTLClearColorMake(value.int32[0], value.int32[1], value.int32[2], value.int32[3]);
+		default:
+			return MTLClearColorMake(value.float32[0], value.float32[1], value.float32[2], value.float32[3]);
+	}
+}
 
 class MetalSpirvCompiler final: public spirv_cross::CompilerMSL
 {
 public:
 	using spirv_cross::CompilerMSL::CompilerMSL;
+	bool vertexSubgroupLane = false;
+	std::string TessOutputType() { return stage_out_var_id ? to_name(get_stage_out_struct_type().self) : ""; }
+	TessInterface TessLayout(bool input, bool patch)
+	{
+		TessInterface result;
+		const auto id = patch ? (input ? patch_stage_in_var_id : patch_stage_out_var_id) :
+		                        (input ? stage_in_var_id : stage_out_var_id);
+		if (!id) return result;
+		const auto& type = patch ? (input ? get_patch_stage_in_struct_type() : get_patch_stage_out_struct_type()) :
+		                           (input ? get_stage_in_struct_type() : get_stage_out_struct_type());
+		uint32_t cursor = 0, alignment = 1;
+		for (uint32_t i = 0; i < type.member_types.size(); ++i)
+		{
+			uint32_t key = 0;
+			if (has_member_decoration(type.self, i, spv::DecorationBuiltIn))
+				key = 0x80000000u | get_member_decoration(type.self, i, spv::DecorationBuiltIn);
+			else if (has_member_decoration(type.self, i, spv::DecorationLocation))
+				key = get_member_decoration(type.self, i, spv::DecorationLocation);
+			else { result.valid = false; break; }
+			const uint32_t interpolation = (has_member_decoration(type.self, i, spv::DecorationFlat) ? 1u : 0u) |
+			    (has_member_decoration(type.self, i, spv::DecorationNoPerspective) ? 2u : 0u) |
+			    (has_member_decoration(type.self, i, spv::DecorationCentroid) ? 4u : 0u) |
+			    (has_member_decoration(type.self, i, spv::DecorationSample) ? 8u : 0u);
+			const uint32_t memberAlignment = get_declared_struct_member_alignment_msl(type, i);
+			const uint32_t memberSize = get_declared_struct_member_size_msl(type, i);
+			const uint32_t memberOffset = has_member_decoration(type.self, i, spv::DecorationOffset)
+			    ? type_struct_member_offset(type, i) : (cursor + memberAlignment - 1) & ~(memberAlignment - 1);
+			alignment = std::max(alignment, memberAlignment);
+			cursor = memberOffset + memberSize;
+			result.fields.push_back({key, memberOffset, memberSize,
+			    to_member_name(type, i), interpolation});
+		}
+		result.stride = (cursor + alignment - 1) & ~(alignment - 1);
+		return result;
+	}
 
 protected:
+	bool NeedsVertexSubgroupLane() const
+	{
+		return vertexSubgroupLane && get_execution_model() == spv::ExecutionModelVertex &&
+		       !get_msl_options().vertex_for_tessellation &&
+		       active_input_builtins.get(spv::BuiltInSubgroupLocalInvocationId);
+	}
+
+	void emit_function_prototype(spirv_cross::SPIRFunction& function, const spirv_cross::Bitset& flags) override
+	{
+		// Metal supports SIMD operations in a raster vertex function, but not
+		// the thread_index_in_simdgroup argument. Omit only that argument;
+		// keep SPIRV-Cross's native subgroup operations and helper parameters.
+		const bool lane = function.self == ir.default_entry_point && NeedsVertexSubgroupLane();
+		if (lane) active_input_builtins.clear(spv::BuiltInSubgroupLocalInvocationId);
+		spirv_cross::CompilerMSL::emit_function_prototype(function, flags);
+		if (lane) active_input_builtins.set(spv::BuiltInSubgroupLocalInvocationId);
+	}
+
+	void emit_entry_point_declarations() override
+	{
+		spirv_cross::CompilerMSL::emit_entry_point_declarations();
+		if (!NeedsVertexSubgroupLane()) return;
+		const auto lane = builtin_to_glsl(spv::BuiltInSubgroupLocalInvocationId, spv::StorageClassInput);
+		statement("uint ", lane, ";");
+		begin_scope();
+		// The exclusive sum gives the active rank, not necessarily the lane.
+		// Select that rank's bit from the ballot to handle holes and partial
+		// SIMD groups. Capture once before any guest control flow diverges.
+		statement("simd_vote::vote_t lumenActiveLanes = simd_vote::vote_t(simd_ballot(true));");
+		statement("uint lumenActiveRank = simd_prefix_exclusive_sum(1u);");
+		statement("while (lumenActiveRank != 0u)");
+		begin_scope();
+		statement("lumenActiveLanes &= lumenActiveLanes - 1u;");
+		statement("--lumenActiveRank;");
+		end_scope();
+		statement(lane, " = uint(ctz(lumenActiveLanes));");
+		end_scope();
+	}
+
 	std::string type_to_array_glsl(const spirv_cross::SPIRType& type, uint32_t variableId) override
 	{
 		// SPIRV-Cross's native-array path treats declaration IDs as SPIRVariable,
@@ -55,6 +197,19 @@ protected:
 		return spirv_cross::CompilerMSL::type_to_array_glsl(type, variableId);
 	}
 };
+
+bool VertexSubgroupLaneRequested()
+{
+#if TARGET_OS_OSX && !TARGET_OS_IPHONE
+	static const bool requested = [] {
+		const char* value = std::getenv("LUMEN_METAL_VERTEX_SUBGROUP");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	return requested;
+#else
+	return false;
+#endif
+}
 
 bool CompletionPassReuseRequested()
 {
@@ -136,6 +291,18 @@ struct StageBinding
 	VkShaderStageFlagBits stage = VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM;
 };
 
+VkResult DescriptorBindingFailure(const StageBinding& binding, uint32_t element, const char* reason,
+                                  uint64_t expected = 0, uint64_t actual = 0)
+{
+	std::fprintf(stderr,
+	    "[LUMEN_METAL] descriptor binding failed: reason=%s stage=0x%x set=%u binding=%u element=%u "
+	    "type=%u count=%u metal_buffer=%u metal_texture=%u metal_sampler=%u expected=%llu actual=%llu\n",
+	    reason, binding.stage, binding.set, binding.binding, element, binding.type, binding.count,
+	    binding.metalBufferIndex, binding.metalTextureIndex, binding.metalSamplerIndex,
+	    static_cast<unsigned long long>(expected), static_cast<unsigned long long>(actual));
+	return VK_ERROR_INITIALIZATION_FAILED;
+}
+
 struct DynamicStencilState
 {
 	uint32_t frontCompareMask = UINT32_MAX;
@@ -152,6 +319,10 @@ struct ReplayState
 	VkPipeline computePipeline = VK_NULL_HANDLE;
 	std::array<VkDescriptorSet, 8> graphicsSets {};
 	std::array<VkDescriptorSet, 8> computeSets {};
+	// Push descriptors are copied at record time and retained by each draw or
+	// dispatch snapshot. Updating a later push must not mutate an earlier one.
+	std::array<std::shared_ptr<VkDescriptorSet_T>, 8> graphicsPushSets {};
+	std::array<std::shared_ptr<VkDescriptorSet_T>, 8> computePushSets {};
 	std::array<VkBuffer, 16> vertexBuffers {};
 	std::array<VkDeviceSize, 16> vertexOffsets {};
 	VkBuffer indexBuffer = VK_NULL_HANDLE;
@@ -160,10 +331,16 @@ struct ReplayState
 	std::vector<uint8_t> vertexPushConstants;
 	std::vector<uint8_t> fragmentPushConstants;
 	std::vector<uint8_t> computePushConstants;
+	std::vector<uint8_t> tessControlPushConstants;
+	std::vector<uint8_t> tessEvaluationPushConstants;
 	DynamicStencilState stencil;
 	VkRect2D scissor {};
 	VkViewport viewport {};
 	bool viewportSet = false;
+	std::array<VkViewport, 16> viewports {};
+	std::array<VkRect2D, 16> scissors {};
+	uint32_t viewportMask = 0, scissorMask = 0;
+	uint32_t viewportCount = 0, scissorCount = 0;
 	std::array<VkDeviceSize, 16> vertexStrides {};
 	VkBool32 depthTest = false, depthWrite = false, stencilTest = false, depthBiasEnable = false;
 	VkBool32 rasterizerDiscard = false, primitiveRestart = false;
@@ -432,11 +609,22 @@ uint32_t BytesPerBlock(VkFormat format)
 {
 	switch (format)
 	{
-		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return 8;
+		case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+		case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+		case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+		case VK_FORMAT_BC4_UNORM_BLOCK:
+		case VK_FORMAT_BC4_SNORM_BLOCK: return 8;
 		case VK_FORMAT_BC2_UNORM_BLOCK:
+		case VK_FORMAT_BC2_SRGB_BLOCK:
 		case VK_FORMAT_BC3_UNORM_BLOCK:
 		case VK_FORMAT_BC3_SRGB_BLOCK:
-		case VK_FORMAT_BC7_UNORM_BLOCK: return 16;
+		case VK_FORMAT_BC5_UNORM_BLOCK:
+		case VK_FORMAT_BC5_SNORM_BLOCK:
+		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+		case VK_FORMAT_BC7_UNORM_BLOCK:
+		case VK_FORMAT_BC7_SRGB_BLOCK: return 16;
 		default: return 0;
 	}
 }
@@ -1025,6 +1213,8 @@ spv::ExecutionModel ToExecutionModel(VkShaderStageFlagBits stage)
 	switch (stage)
 	{
 		case VK_SHADER_STAGE_VERTEX_BIT: return spv::ExecutionModelVertex;
+		case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT: return spv::ExecutionModelTessellationControl;
+		case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT: return spv::ExecutionModelTessellationEvaluation;
 		case VK_SHADER_STAGE_FRAGMENT_BIT: return spv::ExecutionModelFragment;
 		case VK_SHADER_STAGE_COMPUTE_BIT: return spv::ExecutionModelGLCompute;
 		default: return spv::ExecutionModelMax;
@@ -1050,6 +1240,7 @@ struct VkShaderModule_T
 struct VkDescriptorSetLayout_T
 {
 	VkDevice device = VK_NULL_HANDLE;
+	VkDescriptorSetLayoutCreateFlags flags = 0;
 	std::vector<VkDescriptorSetLayoutBinding> bindings;
 	std::map<uint32_t, std::vector<VkSampler>> immutableSamplers;
 	std::atomic<bool> alive {true};
@@ -1109,6 +1300,32 @@ struct VkFramebuffer_T
 
 struct VkPipeline_T
 {
+	struct Tessellation
+	{
+		uint32_t inputPoints = 0, outputPoints = 0;
+		uint32_t vertexStride = 0, controlInputStride = 0, controlStride = 0, evaluationStride = 0;
+		uint32_t patchStride = 0, evaluationPatchStride = 0;
+		uint32_t factorStride = 0, controlPushSize = 0, evaluationPushSize = 0;
+		MTLTessellationPartitionMode partition = MTLTessellationPartitionModeInteger;
+		MTLWinding winding = MTLWindingCounterClockwise;
+		bool triangles = true;
+		std::string evaluationSource, evaluationEntry, evaluationOutputType;
+		TessInterface evaluationOutput;
+		__strong id<MTLComputePipelineState> vertex[3] = {nil, nil, nil};
+		__strong id<MTLComputePipelineState> control = nil;
+		__strong id<MTLComputePipelineState> vertexBridge = nil, controlBridge = nil, patchBridge = nil;
+	};
+	std::unique_ptr<Tessellation> tessellation;
+	struct Cull
+	{
+		__strong id<MTLComputePipelineState> vertex[3] = {nil, nil, nil};
+		uint32_t outputStride = 0;
+		bool negativeOneToOne = false;
+		Lumen::MetalVulkan::MetalCullMeshShader mesh;
+		MetalTessellationCapture evaluation;
+		__strong id<MTLComputePipelineState> domain = nil, expandFactors = nil;
+	};
+	std::unique_ptr<Cull> cull;
 	VkDevice device = VK_NULL_HANDLE;
 	VkPipelineLayout layout = VK_NULL_HANDLE;
 	VkRenderPass renderPass = VK_NULL_HANDLE;
@@ -1116,6 +1333,9 @@ struct VkPipeline_T
 	__strong id<MTLRenderPipelineState> renderState = nil;
 	__strong id<MTLRenderPipelineState> renderStateNoColor = nil;
 	__strong MTLRenderPipelineDescriptor* renderDescriptor = nil;
+	// Accessed as MTLMeshRenderPipelineDescriptor only inside the Metal 3
+	// availability guards; the shared Gen4 binary also targets macOS 12.
+	__strong id meshDescriptor = nil;
 	__strong id<MTLFunction> vertexFunctionFlipped = nil;
 	std::unordered_set<VkDynamicState> dynamicStates;
 	struct RenderVariant { __strong id<MTLRenderPipelineState> state = nil; };
@@ -1131,6 +1351,10 @@ struct VkPipeline_T
 	float depthBiasClamp = 0.0f;
 	VkViewport viewport {};
 	bool viewportDynamic = false;
+	std::array<VkViewport, 16> viewports {};
+	std::array<VkRect2D, 16> scissors {};
+	uint32_t viewportCount = 1, scissorCount = 1;
+	bool viewportArrayMode = false;
 	VkRect2D scissor {};
 	bool scissorDynamic = false;
 	std::array<float, 4> blendConstants {};
@@ -1542,6 +1766,7 @@ struct MetalShaderFunctionKeyHash
 
 struct CachedMetalShaderFunction
 {
+	std::vector<StageBinding> activeBindings;
 	__strong id<MTLLibrary> library = nil;
 	__strong id<MTLFunction> function = nil;
 	MTLSize localSize {1, 1, 1};
@@ -1762,7 +1987,7 @@ bool MetalBindingIndicesInRange(const std::vector<StageBinding>& bindings)
 		}
 		const uint32_t lastArrayIndex = binding.count - 1;
 		if ((DescriptorUsesBuffer(binding.type) &&
-		     !MetalIndexInRange(binding.metalBufferIndex, lastArrayIndex, kPushConstantBufferIndex - 1)) ||
+		     !MetalIndexInRange(binding.metalBufferIndex, lastArrayIndex, kBufferSizeBufferIndex - 1)) ||
 		    (DescriptorUsesTexture(binding.type) &&
 		     !MetalIndexInRange(binding.metalTextureIndex, lastArrayIndex, kMaximumMetalTextureIndex)) ||
 		    (DescriptorUsesSampler(binding.type) &&
@@ -1791,7 +2016,8 @@ VkResult CompileMetalFunction(VkDevice device, VkShaderModule module, VkPipeline
 	                          const VkPipelineShaderStageCreateInfo& stageInfo,
 	                          id<MTLFunction>* function, std::vector<StageBinding>* bindings,
 	                          MTLSize* localSize, uint32_t* pushConstantSize, uint32_t vertexInputFourComponentMask,
-	                          bool flipVertexY)
+	                          bool flipVertexY, bool sampleRateShading = false, uint32_t sampleMask = UINT32_MAX,
+	                          bool negativeOneToOne = false, TessCompile* tess = nullptr)
 {
 	if (device == VK_NULL_HANDLE || module == VK_NULL_HANDLE || function == nullptr || bindings == nullptr ||
 	    !module->alive.load(std::memory_order_acquire) || stageInfo.pName == nullptr)
@@ -1812,7 +2038,11 @@ VkResult CompileMetalFunction(VkDevice device, VkShaderModule module, VkPipeline
 	}
 
 #if LUMEN_A64_METAL_SHADER_FUNCTION_CACHE_COMPILED
-	const bool cacheRequested = MetalShaderFunctionCacheSelectorRequested();
+	// The Gen4 cache key predates specialization and multisample lowering.
+	// Keep its proven contract for ordinary shaders; compile these variants
+	// independently until their complete inputs are represented in the key.
+	const bool cacheRequested = tess == nullptr && MetalShaderFunctionCacheSelectorRequested() &&
+	                            stageInfo.pSpecializationInfo == nullptr && !sampleRateShading && sampleMask == UINT32_MAX && !negativeOneToOne;
 	const bool safeMath = cacheRequested && MetalSafeMathAvailable();
 	std::shared_ptr<MetalShaderFunctionCache> cache;
 	MetalShaderFunctionKey cacheKey;
@@ -1831,6 +2061,7 @@ VkResult CompileMetalFunction(VkDevice device, VkShaderModule module, VkPipeline
 			gMetalShaderFunctionCacheTelemetry.hit.store(
 			    true, std::memory_order_relaxed);
 			*function = found->second.function;
+			*bindings = found->second.activeBindings;
 			if (localSize != nullptr) *localSize = found->second.localSize;
 			*pushConstantSize = found->second.pushConstantSize;
 			return VK_SUCCESS;
@@ -1839,7 +2070,39 @@ VkResult CompileMetalFunction(VkDevice device, VkShaderModule module, VkPipeline
 #endif
 
 	MetalSpirvCompiler compiler(module->words);
+	compiler.vertexSubgroupLane = VertexSubgroupLaneRequested();
 	compiler.set_entry_point(stageInfo.pName, model);
+	if (tess != nullptr && tess->mode != TessCompile::Mode::Vertex)
+	{
+		compiler.set_execution_mode(tess->triangles ? spv::ExecutionModeTriangles : spv::ExecutionModeQuads);
+		compiler.set_execution_mode(spv::ExecutionModeOutputVertices, tess->controlPoints);
+	}
+	if (const auto* specialization = stageInfo.pSpecializationInfo)
+	{
+		if ((specialization->mapEntryCount != 0 && specialization->pMapEntries == nullptr) ||
+		    (specialization->dataSize != 0 && specialization->pData == nullptr))
+			return VK_ERROR_INITIALIZATION_FAILED;
+		for (const auto& spec: compiler.get_specialization_constants())
+		{
+			auto& constant = compiler.get_constant(spec.id);
+			const auto& type = compiler.get_type(constant.constant_type);
+			for (uint32_t i = 0; i < specialization->mapEntryCount; ++i)
+			{
+				const auto& entry = specialization->pMapEntries[i];
+				if (entry.constantID != spec.constant_id) continue;
+				const size_t expected = type.basetype == spirv_cross::SPIRType::Boolean ? sizeof(VkBool32) : type.width / 8;
+				if (type.vecsize != 1 || type.columns != 1 || expected == 0 || expected > sizeof(uint64_t) ||
+				    entry.size != expected || entry.offset > specialization->dataSize ||
+				    entry.size > specialization->dataSize - entry.offset)
+					return VK_ERROR_INITIALIZATION_FAILED;
+				constant.m.c[0].r[0].u64 = 0;
+				std::memcpy(&constant.m.c[0].r[0], static_cast<const uint8_t*>(specialization->pData) + entry.offset, expected);
+			}
+			// Bake the selected (or default) value into MSL instead of leaving
+			// an unbound Metal function constant in tiler pipelines.
+			constant.specialization = false;
+		}
+	}
 	uint32_t compiledPushConstantSize = 0;
 	for (const auto& resource: compiler.get_shader_resources().push_constant_buffers)
 	{
@@ -1848,7 +2111,9 @@ VkResult CompileMetalFunction(VkDevice device, VkShaderModule module, VkPipeline
 		compiledPushConstantSize = std::max(compiledPushConstantSize, static_cast<uint32_t>(size));
 	}
 	auto commonOptions = compiler.get_common_options();
-	commonOptions.vertex.flip_vert_y = stage == VK_SHADER_STAGE_VERTEX_BIT && flipVertexY;
+	const bool rasterVertex = stage == VK_SHADER_STAGE_VERTEX_BIT || stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+	commonOptions.vertex.flip_vert_y = rasterVertex && flipVertexY;
+	commonOptions.vertex.fixup_clipspace = rasterVertex && negativeOneToOne;
 	compiler.set_common_options(commonOptions);
 	auto mslOptions = compiler.get_msl_options();
 	mslOptions.platform = TARGET_OS_IPHONE ? spirv_cross::CompilerMSL::Options::iOS
@@ -1856,6 +2121,27 @@ VkResult CompileMetalFunction(VkDevice device, VkShaderModule module, VkPipeline
 	mslOptions.msl_version = spirv_cross::CompilerMSL::Options::make_msl_version(2, 3);
 	mslOptions.enable_decoration_binding = false;
 	mslOptions.force_native_arrays = true;
+	mslOptions.buffer_size_buffer_index = kBufferSizeBufferIndex;
+	mslOptions.force_sample_rate_shading = stage == VK_SHADER_STAGE_FRAGMENT_BIT && sampleRateShading;
+	mslOptions.additional_fixed_sample_mask = stage == VK_SHADER_STAGE_FRAGMENT_BIT ? sampleMask : UINT32_MAX;
+	if (tess != nullptr)
+	{
+		mslOptions.vertex_for_tessellation = tess->mode == TessCompile::Mode::Vertex;
+		mslOptions.vertex_index_type = tess->indexType;
+		mslOptions.multi_patch_workgroup = tess->mode == TessCompile::Mode::Control;
+		mslOptions.raw_buffer_tese_input = tess->mode == TessCompile::Mode::Evaluation;
+		// Preserve CullDistance as a real array in the captured TES record.
+		// The pinned translator's raster interface flattens it inconsistently;
+		// the capture wrapper supplies the output record and invocation ordinal.
+		mslOptions.capture_output_to_buffer = tess->mode == TessCompile::Mode::Evaluation && tess->deferNative;
+		mslOptions.shader_index_buffer_index = kTessIndexBuffer;
+		mslOptions.shader_input_buffer_index = kTessInputBuffer;
+		mslOptions.shader_patch_input_buffer_index = kTessPatchInputBuffer;
+		mslOptions.indirect_params_buffer_index = kTessParamsBuffer;
+		mslOptions.shader_tess_factor_buffer_index = kTessFactorBuffer;
+		mslOptions.shader_patch_output_buffer_index = kTessPatchOutputBuffer;
+		mslOptions.shader_output_buffer_index = kTessOutputBuffer;
+	}
 	compiler.set_msl_options(mslOptions);
 	if (stage == VK_SHADER_STAGE_VERTEX_BIT)
 	{
@@ -1897,11 +2183,53 @@ VkResult CompileMetalFunction(VkDevice device, VkShaderModule module, VkPipeline
 		compiledLocalSize.width = std::max(1u, compiler.get_execution_mode_argument(spv::ExecutionModeLocalSize, 0));
 		compiledLocalSize.height = std::max(1u, compiler.get_execution_mode_argument(spv::ExecutionModeLocalSize, 1));
 		compiledLocalSize.depth = std::max(1u, compiler.get_execution_mode_argument(spv::ExecutionModeLocalSize, 2));
+		spirv_cross::SpecializationConstant x {}, y {}, z {};
+		compiler.get_work_group_size_specialization_constants(x, y, z);
+		if (x.id) compiledLocalSize.width = std::max(1u, compiler.get_constant(x.id).scalar());
+		if (y.id) compiledLocalSize.height = std::max(1u, compiler.get_constant(y.id).scalar());
+		if (z.id) compiledLocalSize.depth = std::max(1u, compiler.get_constant(z.id).scalar());
 		if (localSize != nullptr) *localSize = compiledLocalSize;
 	}
 
 	const std::string source = compiler.compile();
+	if (tess != nullptr)
+	{
+		if (tess->mode != TessCompile::Mode::Vertex) tess->input = compiler.TessLayout(true, false);
+		tess->output = compiler.TessLayout(false, false);
+		if (tess->mode == TessCompile::Mode::Evaluation) tess->patchInput = compiler.TessLayout(true, true);
+		if (tess->mode == TessCompile::Mode::Control) tess->patchOutput = compiler.TessLayout(false, true);
+		if (!tess->input.valid || !tess->output.valid || !tess->patchInput.valid || !tess->patchOutput.valid)
+			return VK_ERROR_FEATURE_NOT_PRESENT;
+	}
+	// A shared Vulkan pipeline layout may contain bindings that this entry
+	// point never uses. Only descriptors emitted into the compiled MSL need
+	// values at dispatch/draw time. Preserve the original Metal indices so
+	// the compiled function, buffer-size side table and replay stay identical.
+	bindings->erase(std::remove_if(bindings->begin(), bindings->end(), [&](const StageBinding& binding) {
+		return !compiler.is_msl_resource_binding_used(model, binding.set, binding.binding);
+	}), bindings->end());
 	const std::string entry = compiler.get_cleansed_entry_point_name(stageInfo.pName, model);
+	if (tess != nullptr)
+	{
+		tess->source = source;
+		tess->entry = entry;
+		tess->outputType = compiler.TessOutputType();
+		if (const char* dump = std::getenv("LUMEN_METAL_TESS_SHADER_DUMP"); dump != nullptr && *dump != '\0')
+		{
+			const std::string path = std::string(dump) + "." + std::to_string(uint32_t(stage)) + ".metal";
+			if (FILE* file = std::fopen(path.c_str(), "wb"))
+			{
+				std::fwrite(source.data(), 1, source.size(), file);
+				std::fclose(file);
+			}
+		}
+	}
+	if (tess != nullptr && tess->deferNative)
+	{
+		*function = nil;
+		*pushConstantSize = compiledPushConstantSize;
+		return VK_SUCCESS;
+	}
 	NSString* sourceString = [[NSString alloc] initWithBytes:source.data()
 	                                                 length:source.size()
 	                                               encoding:NSUTF8StringEncoding];
@@ -1940,6 +2268,7 @@ VkResult CompileMetalFunction(VkDevice device, VkShaderModule module, VkPipeline
 		gMetalShaderFunctionCacheTelemetry.compile.store(
 		    true, std::memory_order_relaxed);
 		CachedMetalShaderFunction compiled;
+		compiled.activeBindings = *bindings;
 		compiled.library = library;
 		compiled.function = compiledFunction;
 		compiled.localSize = compiledLocalSize;
@@ -1964,6 +2293,209 @@ VkResult CompileMetalFunction(VkDevice device, VkShaderModule module, VkPipeline
 	*function = compiledFunction;
 	*pushConstantSize = compiledPushConstantSize;
 	return VK_SUCCESS;
+}
+
+VkResult CreateTessBridge(VkDevice device, const TessInterface& producer, const TessInterface& consumer,
+	                          id<MTLComputePipelineState> __strong* pipeline)
+{
+	*pipeline = nil;
+	if (consumer.stride == 0) return VK_SUCCESS;
+	if (!producer.valid || !consumer.valid || producer.stride == 0) return VK_ERROR_FEATURE_NOT_PRESENT;
+	std::string source = "#include <metal_stdlib>\nusing namespace metal;\n"
+	    "kernel void tess_bridge(device const uchar* src [[buffer(0)]], device uchar* dst [[buffer(1)]], "
+	    "constant uint& count [[buffer(2)]], uint i [[thread_position_in_grid]]) { if(i>=count)return;";
+	bool identical = producer.stride == consumer.stride;
+	for (const auto& target: consumer.fields)
+	{
+		const auto found = std::find_if(producer.fields.begin(), producer.fields.end(), [&](const auto& field) { return field.key == target.key; });
+		if (found == producer.fields.end() || found->size < target.size)
+		{
+			std::fprintf(stderr, "[LUMEN_METAL] tessellation interface mismatch: key=0x%x producer_size=%u consumer_size=%u\n",
+			    target.key, found == producer.fields.end() ? 0 : found->size, target.size);
+			return VK_ERROR_FEATURE_NOT_PRESENT;
+		}
+		identical &= found->offset == target.offset;
+		source += "for(uint b=0;b<" + std::to_string(target.size) + ";++b)dst[i*" + std::to_string(consumer.stride) +
+		    "+" + std::to_string(target.offset) + "+b]=src[i*" + std::to_string(producer.stride) + "+" +
+		    std::to_string(found->offset) + "+b];";
+	}
+	if (identical) return VK_SUCCESS;
+	source += "}";
+	NSError* error = nil;
+	id<MTLLibrary> library = [device->metalDevice newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()] options:nil error:&error];
+	if (library == nil) { PrintMetalError("tessellation interface bridge", error); return VK_ERROR_INVALID_SHADER_NV; }
+	*pipeline = [device->metalDevice newComputePipelineStateWithFunction:[library newFunctionWithName:@"tess_bridge"] error:&error];
+	if (*pipeline == nil) { PrintMetalError("tessellation bridge pipeline", error); return VK_ERROR_INVALID_SHADER_NV; }
+	return VK_SUCCESS;
+}
+
+VkResult CompileTessellation(VkPipeline pipeline, const VkGraphicsPipelineCreateInfo& info, bool flipY,
+                             bool negativeOneToOne, id<MTLFunction>* evaluation,
+                             std::vector<StageBinding>* allBindings)
+{
+	const VkPipelineShaderStageCreateInfo *vertex = nullptr, *control = nullptr, *eval = nullptr;
+	for (uint32_t i = 0; i < info.stageCount; ++i)
+	{
+		const auto& stage = info.pStages[i];
+		if (stage.stage == VK_SHADER_STAGE_VERTEX_BIT) vertex = &stage;
+		else if (stage.stage == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT) control = &stage;
+		else if (stage.stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT) eval = &stage;
+	}
+	if (!vertex || !control || !eval || info.pTessellationState == nullptr ||
+	    info.pInputAssemblyState->topology != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST ||
+	    info.pInputAssemblyState->primitiveRestartEnable ||
+	    info.pVertexInputState->vertexAttributeDescriptionCount != 0 ||
+	    info.pTessellationState->patchControlPoints == 0 || info.pTessellationState->patchControlPoints > 32)
+		return VK_ERROR_FEATURE_NOT_PRESENT;
+	spirv_cross::Compiler controlIR(control->module->words), evalIR(eval->module->words);
+	controlIR.set_entry_point(control->pName, spv::ExecutionModelTessellationControl);
+	evalIR.set_entry_point(eval->pName, spv::ExecutionModelTessellationEvaluation);
+	const auto& modes = evalIR.get_execution_mode_bitset();
+	evalIR.update_active_builtins();
+	const bool cullOutput = evalIR.has_active_builtin(spv::BuiltInCullDistance, spv::StorageClassOutput);
+	if ((!modes.get(spv::ExecutionModeTriangles) && !modes.get(spv::ExecutionModeQuads)) || modes.get(spv::ExecutionModePointMode))
+		return VK_ERROR_FEATURE_NOT_PRESENT;
+	auto tess = std::make_unique<VkPipeline_T::Tessellation>();
+	tess->inputPoints = info.pTessellationState->patchControlPoints;
+	tess->outputPoints = controlIR.get_execution_mode_argument(spv::ExecutionModeOutputVertices);
+	if (tess->outputPoints == 0 || tess->outputPoints > 32) return VK_ERROR_FEATURE_NOT_PRESENT;
+	tess->triangles = modes.get(spv::ExecutionModeTriangles);
+	tess->factorStride = tess->triangles ? sizeof(MTLTriangleTessellationFactorsHalf) : sizeof(MTLQuadTessellationFactorsHalf);
+	tess->partition = modes.get(spv::ExecutionModeSpacingFractionalOdd) ? MTLTessellationPartitionModeFractionalOdd :
+	    modes.get(spv::ExecutionModeSpacingFractionalEven) ? MTLTessellationPartitionModeFractionalEven : MTLTessellationPartitionModeInteger;
+	tess->winding = modes.get(spv::ExecutionModeVertexOrderCw) ? MTLWindingClockwise : MTLWindingCounterClockwise;
+	TessCompile vertexCompile, controlCompile, evalCompile;
+	controlCompile.mode = TessCompile::Mode::Control;
+	evalCompile.mode = TessCompile::Mode::Evaluation;
+	evalCompile.deferNative = cullOutput;
+	controlCompile.controlPoints = evalCompile.controlPoints = tess->outputPoints;
+	controlCompile.triangles = evalCompile.triangles = tess->triangles;
+	NSError* error = nil;
+	for (uint32_t indexType = 0; indexType < 3; ++indexType)
+	{
+		vertexCompile.indexType = indexType == 0 ? spirv_cross::CompilerMSL::Options::IndexType::None :
+		    indexType == 1 ? spirv_cross::CompilerMSL::Options::IndexType::UInt16 : spirv_cross::CompilerMSL::Options::IndexType::UInt32;
+		id<MTLFunction> function = nil;
+		std::vector<StageBinding> bindings;
+		const auto result = CompileMetalFunction(pipeline->device, vertex->module, info.layout, *vertex, &function,
+		    &bindings, nullptr, &pipeline->vertexPushConstantSize, 0, false, false, UINT32_MAX, false, &vertexCompile);
+		if (result != VK_SUCCESS) return result;
+		if (MetalBufferCount(bindings) > kTessIndexBuffer) return VK_ERROR_FEATURE_NOT_PRESENT;
+		tess->vertex[indexType] = [pipeline->device->metalDevice newComputePipelineStateWithFunction:function error:&error];
+		if (tess->vertex[indexType] == nil) { PrintMetalError("tessellation vertex capture", error); return VK_ERROR_INVALID_SHADER_NV; }
+		if (indexType == 0) allBindings->insert(allBindings->end(), bindings.begin(), bindings.end());
+	}
+	id<MTLFunction> controlFunction = nil;
+	std::vector<StageBinding> controlBindings, evalBindings;
+	auto result = CompileMetalFunction(pipeline->device, control->module, info.layout, *control, &controlFunction,
+	    &controlBindings, nullptr, &tess->controlPushSize, 0, false, false, UINT32_MAX, false, &controlCompile);
+	if (result != VK_SUCCESS) return result;
+	result = CompileMetalFunction(pipeline->device, eval->module, info.layout, *eval, evaluation,
+	    &evalBindings, nullptr, &tess->evaluationPushSize, 0, cullOutput ? false : flipY, false, UINT32_MAX,
+	    cullOutput ? false : negativeOneToOne, &evalCompile);
+	if (result != VK_SUCCESS) return result;
+	if (MetalBufferCount(controlBindings) > kTessIndexBuffer || MetalBufferCount(evalBindings) > kTessIndexBuffer)
+		return VK_ERROR_FEATURE_NOT_PRESENT;
+	tess->control = [pipeline->device->metalDevice newComputePipelineStateWithFunction:controlFunction error:&error];
+	if (tess->control == nil) { PrintMetalError("tessellation control pipeline", error); return VK_ERROR_INVALID_SHADER_NV; }
+	if (tess->outputPoints > tess->control.maxTotalThreadsPerThreadgroup) return VK_ERROR_FEATURE_NOT_PRESENT;
+	result = CreateTessBridge(pipeline->device, vertexCompile.output, controlCompile.input, &tess->vertexBridge);
+	if (result != VK_SUCCESS) return result;
+	result = CreateTessBridge(pipeline->device, controlCompile.output, evalCompile.input, &tess->controlBridge);
+	if (result != VK_SUCCESS) return result;
+	result = CreateTessBridge(pipeline->device, controlCompile.patchOutput, evalCompile.patchInput, &tess->patchBridge);
+	if (result != VK_SUCCESS) return result;
+	tess->vertexStride = vertexCompile.output.stride;
+	tess->controlInputStride = controlCompile.input.stride;
+	tess->controlStride = controlCompile.output.stride;
+	tess->evaluationStride = evalCompile.input.stride;
+	tess->patchStride = controlCompile.patchOutput.stride;
+	tess->evaluationPatchStride = evalCompile.patchInput.stride;
+	tess->evaluationSource = std::move(evalCompile.source);
+	tess->evaluationEntry = std::move(evalCompile.entry);
+	tess->evaluationOutputType = std::move(evalCompile.outputType);
+	tess->evaluationOutput = std::move(evalCompile.output);
+	if (cullOutput)
+	{
+		if (@available(macOS 13.0, iOS 16.0, *))
+		{
+		pipeline->cull = std::make_unique<VkPipeline_T::Cull>();
+		pipeline->cull->negativeOneToOne = negativeOneToOne;
+		result = CreateMetalTessellationCapture(pipeline->device->metalDevice, tess->evaluationSource,
+		    tess->evaluationEntry, tess->evaluationOutputType, tess->triangles, &pipeline->cull->evaluation);
+		if (result != VK_SUCCESS) return result;
+		pipeline->cull->outputStride = pipeline->cull->evaluation.outputStride;
+		if (pipeline->cull->outputStride != tess->evaluationOutput.stride) return VK_ERROR_FEATURE_NOT_PRESENT;
+		std::vector<Lumen::MetalVulkan::MetalCullOutputField> fields;
+		for (const auto& field: tess->evaluationOutput.fields) fields.push_back({field.name, field.key, field.interpolationFlags});
+		std::string diagnostic;
+		result = Lumen::MetalVulkan::CreateMetalCullMeshShader(pipeline->device->metalDevice,
+		    pipeline->cull->evaluation.source, tess->evaluationOutputType, fields, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+		    &pipeline->cull->mesh, &diagnostic);
+		if (result != VK_SUCCESS) { std::fprintf(stderr, "[LUMEN_METAL] tessellation cull mesh: %s\n", diagnostic.c_str()); return result; }
+		MTLCompileOptions* options = [MTLCompileOptions new];
+		options.languageVersion = MTLLanguageVersion3_0;
+		if (@available(macOS 15.0, iOS 18.0, *)) options.mathMode = MTLMathModeSafe;
+		else
+		{
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+			options.fastMathEnabled = NO;
+#pragma clang diagnostic pop
+		}
+		id<MTLLibrary> library = [pipeline->device->metalDevice newLibraryWithSource:[NSString stringWithUTF8String:LumenSoftwareTessellatorSource()]
+		    options:options error:&error];
+		if (library == nil) { PrintMetalError("tessellation domain", error); return VK_ERROR_INVALID_SHADER_NV; }
+		pipeline->cull->domain = [pipeline->device->metalDevice newComputePipelineStateWithFunction:[library newFunctionWithName:@"lumen_tessellate_domain"] error:&error];
+		pipeline->cull->expandFactors = [pipeline->device->metalDevice newComputePipelineStateWithFunction:[library newFunctionWithName:@"lumen_expand_tess_factors"] error:&error];
+		if (pipeline->cull->domain == nil || pipeline->cull->expandFactors == nil) return VK_ERROR_INVALID_SHADER_NV;
+		}
+		else return VK_ERROR_FEATURE_NOT_PRESENT;
+	}
+	allBindings->insert(allBindings->end(), controlBindings.begin(), controlBindings.end());
+	allBindings->insert(allBindings->end(), evalBindings.begin(), evalBindings.end());
+	pipeline->tessellation = std::move(tess);
+	return VK_SUCCESS;
+}
+
+bool ShaderWritesCullDistance(const VkPipelineShaderStageCreateInfo& stage)
+{
+	spirv_cross::Compiler compiler(stage.module->words);
+	compiler.set_entry_point(stage.pName, ToExecutionModel(static_cast<VkShaderStageFlagBits>(stage.stage)));
+	compiler.update_active_builtins();
+	return compiler.has_active_builtin(spv::BuiltInCullDistance, spv::StorageClassOutput);
+}
+
+VkResult CompileCullVertex(VkPipeline pipeline, const VkPipelineShaderStageCreateInfo& stage,
+                           bool negativeOneToOne, std::vector<StageBinding>* bindings)
+{
+	if (!Lumen::MetalVulkan::MetalCullDistanceSupported(pipeline->device->metalDevice)) return VK_ERROR_FEATURE_NOT_PRESENT;
+	pipeline->cull = std::make_unique<VkPipeline_T::Cull>();
+	pipeline->cull->negativeOneToOne = negativeOneToOne;
+	TessCompile capture;
+	NSError* error = nil;
+	for (uint32_t index = 0; index < 3; ++index)
+	{
+		capture.indexType = index == 0 ? spirv_cross::CompilerMSL::Options::IndexType::None :
+		    index == 1 ? spirv_cross::CompilerMSL::Options::IndexType::UInt16 : spirv_cross::CompilerMSL::Options::IndexType::UInt32;
+		id<MTLFunction> function = nil;
+		std::vector<StageBinding> stageBindings;
+		const auto result = CompileMetalFunction(pipeline->device, stage.module, pipeline->layout, stage, &function,
+		    &stageBindings, nullptr, &pipeline->vertexPushConstantSize, 0, false, false, UINT32_MAX, false, &capture);
+		if (result != VK_SUCCESS) return result;
+		if (MetalBufferCount(stageBindings) > kTessIndexBuffer) return VK_ERROR_FEATURE_NOT_PRESENT;
+		pipeline->cull->vertex[index] = [pipeline->device->metalDevice newComputePipelineStateWithFunction:function error:&error];
+		if (pipeline->cull->vertex[index] == nil) { PrintMetalError("cull vertex capture", error); return VK_ERROR_INVALID_SHADER_NV; }
+		if (index == 0) *bindings = std::move(stageBindings);
+	}
+	pipeline->cull->outputStride = capture.output.stride;
+	std::vector<Lumen::MetalVulkan::MetalCullOutputField> fields;
+	for (const auto& field: capture.output.fields) fields.push_back({field.name, field.key, field.interpolationFlags});
+	std::string diagnostic;
+	const auto result = Lumen::MetalVulkan::CreateMetalCullMeshShader(pipeline->device->metalDevice, capture.source,
+	    capture.outputType, fields, pipeline->topology, &pipeline->cull->mesh, &diagnostic);
+	if (result != VK_SUCCESS) std::fprintf(stderr, "[LUMEN_METAL] cull mesh: %s\n", diagnostic.c_str());
+	return result;
 }
 
 id<MTLDepthStencilState> CreateDepthStencilStateUncached(
@@ -2045,9 +2577,10 @@ id<MTLDepthStencilState> GetDepthStencilState(
 }
 
 VkResult BindDescriptorResources(Lumen::MetalVulkan::EncodingContext& context, const std::shared_ptr<ReplayState>& state,
-	                             VkPipelineBindPoint bindPoint);
+	                             VkPipelineBindPoint bindPoint, VkShaderStageFlags stageFilter = 0, bool computeStage = false);
 
-void DeclareDeviceAddressResources(VkDevice device, Lumen::MetalVulkan::EncodingContext& context)
+void DeclareDeviceAddressResources(VkDevice device, Lumen::MetalVulkan::EncodingContext& context,
+                                   MTLRenderStages stages = MTLRenderStageVertex | MTLRenderStageFragment)
 {
 	// Physical pointers can reach buffers absent from the descriptor set. Metal
 	// needs explicit residency/hazard declarations for every such allocation.
@@ -2057,7 +2590,7 @@ void DeclareDeviceAddressResources(VkDevice device, Lumen::MetalVulkan::Encoding
 		if (buffer->metalBuffer == nil) continue;
 		if (context.renderEncoder != nil)
 			[context.renderEncoder useResource:buffer->metalBuffer usage:MTLResourceUsageRead | MTLResourceUsageWrite
-			                          stages:MTLRenderStageVertex | MTLRenderStageFragment];
+			                          stages:stages];
 		if (context.computeEncoder != nil)
 			[context.computeEncoder useResource:buffer->metalBuffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
 		std::lock_guard bufferLock(buffer->mutex);
@@ -2077,15 +2610,33 @@ id<MTLRenderPipelineState> ResolveRenderState(VkPipeline pipeline, const ReplayS
 	if (dynamicStride)
 		for (size_t i = 0; i < state.vertexStrides.size(); ++i)
 			if (pipeline->vertexBindingUsed[i]) key[i] = state.vertexStrides[i];
-	const bool flipY = pipeline->viewportDynamic && state.viewport.height >= 0;
+	const bool flipY = pipeline->viewportDynamic && (pipeline->viewportArrayMode || state.viewport.height >= 0);
 	const auto topology = pipeline->dynamicStates.count(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY) ? state.topology : pipeline->topology;
-    const bool triangles = topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST || topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+    const bool triangles = topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST || topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN ||
+                           (topology == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST && pipeline->tessellation != nullptr);
     const bool discard = (dynamicDiscard && state.rasterizerDiscard) ||
                          (dynamicCull && triangles && state.cullMode == VK_CULL_MODE_FRONT_AND_BACK);
 	key[16] = (state.colorWriteEnabled ? 1 : 0) | (flipY ? 2 : 0) | (discard ? 4 : 0);
 	std::lock_guard lock(pipeline->renderVariantMutex);
 	const auto found = pipeline->renderVariants.find(key);
 	if (found != pipeline->renderVariants.end()) return found->second.state;
+	if (pipeline->cull)
+	{
+		if (@available(macOS 13.0, iOS 16.0, *))
+		{
+			MTLMeshRenderPipelineDescriptor* descriptor = [pipeline->meshDescriptor copy];
+			if (discard) descriptor.rasterizationEnabled = NO;
+			if (!state.colorWriteEnabled)
+				for (size_t i = 0; i < 8; ++i) descriptor.colorAttachments[i].writeMask = MTLColorWriteMaskNone;
+			NSError* error = nil;
+			id<MTLRenderPipelineState> native = [pipeline->device->metalDevice newRenderPipelineStateWithMeshDescriptor:descriptor
+			    options:MTLPipelineOptionNone reflection:nil error:&error];
+			if (native == nil) { PrintMetalError("dynamic cull mesh pipeline", error); return nil; }
+			pipeline->renderVariants.emplace(key, VkPipeline_T::RenderVariant{native});
+			return native;
+		}
+		return nil;
+	}
 	MTLRenderPipelineDescriptor* descriptor = [pipeline->renderDescriptor copy];
 	if (flipY) descriptor.vertexFunction = pipeline->vertexFunctionFlipped;
 	if (discard) descriptor.rasterizationEnabled = NO;
@@ -2155,7 +2706,7 @@ VkResult ApplyGraphicsState(Lumen::MetalVulkan::EncodingContext& context, const 
 		return VK_ERROR_FEATURE_NOT_PRESENT;
 	}
 	[context.renderEncoder setRenderPipelineState:renderState];
-	DeclareDeviceAddressResources(pipeline->device, context);
+	DeclareDeviceAddressResources(pipeline->device, context, pipeline->cull ? MTLRenderStageFragment : MTLRenderStageVertex | MTLRenderStageFragment);
 	const auto dynamic = [&](VkDynamicState value) { return pipeline->dynamicStates.count(value) != 0; };
 	const auto cull = dynamic(VK_DYNAMIC_STATE_CULL_MODE)
 	    ? (state->cullMode == VK_CULL_MODE_FRONT_BIT ? MTLCullModeFront :
@@ -2172,14 +2723,38 @@ VkResult ApplyGraphicsState(Lumen::MetalVulkan::EncodingContext& context, const 
 	                                 clamp:!bias ? 0 : dynamic(VK_DYNAMIC_STATE_DEPTH_BIAS) ? state->depthBiasClamp : pipeline->depthBiasClamp];
 	const auto& blend = dynamic(VK_DYNAMIC_STATE_BLEND_CONSTANTS) ? state->blendConstants : pipeline->blendConstants;
 	[context.renderEncoder setBlendColorRed:blend[0] green:blend[1] blue:blend[2] alpha:blend[3]];
-	auto sourceViewport = pipeline->viewportDynamic ? state->viewport : pipeline->viewport;
-	if (sourceViewport.height < 0) { sourceViewport.y += sourceViewport.height; sourceViewport.height = -sourceViewport.height; }
-	MTLViewport viewport {sourceViewport.x, sourceViewport.y, sourceViewport.width,
-	                      sourceViewport.height, sourceViewport.minDepth, sourceViewport.maxDepth};
-	[context.renderEncoder setViewport:viewport];
+	if (pipeline->viewportArrayMode)
+	{
+		const uint32_t count = dynamic(VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT) ? state->viewportCount : pipeline->viewportCount;
+		const uint32_t scissors = dynamic(VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT) ? state->scissorCount : pipeline->scissorCount;
+		if (count == 0 || count > 16 || scissors != count ||
+		    (pipeline->viewportDynamic && (state->viewportMask & ((1u << count) - 1)) != ((1u << count) - 1)) ||
+		    (pipeline->scissorDynamic && (state->scissorMask & ((1u << count) - 1)) != ((1u << count) - 1)))
+			return VK_ERROR_INITIALIZATION_FAILED;
+		std::array<MTLViewport, 16> nativeViewports {};
+		std::array<MTLScissorRect, 16> nativeScissors {};
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			const auto& v = pipeline->viewportDynamic ? state->viewports[i] : pipeline->viewports[i];
+			// Metal accepts signed heights. Keeping each sign, with one coherent
+			// shader Y inversion, also supports mixed positive/negative arrays.
+			nativeViewports[i] = {v.x, v.y, v.width, v.height, v.minDepth, v.maxDepth};
+			const auto& r = pipeline->scissorDynamic ? state->scissors[i] : pipeline->scissors[i];
+			nativeScissors[i] = {static_cast<NSUInteger>(r.offset.x), static_cast<NSUInteger>(r.offset.y), r.extent.width, r.extent.height};
+		}
+		[context.renderEncoder setViewports:nativeViewports.data() count:count];
+		[context.renderEncoder setScissorRects:nativeScissors.data() count:count];
+	} else
+	{
+		auto sourceViewport = pipeline->viewportDynamic ? state->viewport : pipeline->viewport;
+		if (sourceViewport.height < 0) { sourceViewport.y += sourceViewport.height; sourceViewport.height = -sourceViewport.height; }
+		MTLViewport viewport {sourceViewport.x, sourceViewport.y, sourceViewport.width,
+		                      sourceViewport.height, sourceViewport.minDepth, sourceViewport.maxDepth};
+		[context.renderEncoder setViewport:viewport];
+	}
 	// Bind/state-only records may precede vkCmdSetScissor. Draw snapshots require
 	// the dynamic value; until then there is no scissor state to apply.
-	if (!pipeline->scissorDynamic || state->scissorSet)
+	if (!pipeline->viewportArrayMode && (!pipeline->scissorDynamic || state->scissorSet))
 	{
 		const auto& rectangle = pipeline->scissorDynamic ? state->scissor : pipeline->scissor;
 		MTLScissorRect scissor {static_cast<NSUInteger>(std::max(0, rectangle.offset.x)),
@@ -2231,7 +2806,8 @@ VkResult ApplyGraphicsState(Lumen::MetalVulkan::EncodingContext& context, const 
 			                               atIndex:metalIndex];
 		}
 	}
-	const auto vertexPushResult = BindPushConstants(state->vertexPushConstants, pipeline->vertexPushConstantSize,
+	const auto vertexPushResult = pipeline->cull ? VK_SUCCESS : BindPushConstants(pipeline->tessellation ? state->tessEvaluationPushConstants : state->vertexPushConstants,
+	    pipeline->tessellation ? pipeline->tessellation->evaluationPushSize : pipeline->vertexPushConstantSize,
 	    [&](const void* data, size_t size) {
 		    [context.renderEncoder setVertexBytes:data length:size atIndex:kPushConstantBufferIndex];
 	    });
@@ -2263,12 +2839,17 @@ VkResult ApplyComputeState(Lumen::MetalVulkan::EncodingContext& context, const s
 	    [&](const void* data, size_t size) {
 		    [context.computeEncoder setBytes:data length:size atIndex:kPushConstantBufferIndex];
 	    });
-	if (pushResult != VK_SUCCESS) return pushResult;
+	if (pushResult != VK_SUCCESS)
+	{
+		std::fprintf(stderr, "[LUMEN_METAL] compute push constants failed: declared=%u recorded=%zu result=%d\n",
+		    pipeline->computePushConstantSize, state->computePushConstants.size(), int(pushResult));
+		return pushResult;
+	}
 	return BindDescriptorResources(context, state, VK_PIPELINE_BIND_POINT_COMPUTE);
 }
 
 VkResult BindDescriptorResources(Lumen::MetalVulkan::EncodingContext& context, const std::shared_ptr<ReplayState>& state,
-	                             VkPipelineBindPoint bindPoint)
+	                             VkPipelineBindPoint bindPoint, VkShaderStageFlags stageFilter, bool computeStage)
 {
 	VkPipeline pipeline = bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS ? state->graphicsPipeline : state->computePipeline;
 	if (pipeline == VK_NULL_HANDLE)
@@ -2276,18 +2857,26 @@ VkResult BindDescriptorResources(Lumen::MetalVulkan::EncodingContext& context, c
 		return VK_SUCCESS;
 	}
 	const auto& sets = bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS ? state->graphicsSets : state->computeSets;
+	std::array<std::array<uint32_t, 32>, 3> bufferSizes {};
 	for (const auto& mapped: pipeline->stageBindings)
 	{
+		if (stageFilter != 0 && (mapped.stage & stageFilter) == 0) continue;
+		if (stageFilter == 0 && ((pipeline->tessellation &&
+		    (mapped.stage == VK_SHADER_STAGE_VERTEX_BIT || mapped.stage == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT)) ||
+		    (pipeline->cull && mapped.stage != VK_SHADER_STAGE_FRAGMENT_BIT))) continue;
+		const bool vertexStage = !computeStage && (mapped.stage == VK_SHADER_STAGE_VERTEX_BIT || mapped.stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
+		const bool fragmentStage = !computeStage && mapped.stage == VK_SHADER_STAGE_FRAGMENT_BIT;
 		if (mapped.set >= sets.size() || sets[mapped.set] == VK_NULL_HANDLE)
 		{
-			return VK_ERROR_INITIALIZATION_FAILED;
+			return DescriptorBindingFailure(mapped, 0, "descriptor-set-missing");
 		}
 		VkDescriptorSet set = sets[mapped.set];
 		std::lock_guard lock(set->mutex);
 		auto found = set->values.find(mapped.binding);
 		if (found == set->values.end() || found->second.size() < mapped.count)
 		{
-			return VK_ERROR_INITIALIZATION_FAILED;
+			return DescriptorBindingFailure(mapped, 0, "descriptor-binding-missing-or-short", mapped.count,
+			    found == set->values.end() ? 0 : found->second.size());
 		}
 		for (uint32_t index = 0; index < mapped.count; ++index)
 		{
@@ -2296,36 +2885,49 @@ VkResult BindDescriptorResources(Lumen::MetalVulkan::EncodingContext& context, c
 			{
 				if (!MetalIndexInRange(mapped.metalBufferIndex, index, kMaximumMetalBufferIndex))
 				{
-					return VK_ERROR_INITIALIZATION_FAILED;
+					return DescriptorBindingFailure(mapped, index, "metal-buffer-index");
 				}
 				if (value.buffer == VK_NULL_HANDLE || value.buffer->metalBuffer == nil)
 				{
-					return VK_ERROR_INITIALIZATION_FAILED;
+					return DescriptorBindingFailure(mapped, index, "buffer-unbound", mapped.type, value.type);
 				}
 				const uint32_t metalIndex = mapped.metalBufferIndex + index;
+				if (value.offset > value.buffer->size)
+					return DescriptorBindingFailure(mapped, index, "buffer-offset", value.buffer->size, value.offset);
+				const VkDeviceSize available = value.buffer->size - value.offset;
+				const VkDeviceSize range = value.range == VK_WHOLE_SIZE ? available : value.range;
+				if (range > available || range > UINT32_MAX)
+					return DescriptorBindingFailure(mapped, index, "buffer-range", std::min<uint64_t>(available, UINT32_MAX), range);
+				const uint32_t stageIndex = vertexStage ? 0 : fragmentStage ? 1 : 2;
+				bufferSizes[stageIndex][metalIndex] = static_cast<uint32_t>(range);
 				const NSUInteger offset = BufferMetalOffset(value.buffer, value.offset);
-				if (mapped.stage == VK_SHADER_STAGE_VERTEX_BIT)
+				if (vertexStage)
 					[context.renderEncoder setVertexBuffer:value.buffer->metalBuffer offset:offset atIndex:metalIndex];
-				else if (mapped.stage == VK_SHADER_STAGE_FRAGMENT_BIT)
+				else if (fragmentStage)
 					[context.renderEncoder setFragmentBuffer:value.buffer->metalBuffer offset:offset atIndex:metalIndex];
 				else
 					[context.computeEncoder setBuffer:value.buffer->metalBuffer offset:offset atIndex:metalIndex];
 			}
 			if (DescriptorUsesTexture(mapped.type))
 			{
+				// A 2D view of a volume is attachment-only in this Vulkan 1.2
+				// implementation. Sampling it would require 2D-view-of-3D shader
+				// lowering, which is not advertised or silently approximated.
+				if (value.imageView != VK_NULL_HANDLE && value.imageView->volumeAttachment)
+					return VK_ERROR_FEATURE_NOT_PRESENT;
 				if (!MetalIndexInRange(mapped.metalTextureIndex, index, kMaximumMetalTextureIndex))
 				{
-					return VK_ERROR_INITIALIZATION_FAILED;
+					return DescriptorBindingFailure(mapped, index, "metal-texture-index");
 				}
 				id<MTLTexture> texture = value.imageView != VK_NULL_HANDLE ? value.imageView->metalTexture : nil;
 				if (texture == nil)
 				{
-					return VK_ERROR_INITIALIZATION_FAILED;
+					return DescriptorBindingFailure(mapped, index, "texture-unbound", mapped.type, value.type);
 				}
 				const uint32_t metalIndex = mapped.metalTextureIndex + index;
-				if (mapped.stage == VK_SHADER_STAGE_VERTEX_BIT)
+				if (vertexStage)
 					[context.renderEncoder setVertexTexture:texture atIndex:metalIndex];
-				else if (mapped.stage == VK_SHADER_STAGE_FRAGMENT_BIT)
+				else if (fragmentStage)
 					[context.renderEncoder setFragmentTexture:texture atIndex:metalIndex];
 				else
 					[context.computeEncoder setTexture:texture atIndex:metalIndex];
@@ -2334,23 +2936,32 @@ VkResult BindDescriptorResources(Lumen::MetalVulkan::EncodingContext& context, c
 			{
 				if (!MetalIndexInRange(mapped.metalSamplerIndex, index, kMaximumMetalSamplerIndex))
 				{
-					return VK_ERROR_INITIALIZATION_FAILED;
+					return DescriptorBindingFailure(mapped, index, "metal-sampler-index");
 				}
 				id<MTLSamplerState> sampler = value.sampler != VK_NULL_HANDLE ? value.sampler->metalSampler : nil;
 				if (sampler == nil)
 				{
-					return VK_ERROR_INITIALIZATION_FAILED;
+					return DescriptorBindingFailure(mapped, index, "sampler-unbound", mapped.type, value.type);
 				}
 				const uint32_t metalIndex = mapped.metalSamplerIndex + index;
-				if (mapped.stage == VK_SHADER_STAGE_VERTEX_BIT)
+				if (vertexStage)
 					[context.renderEncoder setVertexSamplerState:sampler atIndex:metalIndex];
-				else if (mapped.stage == VK_SHADER_STAGE_FRAGMENT_BIT)
+				else if (fragmentStage)
 					[context.renderEncoder setFragmentSamplerState:sampler atIndex:metalIndex];
 				else
 					[context.computeEncoder setSamplerState:sampler atIndex:metalIndex];
 			}
 		}
 	}
+	// SPIRV-Cross lowers OpArrayLength through this side table, indexed by the
+	// remapped Metal buffer binding. Descriptor range, not backing allocation
+	// length, is the Vulkan-visible bound (also for pushed descriptors).
+	if (bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS && !computeStage)
+	{
+		if (!pipeline->cull) [context.renderEncoder setVertexBytes:bufferSizes[0].data() length:sizeof(bufferSizes[0]) atIndex:kBufferSizeBufferIndex];
+		[context.renderEncoder setFragmentBytes:bufferSizes[1].data() length:sizeof(bufferSizes[1]) atIndex:kBufferSizeBufferIndex];
+	} else
+		[context.computeEncoder setBytes:bufferSizes[2].data() length:sizeof(bufferSizes[2]) atIndex:kBufferSizeBufferIndex];
 	return VK_SUCCESS;
 }
 
@@ -2370,29 +2981,297 @@ VkResult InvalidateComputeStorageShadows(const std::shared_ptr<ReplayState>& sta
 		}
 		if (mapped.set >= state->computeSets.size() || state->computeSets[mapped.set] == VK_NULL_HANDLE)
 		{
-			return VK_ERROR_INITIALIZATION_FAILED;
+			return DescriptorBindingFailure(mapped, 0, "shadow-descriptor-set-missing");
 		}
 		VkDescriptorSet set = state->computeSets[mapped.set];
 		std::lock_guard setLock(set->mutex);
 		auto found = set->values.find(mapped.binding);
 		if (found == set->values.end() || found->second.size() < mapped.count)
 		{
-			return VK_ERROR_INITIALIZATION_FAILED;
+			return DescriptorBindingFailure(mapped, 0, "shadow-descriptor-binding-missing-or-short", mapped.count,
+			    found == set->values.end() ? 0 : found->second.size());
 		}
 		for (uint32_t index = 0; index < mapped.count; ++index)
 		{
 			const DescriptorValue& value = found->second[index];
 			if (value.buffer == VK_NULL_HANDLE || value.offset > value.buffer->size)
 			{
-				return VK_ERROR_INITIALIZATION_FAILED;
+				return DescriptorBindingFailure(mapped, index, "shadow-buffer-unbound-or-offset");
 			}
 			const VkDeviceSize range = value.range == VK_WHOLE_SIZE ? value.buffer->size - value.offset : value.range;
 			const VkResult invalidate = InvalidateGpuBufferWrite(value.buffer, value.offset, range);
 			if (invalidate != VK_SUCCESS)
 			{
+				DescriptorBindingFailure(mapped, index, "shadow-invalidation", value.buffer->size - value.offset, range);
 				return invalidate;
 			}
 		}
+	}
+	return VK_SUCCESS;
+}
+
+VkResult EmitCullMesh(Lumen::MetalVulkan::EncodingContext& context, const std::shared_ptr<ReplayState>& state,
+                      id<MTLBuffer> captured, id<MTLBuffer> indices, id<MTLBuffer> counts,
+                      Lumen::MetalVulkan::MetalCullDrawParams parameters)
+{
+	if (@available(macOS 13.0, iOS 16.0, *))
+	{
+		const auto pipeline = state->graphicsPipeline;
+		if (pipeline->viewportArrayMode || (pipeline->viewportDynamic ? state->viewport.height : pipeline->viewports[0].height) >= 0)
+			parameters.flags |= Lumen::MetalVulkan::kCullDrawFlipY;
+		if (pipeline->cull->negativeOneToOne) parameters.flags |= Lumen::MetalVulkan::kCullDrawNegativeOneToOne;
+		const auto result = ApplyGraphicsState(context, state, true);
+		if (result != VK_SUCCESS) return result;
+		[context.renderEncoder setMeshBuffer:captured offset:0 atIndex:Lumen::MetalVulkan::kCullCaptureBufferIndex];
+		[context.renderEncoder setMeshBuffer:indices offset:0 atIndex:Lumen::MetalVulkan::kCullIndexBufferIndex];
+		[context.renderEncoder setMeshBuffer:counts offset:0 atIndex:Lumen::MetalVulkan::kCullPatchCountsBufferIndex];
+		[context.renderEncoder setMeshBytes:&parameters length:sizeof(parameters) atIndex:Lumen::MetalVulkan::kCullDrawParamsBufferIndex];
+		[context.renderEncoder drawMeshThreadgroups:MTLSizeMake(parameters.primitiveCount, 1, 1)
+		    threadsPerObjectThreadgroup:MTLSizeMake(1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(1, 1, 1)];
+		return VK_SUCCESS;
+	}
+	return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+VkResult DrawCull(Lumen::MetalVulkan::EncodingContext& context, const std::shared_ptr<ReplayState>& state,
+                  uint32_t count, uint32_t instances, uint32_t first, int32_t baseVertex, uint32_t firstInstance, bool indexed)
+{
+	const auto pipeline = state->graphicsPipeline;
+	const auto& cull = *pipeline->cull;
+	const uint32_t primitives = Lumen::MetalVulkan::MetalCullPrimitiveCount(pipeline->topology, count);
+	if (primitives == 0 || instances == 0) return VK_SUCCESS;
+	if (pipeline->dynamicStates.count(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY) && state->topology != pipeline->topology)
+		return VK_ERROR_FEATURE_NOT_PRESENT;
+	const uint64_t size = uint64_t(count) * cull.outputStride;
+	if (size == 0 || size > pipeline->device->metalDevice.maxBufferLength) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	id<MTLBuffer> output = [pipeline->device->metalDevice newBufferWithLength:size options:MTLResourceStorageModePrivate];
+	if (output == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	NSUInteger indexOffset = 0;
+	uint32_t variant = 0;
+	if (indexed)
+	{
+		const uint32_t width = IndexTypeSize(state->indexType);
+		const uint64_t offset = state->indexOffset + uint64_t(first) * width;
+		if (offset < state->indexOffset || !BufferRangeInBounds(state->indexBuffer, offset, uint64_t(count) * width))
+			return VK_ERROR_INITIALIZATION_FAILED;
+		indexOffset = BufferMetalOffset(state->indexBuffer, offset);
+		variant = state->indexType == VK_INDEX_TYPE_UINT16 ? 1 : 2;
+	}
+	MTLRenderPassDescriptor* pass = [context.retainedRenderDescriptor copy];
+	if (pass == nil || !context.logicalRenderPassActive) return VK_ERROR_INITIALIZATION_FAILED;
+	const auto area = context.retainedRenderArea;
+	for (size_t i = 0; i < 8; ++i) if (pass.colorAttachments[i].texture) pass.colorAttachments[i].loadAction = MTLLoadActionLoad;
+	if (pass.depthAttachment.texture) pass.depthAttachment.loadAction = MTLLoadActionLoad;
+	if (pass.stencilAttachment.texture) pass.stencilAttachment.loadAction = MTLLoadActionLoad;
+	for (uint32_t instance = 0; instance < instances; ++instance)
+	{
+		Lumen::MetalVulkan::EndEncoding(context, true);
+		context.computeEncoder = [context.commandBuffer computeCommandEncoder];
+		if (context.computeEncoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+		[context.computeEncoder setComputePipelineState:cull.vertex[variant]];
+		DeclareDeviceAddressResources(pipeline->device, context);
+		auto result = BindDescriptorResources(context, state, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_SHADER_STAGE_VERTEX_BIT, true);
+		if (result != VK_SUCCESS) return result;
+		result = BindPushConstants(state->vertexPushConstants, pipeline->vertexPushConstantSize, [&](const void* data, size_t bytes) {
+			[context.computeEncoder setBytes:data length:bytes atIndex:kPushConstantBufferIndex];
+		});
+		if (result != VK_SUCCESS) return result;
+		[context.computeEncoder setBuffer:output offset:0 atIndex:kTessOutputBuffer];
+		if (indexed) [context.computeEncoder setBuffer:state->indexBuffer->metalBuffer offset:indexOffset atIndex:kTessIndexBuffer];
+		[context.computeEncoder setStageInRegion:MTLRegionMake3D(indexed ? uint32_t(baseVertex) : first, firstInstance + instance, 0, count, 1, 1)];
+		[context.computeEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+		    threadsPerThreadgroup:MTLSizeMake(std::min<uint32_t>(count, cull.vertex[variant].threadExecutionWidth), 1, 1)];
+		[context.computeEncoder endEncoding];
+		context.computeEncoder = nil;
+		result = Lumen::MetalVulkan::BeginRenderEncoding(context, pass);
+		if (result != VK_SUCCESS) return result;
+		context.logicalRenderPassActive = true;
+		context.retainedRenderArea = area;
+		Lumen::MetalVulkan::MetalCullDrawParams parameters {count, primitives, 0, 0, 0, 0, 0, 0};
+		result = EmitCullMesh(context, state, output, output, output, parameters);
+		if (result != VK_SUCCESS) return result;
+	}
+	return VK_SUCCESS;
+}
+
+VkResult DrawTessellation(Lumen::MetalVulkan::EncodingContext& context, const std::shared_ptr<ReplayState>& state,
+                          uint32_t count, uint32_t instanceCount, uint32_t first, int32_t baseVertex,
+                          uint32_t firstInstance, bool indexed)
+{
+	const auto pipeline = state->graphicsPipeline;
+	const auto& tess = *pipeline->tessellation;
+	const uint32_t patchCount = count / tess.inputPoints;
+	if (patchCount == 0 || instanceCount == 0) return VK_SUCCESS;
+	if (pipeline->dynamicStates.count(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY) && state->topology != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST)
+		return VK_ERROR_FEATURE_NOT_PRESENT;
+	const uint64_t vertices = uint64_t(patchCount) * tess.inputPoints;
+	const uint64_t controls = uint64_t(patchCount) * tess.outputPoints;
+	if (controls > UINT32_MAX) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	const auto device = pipeline->device->metalDevice;
+	const auto allocate = [device](uint64_t elements, uint32_t stride) -> id<MTLBuffer> {
+		const uint64_t bytes = std::max<uint64_t>(16, elements * stride);
+		return bytes <= device.maxBufferLength ? [device newBufferWithLength:bytes options:MTLResourceStorageModePrivate] : nil;
+	};
+	id<MTLBuffer> vertexOutput = allocate(vertices, tess.vertexStride);
+	id<MTLBuffer> controlInput = tess.vertexBridge != nil ? allocate(vertices, tess.controlInputStride) : vertexOutput;
+	id<MTLBuffer> controlOutput = allocate(controls, tess.controlStride);
+	id<MTLBuffer> evaluationInput = tess.controlBridge != nil ? allocate(controls, tess.evaluationStride) : controlOutput;
+	id<MTLBuffer> patchOutput = allocate(patchCount, tess.patchStride);
+	id<MTLBuffer> evaluationPatch = tess.patchBridge != nil ? allocate(patchCount, tess.evaluationPatchStride) : patchOutput;
+	id<MTLBuffer> factors = allocate(patchCount, tess.factorStride);
+	if (!vertexOutput || !controlInput || !controlOutput || !evaluationInput || !patchOutput || !evaluationPatch || !factors)
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	constexpr uint32_t pointStride = 4225, indexStride = 24576;
+	id<MTLBuffer> floatFactors = nil, coordinates = nil, domainIndices = nil, domainCounts = nil, evaluated = nil;
+	if (pipeline->cull)
+	{
+		if (uint64_t(patchCount) * indexStride > UINT32_MAX || uint64_t(patchCount) * pointStride > UINT32_MAX)
+			return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+		floatFactors = allocate(patchCount, 6 * sizeof(float));
+		coordinates = allocate(uint64_t(patchCount) * pointStride, 2 * sizeof(float));
+		domainIndices = allocate(uint64_t(patchCount) * indexStride, sizeof(uint32_t));
+		domainCounts = allocate(patchCount, 4 * sizeof(uint32_t));
+		evaluated = allocate(uint64_t(patchCount) * pointStride, pipeline->cull->outputStride);
+		if (!floatFactors || !coordinates || !domainIndices || !domainCounts || !evaluated) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+	NSUInteger indexOffset = 0;
+	uint32_t indexVariant = 0;
+	if (indexed)
+	{
+		const uint32_t width = IndexTypeSize(state->indexType);
+		const uint64_t offset = state->indexOffset + uint64_t(first) * width;
+		if (offset < state->indexOffset || !BufferRangeInBounds(state->indexBuffer, offset, vertices * width))
+			return VK_ERROR_INITIALIZATION_FAILED;
+		indexOffset = BufferMetalOffset(state->indexBuffer, offset);
+		indexVariant = state->indexType == VK_INDEX_TYPE_UINT16 ? 1 : 2;
+	}
+	MTLRenderPassDescriptor* pass = [context.retainedRenderDescriptor copy];
+	if (pass == nil || !context.logicalRenderPassActive) return VK_ERROR_INITIALIZATION_FAILED;
+	const auto area = context.retainedRenderArea;
+	for (NSUInteger i = 0; i < 8; ++i) if (pass.colorAttachments[i].texture != nil) pass.colorAttachments[i].loadAction = MTLLoadActionLoad;
+	if (pass.depthAttachment.texture != nil) pass.depthAttachment.loadAction = MTLLoadActionLoad;
+	if (pass.stencilAttachment.texture != nil) pass.stencilAttachment.loadAction = MTLLoadActionLoad;
+	auto bridge = [&](id<MTLComputePipelineState> native, id<MTLBuffer> src, id<MTLBuffer> dst, uint32_t elements) {
+		if (native == nil || elements == 0) return;
+		auto encoder = [context.commandBuffer computeCommandEncoder];
+		[encoder setComputePipelineState:native];
+		[encoder setBuffer:src offset:0 atIndex:0];
+		[encoder setBuffer:dst offset:0 atIndex:1];
+		[encoder setBytes:&elements length:sizeof(elements) atIndex:2];
+		[encoder dispatchThreads:MTLSizeMake(elements, 1, 1) threadsPerThreadgroup:MTLSizeMake(std::min<uint32_t>(elements, 64), 1, 1)];
+		[encoder endEncoding];
+	};
+	for (uint32_t instance = 0; instance < instanceCount; ++instance)
+	{
+		Lumen::MetalVulkan::EndEncoding(context, true);
+		context.computeEncoder = [context.commandBuffer computeCommandEncoder];
+		if (context.computeEncoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+		[context.computeEncoder setComputePipelineState:tess.vertex[indexVariant]];
+		DeclareDeviceAddressResources(pipeline->device, context);
+		auto result = BindDescriptorResources(context, state, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_SHADER_STAGE_VERTEX_BIT, true);
+		if (result != VK_SUCCESS) return result;
+		result = BindPushConstants(state->vertexPushConstants, pipeline->vertexPushConstantSize, [&](const void* data, size_t size) {
+			[context.computeEncoder setBytes:data length:size atIndex:kPushConstantBufferIndex];
+		});
+		if (result != VK_SUCCESS) return result;
+		[context.computeEncoder setBuffer:vertexOutput offset:0 atIndex:kTessOutputBuffer];
+		if (indexed) [context.computeEncoder setBuffer:state->indexBuffer->metalBuffer offset:indexOffset atIndex:kTessIndexBuffer];
+		const uint32_t vertexBase = indexed ? uint32_t(baseVertex) : first;
+		[context.computeEncoder setStageInRegion:MTLRegionMake3D(vertexBase, firstInstance + instance, 0, vertices, 1, 1)];
+		[context.computeEncoder dispatchThreads:MTLSizeMake(vertices, 1, 1)
+		    threadsPerThreadgroup:MTLSizeMake(std::min<uint64_t>(vertices, tess.vertex[indexVariant].threadExecutionWidth), 1, 1)];
+		[context.computeEncoder endEncoding];
+		context.computeEncoder = nil;
+		bridge(tess.vertexBridge, vertexOutput, controlInput, uint32_t(vertices));
+		context.computeEncoder = [context.commandBuffer computeCommandEncoder];
+		if (context.computeEncoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+		[context.computeEncoder setComputePipelineState:tess.control];
+		DeclareDeviceAddressResources(pipeline->device, context);
+		result = BindDescriptorResources(context, state, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, true);
+		if (result != VK_SUCCESS) return result;
+		result = BindPushConstants(state->tessControlPushConstants, tess.controlPushSize, [&](const void* data, size_t size) {
+			[context.computeEncoder setBytes:data length:size atIndex:kPushConstantBufferIndex];
+		});
+		if (result != VK_SUCCESS) return result;
+		[context.computeEncoder setBuffer:controlInput offset:0 atIndex:kTessInputBuffer];
+		[context.computeEncoder setBuffer:controlOutput offset:0 atIndex:kTessOutputBuffer];
+		[context.computeEncoder setBuffer:patchOutput offset:0 atIndex:kTessPatchOutputBuffer];
+		[context.computeEncoder setBuffer:factors offset:0 atIndex:kTessFactorBuffer];
+		const uint32_t parameters[2] = {tess.inputPoints, patchCount};
+		[context.computeEncoder setBytes:parameters length:sizeof(parameters) atIndex:kTessParamsBuffer];
+		[context.computeEncoder dispatchThreadgroups:MTLSizeMake(patchCount, 1, 1) threadsPerThreadgroup:MTLSizeMake(tess.outputPoints, 1, 1)];
+		[context.computeEncoder endEncoding];
+		context.computeEncoder = nil;
+		bridge(tess.controlBridge, controlOutput, evaluationInput, uint32_t(controls));
+		bridge(tess.patchBridge, patchOutput, evaluationPatch, patchCount);
+		if (pipeline->cull)
+		{
+			const auto& cull = *pipeline->cull;
+			auto encoder = [context.commandBuffer computeCommandEncoder];
+			if (encoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+			[encoder setComputePipelineState:cull.expandFactors];
+			[encoder setBuffer:factors offset:0 atIndex:0];
+			[encoder setBuffer:floatFactors offset:0 atIndex:1];
+			const uint32_t expansion[4] = {patchCount, tess.factorStride / 2, 6, tess.triangles ? 0u : 1u};
+			[encoder setBytes:expansion length:sizeof(expansion) atIndex:2];
+			[encoder dispatchThreads:MTLSizeMake(patchCount, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+			[encoder endEncoding];
+			encoder = [context.commandBuffer computeCommandEncoder];
+			if (encoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+			[encoder setComputePipelineState:cull.domain];
+			[encoder setBuffer:floatFactors offset:0 atIndex:0];
+			[encoder setBuffer:coordinates offset:0 atIndex:1];
+			[encoder setBuffer:domainIndices offset:0 atIndex:2];
+			[encoder setBuffer:domainCounts offset:0 atIndex:3];
+			const uint32_t domain[8] = {patchCount, 6, pointStride, indexStride, tess.triangles ? 0u : 1u,
+			    tess.partition == MTLTessellationPartitionModeFractionalOdd ? 0u : tess.partition == MTLTessellationPartitionModeFractionalEven ? 1u : 2u,
+			    tess.winding == MTLWindingCounterClockwise ? 1u : 0u, 0};
+			[encoder setBytes:domain length:sizeof(domain) atIndex:4];
+			[encoder dispatchThreads:MTLSizeMake(patchCount, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+			[encoder endEncoding];
+			context.computeEncoder = [context.commandBuffer computeCommandEncoder];
+			if (context.computeEncoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+			[context.computeEncoder setComputePipelineState:cull.evaluation.pipeline];
+			DeclareDeviceAddressResources(pipeline->device, context);
+			result = BindDescriptorResources(context, state, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, true);
+			if (result != VK_SUCCESS) return result;
+			result = BindPushConstants(state->tessEvaluationPushConstants, tess.evaluationPushSize, [&](const void* data, size_t bytes) {
+				[context.computeEncoder setBytes:data length:bytes atIndex:kPushConstantBufferIndex];
+			});
+			if (result != VK_SUCCESS) return result;
+			[context.computeEncoder setBuffer:coordinates offset:0 atIndex:21];
+			[context.computeEncoder setBuffer:evaluationInput offset:0 atIndex:kTessInputBuffer];
+			[context.computeEncoder setBuffer:evaluationPatch offset:0 atIndex:kTessPatchInputBuffer];
+			[context.computeEncoder setBuffer:domainCounts offset:0 atIndex:24];
+			[context.computeEncoder setBuffer:factors offset:0 atIndex:kTessFactorBuffer];
+			const MetalTessellationCaptureParams capture {pointStride, patchCount, firstInstance + instance, firstInstance};
+			[context.computeEncoder setBytes:&capture length:sizeof(capture) atIndex:26];
+			[context.computeEncoder setBuffer:evaluated offset:0 atIndex:27];
+			[context.computeEncoder dispatchThreads:MTLSizeMake(uint64_t(patchCount) * pointStride, 1, 1)
+			    threadsPerThreadgroup:MTLSizeMake(cull.evaluation.pipeline.threadExecutionWidth, 1, 1)];
+			[context.computeEncoder endEncoding];
+			context.computeEncoder = nil;
+		}
+		result = Lumen::MetalVulkan::BeginRenderEncoding(context, pass);
+		if (result != VK_SUCCESS) return result;
+		context.logicalRenderPassActive = true;
+		context.retainedRenderArea = area;
+		if (pipeline->cull)
+		{
+			const Lumen::MetalVulkan::MetalCullDrawParams parameters {pointStride, patchCount * (indexStride / 3), 0,
+			    Lumen::MetalVulkan::kCullDrawIndexed | Lumen::MetalVulkan::kCullDrawPatchDomain, indexStride, 0, 0, patchCount};
+			result = EmitCullMesh(context, state, evaluated, domainIndices, domainCounts, parameters);
+			if (result != VK_SUCCESS) return result;
+			continue;
+		}
+		result = ApplyGraphicsState(context, state, true);
+		if (result != VK_SUCCESS) return result;
+		[context.renderEncoder setVertexBuffer:evaluationInput offset:0 atIndex:kTessInputBuffer];
+		[context.renderEncoder setVertexBuffer:evaluationPatch offset:0 atIndex:kTessPatchInputBuffer];
+		[context.renderEncoder setVertexBuffer:factors offset:0 atIndex:kTessFactorBuffer];
+		[context.renderEncoder setTessellationFactorBuffer:factors offset:0 instanceStride:0];
+		[context.renderEncoder drawPatches:tess.outputPoints patchStart:0 patchCount:patchCount
+		    patchIndexBuffer:nil patchIndexBufferOffset:0 instanceCount:1 baseInstance:firstInstance + instance];
 	}
 	return VK_SUCCESS;
 }
@@ -2642,6 +3521,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice device,
 	auto created = std::unique_ptr<VkDescriptorSetLayout_T>(new (std::nothrow) VkDescriptorSetLayout_T);
 	if (!created) return VK_ERROR_OUT_OF_HOST_MEMORY;
 	created->device = device;
+	created->flags = createInfo->flags;
 	created->bindings.assign(createInfo->pBindings, createInfo->pBindings + createInfo->bindingCount);
 	std::sort(created->bindings.begin(), created->bindings.end(),
 	          [](const auto& left, const auto& right) { return left.binding < right.binding; });
@@ -2974,15 +3854,19 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device, VkPipe
 	for (uint32_t pipelineIndex = 0; pipelineIndex < createInfoCount; ++pipelineIndex)
 	{
 		const auto& info = createInfos[pipelineIndex];
+		bool hasTessellation = false;
+		if (info.pStages != nullptr)
+			for (uint32_t i = 0; i < info.stageCount; ++i)
+				hasTessellation |= (info.pStages[i].stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)) != 0;
 		const VkPipelineRenderingCreateInfo* rendering = nullptr;
 		for (auto* next = static_cast<const VkBaseInStructure*>(info.pNext); next != nullptr; next = next->pNext)
 			if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO)
 				rendering = reinterpret_cast<const VkPipelineRenderingCreateInfo*>(next);
-		if (info.sType != VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO || info.stageCount == 0 || info.stageCount > 2 || info.pStages == nullptr ||
+		if (info.sType != VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO || info.stageCount == 0 || info.stageCount > 4 || info.pStages == nullptr ||
 		    info.layout == VK_NULL_HANDLE || (info.renderPass == VK_NULL_HANDLE && rendering == nullptr) || info.subpass != 0 ||
 		    info.pVertexInputState == nullptr || info.pInputAssemblyState == nullptr || info.pViewportState == nullptr ||
 		    info.pRasterizationState == nullptr || info.pMultisampleState == nullptr || info.pColorBlendState == nullptr ||
-		    info.pViewportState->viewportCount > 1 || info.pViewportState->scissorCount > 1 ||
+		    info.pViewportState->viewportCount > 16 || info.pViewportState->scissorCount > 16 ||
 		    ![device->metalDevice supportsTextureSampleCount:info.pMultisampleState->rasterizationSamples] ||
 		    info.pRasterizationState->polygonMode != VK_POLYGON_MODE_FILL ||
 		    (info.pInputAssemblyState->primitiveRestartEnable == VK_TRUE &&
@@ -3020,6 +3904,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device, VkPipe
 
 		bool scissorDynamic = false;
 		bool viewportDynamic = false;
+		bool negativeOneToOne = false;
+		for (auto* next = static_cast<const VkBaseInStructure*>(info.pViewportState->pNext); next != nullptr; next = next->pNext)
+		{
+			if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT)
+				negativeOneToOne = reinterpret_cast<const VkPipelineViewportDepthClipControlCreateInfoEXT*>(next)->negativeOneToOne == VK_TRUE;
+			else return VK_ERROR_FEATURE_NOT_PRESENT;
+		}
 		if (info.pDynamicState != nullptr)
 		{
 			if (info.pDynamicState->dynamicStateCount != 0 && info.pDynamicState->pDynamicStates == nullptr)
@@ -3047,16 +3938,32 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device, VkPipe
 		    pipeline->topology != VK_PRIMITIVE_TOPOLOGY_LINE_STRIP &&
 		    pipeline->topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST &&
 		    pipeline->topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP &&
-		    pipeline->topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN)
+		    pipeline->topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN &&
+		    !(hasTessellation && pipeline->topology == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST))
 			return VK_ERROR_FEATURE_NOT_PRESENT;
 		pipeline->viewportDynamic = viewportDynamic;
 		if (info.pDynamicState != nullptr)
 			pipeline->dynamicStates.insert(info.pDynamicState->pDynamicStates,
 			                               info.pDynamicState->pDynamicStates + info.pDynamicState->dynamicStateCount);
-		if (!viewportDynamic) pipeline->viewport = info.pViewportState->pViewports[0];
-		const bool flipVertexY = !viewportDynamic && pipeline->viewport.height >= 0.0f;
+		pipeline->viewportCount = info.pViewportState->viewportCount;
+		pipeline->scissorCount = info.pViewportState->scissorCount;
+		pipeline->viewportArrayMode = pipeline->viewportCount > 1 || pipeline->scissorCount > 1 ||
+		    pipeline->dynamicStates.count(VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT) != 0 ||
+		    pipeline->dynamicStates.count(VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT) != 0;
+		if (!viewportDynamic)
+		{
+			if (pipeline->viewportCount == 0) return VK_ERROR_INITIALIZATION_FAILED;
+			std::copy_n(info.pViewportState->pViewports, pipeline->viewportCount, pipeline->viewports.begin());
+			pipeline->viewport = pipeline->viewports[0];
+		}
+		const bool flipVertexY = !viewportDynamic && (pipeline->viewportArrayMode || pipeline->viewport.height >= 0.0f);
 		pipeline->scissorDynamic = scissorDynamic;
-		if (!scissorDynamic) pipeline->scissor = info.pViewportState->pScissors[0];
+		if (!scissorDynamic)
+		{
+			if (pipeline->scissorCount == 0) return VK_ERROR_INITIALIZATION_FAILED;
+			std::copy_n(info.pViewportState->pScissors, pipeline->scissorCount, pipeline->scissors.begin());
+			pipeline->scissor = pipeline->scissors[0];
+		}
 		if (pipeline->viewport.height < 0.0f)
 		{
 			pipeline->viewport.y += pipeline->viewport.height;
@@ -3069,9 +3976,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device, VkPipe
 			if (!std::isfinite(rasterization.depthBiasConstantFactor) ||
 			    !std::isfinite(rasterization.depthBiasSlopeFactor) || !std::isfinite(rasterization.depthBiasClamp))
 				return VK_ERROR_INITIALIZATION_FAILED;
-			// depthBiasClamp is not an advertised device feature. Extended bias
-			// representations likewise need their own implementation and tests.
-			if (rasterization.depthBiasClamp != 0.0f || rasterization.pNext != nullptr)
+			// Metal's setDepthBias:slopeScale:clamp: carries the Vulkan clamp.
+			// Extended bias representations still need their own translation.
+			if (rasterization.pNext != nullptr)
 				return VK_ERROR_FEATURE_NOT_PRESENT;
 			pipeline->depthBiasConstantFactor = rasterization.depthBiasConstantFactor;
 			pipeline->depthBiasSlopeFactor = rasterization.depthBiasSlopeFactor;
@@ -3123,34 +4030,61 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device, VkPipe
 		id<MTLFunction> fragmentFunction = nil;
 		std::vector<StageBinding> vertexBindings;
 		std::vector<StageBinding> fragmentBindings;
-		pipeline->passReuseResourcesReadOnly = CompletionPassReuseRequested();
+		pipeline->passReuseResourcesReadOnly = !hasTessellation && CompletionPassReuseRequested();
+		if (hasTessellation)
+		{
+			const auto result = CompileTessellation(pipeline.get(), info, flipVertexY, negativeOneToOne, &vertexFunction, &vertexBindings);
+			if (result != VK_SUCCESS) return result;
+		}
 		for (uint32_t stageIndex = 0; stageIndex < info.stageCount; ++stageIndex)
 		{
 			const auto& stage = info.pStages[stageIndex];
-			if (stage.pSpecializationInfo != nullptr || stage.module == VK_NULL_HANDLE)
+			if (stage.module == VK_NULL_HANDLE)
 				return VK_ERROR_FEATURE_NOT_PRESENT;
+			if (hasTessellation && (stage.stage == VK_SHADER_STAGE_VERTEX_BIT || stage.stage == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT ||
+			                       stage.stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)) continue;
 			VkResult result = VK_ERROR_FEATURE_NOT_PRESENT;
 			if (stage.stage == VK_SHADER_STAGE_VERTEX_BIT)
-				result = CompileMetalFunction(device, stage.module, info.layout, stage, &vertexFunction, &vertexBindings, nullptr,
-				                              &pipeline->vertexPushConstantSize, vertexInputFourComponentMask, flipVertexY);
+			{
+				if (ShaderWritesCullDistance(stage))
+				{
+					if (info.pVertexInputState->vertexAttributeDescriptionCount != 0 || info.pInputAssemblyState->primitiveRestartEnable)
+						return VK_ERROR_FEATURE_NOT_PRESENT;
+					result = CompileCullVertex(pipeline.get(), stage, negativeOneToOne, &vertexBindings);
+					pipeline->passReuseResourcesReadOnly = false;
+				}
+				else result = CompileMetalFunction(device, stage.module, info.layout, stage, &vertexFunction, &vertexBindings, nullptr,
+				                              &pipeline->vertexPushConstantSize, vertexInputFourComponentMask, flipVertexY, false, UINT32_MAX, negativeOneToOne);
+			}
 			else if (stage.stage == VK_SHADER_STAGE_FRAGMENT_BIT)
 				result = CompileMetalFunction(device, stage.module, info.layout, stage, &fragmentFunction, &fragmentBindings, nullptr,
-				                              &pipeline->fragmentPushConstantSize, 0, false);
+				                              &pipeline->fragmentPushConstantSize, 0, false,
+				                              info.pMultisampleState->sampleShadingEnable == VK_TRUE,
+				                              info.pMultisampleState->pSampleMask ? info.pMultisampleState->pSampleMask[0] : UINT32_MAX);
 			if (result != VK_SUCCESS) return result;
 			if (pipeline->passReuseResourcesReadOnly && !ShaderResourcesAllowPassReuse(stage))
 				pipeline->passReuseResourcesReadOnly = false;
 		}
-		if (vertexFunction == nil) return VK_ERROR_INVALID_SHADER_NV;
-		if (viewportDynamic)
+		if (vertexFunction == nil && !pipeline->cull) return VK_ERROR_INVALID_SHADER_NV;
+		if (viewportDynamic && !pipeline->cull)
 		{
 			for (uint32_t stageIndex = 0; stageIndex < info.stageCount; ++stageIndex)
 			{
 				const auto& stage = info.pStages[stageIndex];
-				if (stage.stage != VK_SHADER_STAGE_VERTEX_BIT) continue;
+				if (stage.stage != (hasTessellation ? VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT : VK_SHADER_STAGE_VERTEX_BIT)) continue;
 				std::vector<StageBinding> flippedBindings;
 				id<MTLFunction> flippedFunction = nil;
+				TessCompile tessCompile;
+				if (hasTessellation)
+				{
+					tessCompile.mode = TessCompile::Mode::Evaluation;
+					tessCompile.controlPoints = pipeline->tessellation->outputPoints;
+					tessCompile.triangles = pipeline->tessellation->triangles;
+				}
 				const auto result = CompileMetalFunction(device, stage.module, info.layout, stage,
-				    &flippedFunction, &flippedBindings, nullptr, &pipeline->vertexPushConstantSize, vertexInputFourComponentMask, true);
+				    &flippedFunction, &flippedBindings, nullptr,
+				    hasTessellation ? &pipeline->tessellation->evaluationPushSize : &pipeline->vertexPushConstantSize,
+				    vertexInputFourComponentMask, true, false, UINT32_MAX, negativeOneToOne, hasTessellation ? &tessCompile : nullptr);
 				if (result != VK_SUCCESS) return result;
 				pipeline->vertexFunctionFlipped = flippedFunction;
 			}
@@ -3163,13 +4097,22 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device, VkPipe
 		descriptor.vertexFunction = vertexFunction;
 		descriptor.fragmentFunction = fragmentFunction;
 		descriptor.rasterSampleCount = info.pMultisampleState->rasterizationSamples;
+		if (hasTessellation)
+		{
+			descriptor.maxTessellationFactor = 64;
+			descriptor.tessellationFactorFormat = MTLTessellationFactorFormatHalf;
+			descriptor.tessellationPartitionMode = pipeline->tessellation->partition;
+			descriptor.tessellationOutputWindingOrder = pipeline->tessellation->winding;
+			descriptor.tessellationFactorStepFunction = MTLTessellationFactorStepFunctionPerPatch;
+			descriptor.tessellationControlPointIndexType = MTLTessellationControlPointIndexTypeNone;
+		}
 		// Vulkan's FRONT_AND_BACK mode discards every polygon. Metal has no
 		// equivalent MTLCullMode value; disabling rasterization for triangle
 		// topologies preserves the result instead of incorrectly translating it
 		// to MTLCullModeNone. Face culling does not apply to point/line topology.
 		const bool triangleTopology = pipeline->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST ||
 		                              pipeline->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP ||
-		                              pipeline->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+		                              pipeline->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN || hasTessellation;
 		descriptor.rasterizationEnabled = !(triangleTopology && rasterization.cullMode == VK_CULL_MODE_FRONT_AND_BACK);
 		MTLVertexDescriptor* vertexDescriptor = [[MTLVertexDescriptor alloc] init];
 		for (uint32_t index = 0; index < info.pVertexInputState->vertexBindingDescriptionCount; ++index)
@@ -3179,7 +4122,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device, VkPipe
 				return VK_ERROR_FEATURE_NOT_PRESENT;
 			pipeline->vertexBindingUsed[binding.binding] = true;
 			const uint32_t metalIndex = pipeline->vertexBufferBase + binding.binding;
-			if (metalIndex >= kPushConstantBufferIndex) return VK_ERROR_FEATURE_NOT_PRESENT;
+			if (metalIndex >= kBufferSizeBufferIndex) return VK_ERROR_FEATURE_NOT_PRESENT;
 			vertexDescriptor.layouts[metalIndex].stride = binding.stride;
 			vertexDescriptor.layouts[metalIndex].stepFunction = binding.stride == 0 ? MTLVertexStepFunctionConstant : MTLVertexStepFunctionPerVertex;
 			vertexDescriptor.layouts[metalIndex].stepRate = 1;
@@ -3193,10 +4136,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device, VkPipe
 			vertexDescriptor.attributes[attribute.location].format = format;
 			vertexDescriptor.attributes[attribute.location].offset = attribute.offset;
 			const uint32_t metalIndex = pipeline->vertexBufferBase + attribute.binding;
-			if (metalIndex >= kPushConstantBufferIndex) return VK_ERROR_FEATURE_NOT_PRESENT;
+			if (metalIndex >= kBufferSizeBufferIndex) return VK_ERROR_FEATURE_NOT_PRESENT;
 			vertexDescriptor.attributes[attribute.location].bufferIndex = metalIndex;
 		}
-		descriptor.vertexDescriptor = vertexDescriptor;
+		descriptor.vertexDescriptor = hasTessellation ? nil : vertexDescriptor;
 		std::vector<VkFormat> colorFormats;
 		VkFormat depthFormat = VK_FORMAT_UNDEFINED;
 		VkFormat stencilFormat = VK_FORMAT_UNDEFINED;
@@ -3250,6 +4193,32 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device, VkPipe
 		if (stencilFormat != VK_FORMAT_UNDEFINED) descriptor.stencilAttachmentPixelFormat = Lumen::MetalVulkan::ToMTLPixelFormat(stencilFormat);
 		pipeline->renderDescriptor = [descriptor copy];
 		NSError* error = nil;
+		if (pipeline->cull)
+		{
+			if (@available(macOS 13.0, iOS 16.0, *))
+			{
+				MTLMeshRenderPipelineDescriptor* mesh = [MTLMeshRenderPipelineDescriptor new];
+				mesh.meshFunction = pipeline->cull->mesh.function;
+				mesh.fragmentFunction = fragmentFunction;
+				mesh.rasterSampleCount = descriptor.rasterSampleCount;
+				mesh.rasterizationEnabled = descriptor.rasterizationEnabled;
+				mesh.depthAttachmentPixelFormat = descriptor.depthAttachmentPixelFormat;
+				mesh.stencilAttachmentPixelFormat = descriptor.stencilAttachmentPixelFormat;
+				mesh.maxTotalThreadsPerMeshThreadgroup = 1;
+				for (size_t i = 0; i < 8; ++i) mesh.colorAttachments[i] = [descriptor.colorAttachments[i] copy];
+				pipeline->meshDescriptor = [mesh copy];
+				pipeline->renderState = [device->metalDevice newRenderPipelineStateWithMeshDescriptor:mesh
+				    options:MTLPipelineOptionNone reflection:nil error:&error];
+				if (pipeline->renderState == nil) { PrintMetalError("cull mesh pipeline", error); return VK_ERROR_INVALID_SHADER_NV; }
+				for (size_t i = 0; i < 8; ++i) mesh.colorAttachments[i].writeMask = MTLColorWriteMaskNone;
+				pipeline->renderStateNoColor = [device->metalDevice newRenderPipelineStateWithMeshDescriptor:mesh
+				    options:MTLPipelineOptionNone reflection:nil error:&error];
+				if (pipeline->renderStateNoColor == nil) { PrintMetalError("cull mesh no-color pipeline", error); return VK_ERROR_INVALID_SHADER_NV; }
+				pipelines[pipelineIndex] = pipeline.release();
+				continue;
+			}
+			return VK_ERROR_FEATURE_NOT_PRESENT;
+		}
 		pipeline->renderState = [device->metalDevice newRenderPipelineStateWithDescriptor:descriptor error:&error];
 		if (pipeline->renderState == nil)
 		{
@@ -3284,8 +4253,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice device, VkPipel
 	{
 		const auto& info = createInfos[index];
 		if (info.sType != VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO || info.layout == VK_NULL_HANDLE ||
-		    info.stage.stage != VK_SHADER_STAGE_COMPUTE_BIT || info.stage.module == VK_NULL_HANDLE ||
-		    info.stage.pSpecializationInfo != nullptr)
+		    info.stage.stage != VK_SHADER_STAGE_COMPUTE_BIT || info.stage.module == VK_NULL_HANDLE)
 			return VK_ERROR_FEATURE_NOT_PRESENT;
 		auto pipeline = std::unique_ptr<VkPipeline_T>(new (std::nothrow) VkPipeline_T);
 		if (!pipeline) return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -3372,8 +4340,72 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindDescriptorSets(VkCommandBuffer commandBuffer
 	auto state = GetReplayState(commandBuffer);
 	if (!state) return;
 	auto& sets = bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS ? state->graphicsSets : state->computeSets;
+	auto& pushes = bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS ? state->graphicsPushSets : state->computePushSets;
 	for (uint32_t index = 0; index < descriptorSetCount; ++index)
+	{
 		sets[firstSet + index] = descriptorSets[index];
+		pushes[firstSet + index].reset();
+	}
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdPushDescriptorSetKHR(VkCommandBuffer commandBuffer,
+    VkPipelineBindPoint bindPoint, VkPipelineLayout layout, uint32_t setIndex,
+    uint32_t writeCount, const VkWriteDescriptorSet* writes)
+{
+	if (ValidateCommandBufferForRecording(commandBuffer) != VK_SUCCESS ||
+	    (bindPoint != VK_PIPELINE_BIND_POINT_GRAPHICS && bindPoint != VK_PIPELINE_BIND_POINT_COMPUTE) ||
+	    layout == VK_NULL_HANDLE || setIndex >= layout->setLayouts.size() || setIndex >= 8 ||
+	    (writeCount != 0 && writes == nullptr))
+	{
+		RecordError(commandBuffer, __func__, VK_ERROR_INITIALIZATION_FAILED);
+		return;
+	}
+	auto setLayout = layout->setLayouts[setIndex];
+	if (setLayout == VK_NULL_HANDLE || (setLayout->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR) == 0)
+	{
+		RecordError(commandBuffer, __func__, VK_ERROR_INITIALIZATION_FAILED);
+		return;
+	}
+	auto state = GetReplayState(commandBuffer);
+	if (!state) return;
+	auto& pushes = bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS ? state->graphicsPushSets : state->computePushSets;
+	auto& sets = bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS ? state->graphicsSets : state->computeSets;
+	auto pushed = std::make_shared<VkDescriptorSet_T>();
+	pushed->layout = setLayout;
+	if (pushes[setIndex] && pushes[setIndex]->layout == setLayout)
+		pushed->values = pushes[setIndex]->values;
+	else
+		for (const auto& binding: setLayout->bindings)
+		{
+			auto& values = pushed->values[binding.binding];
+			values.resize(binding.descriptorCount);
+			for (uint32_t i = 0; i < binding.descriptorCount; ++i)
+			{
+				values[i].type = binding.descriptorType;
+				if (binding.pImmutableSamplers != nullptr)
+				{
+					values[i].sampler = binding.pImmutableSamplers[i];
+					values[i].immutableSampler = true;
+				}
+			}
+		}
+	for (uint32_t i = 0; i < writeCount; ++i)
+	{
+		auto write = writes[i];
+		auto found = pushed->values.find(write.dstBinding);
+		if (found == pushed->values.end() || write.dstArrayElement > found->second.size() ||
+		    write.descriptorCount > found->second.size() - write.dstArrayElement ||
+		    (DescriptorUsesBuffer(write.descriptorType) && write.pBufferInfo == nullptr) ||
+		    ((DescriptorUsesTexture(write.descriptorType) || DescriptorUsesSampler(write.descriptorType)) && write.pImageInfo == nullptr))
+		{
+			RecordError(commandBuffer, __func__, VK_ERROR_INITIALIZATION_FAILED);
+			return;
+		}
+		write.dstSet = pushed.get();
+		vkUpdateDescriptorSets(layout->device, 1, &write, 0, nullptr);
+	}
+	sets[setIndex] = pushed.get();
+	pushes[setIndex] = std::move(pushed);
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdPushConstants(VkCommandBuffer commandBuffer, VkPipelineLayout,
@@ -3396,6 +4428,8 @@ VKAPI_ATTR void VKAPI_CALL vkCmdPushConstants(VkCommandBuffer commandBuffer, VkP
 	if ((stageFlags & VK_SHADER_STAGE_VERTEX_BIT) != 0) update(state->vertexPushConstants);
 	if ((stageFlags & VK_SHADER_STAGE_FRAGMENT_BIT) != 0) update(state->fragmentPushConstants);
 	if ((stageFlags & VK_SHADER_STAGE_COMPUTE_BIT) != 0) update(state->computePushConstants);
+	if ((stageFlags & VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT) != 0) update(state->tessControlPushConstants);
+	if ((stageFlags & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT) != 0) update(state->tessEvaluationPushConstants);
 	if (TryElideMetalStateOnlyRecord(commandBuffer, __func__)) return;
 	auto snapshot = std::make_shared<ReplayState>(*state);
 	Record(commandBuffer, __func__, [snapshot, stageFlags](Lumen::MetalVulkan::EncodingContext& context)
@@ -3457,17 +4491,35 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers2(VkCommandBuffer commandBuffer
 VKAPI_ATTR void VKAPI_CALL vkCmdSetViewport(VkCommandBuffer commandBuffer, uint32_t first,
                                           uint32_t count, const VkViewport* values)
 {
-	if (first != 0 || count != 1 || values == nullptr || values[0].width <= 0 || values[0].height == 0)
+	if (count == 0 || first >= 16 || count > 16 - first || values == nullptr)
 	{
 		RecordError(commandBuffer, __func__, VK_ERROR_FEATURE_NOT_PRESENT);
 		return;
 	}
-	if (auto state = GetReplayState(commandBuffer)) { state->viewport = values[0]; state->viewportSet = true; }
+	for (uint32_t i = 0; i < count; ++i)
+		if (!std::isfinite(values[i].x) || !std::isfinite(values[i].y) || !std::isfinite(values[i].width) ||
+		    !std::isfinite(values[i].height) || values[i].width <= 0 || values[i].height == 0)
+		{
+			RecordError(commandBuffer, __func__, VK_ERROR_INITIALIZATION_FAILED);
+			return;
+		}
+	if (auto state = GetReplayState(commandBuffer))
+	{
+		std::copy_n(values, count, state->viewports.begin() + first);
+		state->viewportMask |= ((1u << count) - 1) << first;
+		if (first == 0) { state->viewport = values[0]; state->viewportSet = true; }
+	}
 }
 VKAPI_ATTR void VKAPI_CALL vkCmdSetViewportWithCount(VkCommandBuffer commandBuffer, uint32_t count, const VkViewport* values)
-{ vkCmdSetViewport(commandBuffer, 0, count, values); }
+{
+	vkCmdSetViewport(commandBuffer, 0, count, values);
+	if (auto state = GetReplayState(commandBuffer)) state->viewportCount = count;
+}
 VKAPI_ATTR void VKAPI_CALL vkCmdSetScissorWithCount(VkCommandBuffer commandBuffer, uint32_t count, const VkRect2D* values)
-{ vkCmdSetScissor(commandBuffer, 0, count, values); }
+{
+	vkCmdSetScissor(commandBuffer, 0, count, values);
+	if (auto state = GetReplayState(commandBuffer)) state->scissorCount = count;
+}
 
 #define LUMEN_DYNAMIC_SETTER(function, type, member) \
     VKAPI_ATTR void VKAPI_CALL function(VkCommandBuffer commandBuffer, type value) \
@@ -3546,6 +4598,10 @@ VKAPI_ATTR void VKAPI_CALL vkCmdDraw(VkCommandBuffer commandBuffer, uint32_t ver
 	Record(commandBuffer, __func__, [state, vertexCount, instanceCount, firstVertex, firstInstance](Lumen::MetalVulkan::EncodingContext& context)
 	{
 		if (context.renderEncoder == nil || !context.logicalRenderPassActive) return VK_ERROR_INITIALIZATION_FAILED;
+		if (state->graphicsPipeline->tessellation)
+			return DrawTessellation(context, state, vertexCount, instanceCount, firstVertex, 0, firstInstance, false);
+		if (state->graphicsPipeline->cull)
+			return DrawCull(context, state, vertexCount, instanceCount, firstVertex, 0, firstInstance, false);
 		const VkResult prepared = PrepareReusablePassDraw(context, state);
 		if (prepared != VK_SUCCESS) return prepared;
 		const VkResult result = ApplyGraphicsState(context, state, true);
@@ -3592,6 +4648,10 @@ VKAPI_ATTR void VKAPI_CALL vkCmdDrawIndexed(VkCommandBuffer commandBuffer, uint3
 	{
 		if (context.renderEncoder == nil || !context.logicalRenderPassActive || state->indexBuffer->metalBuffer == nil)
 			return VK_ERROR_INITIALIZATION_FAILED;
+		if (state->graphicsPipeline->tessellation)
+			return DrawTessellation(context, state, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance, true);
+		if (state->graphicsPipeline->cull)
+			return DrawCull(context, state, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance, true);
 		const VkResult prepared = PrepareReusablePassDraw(context, state);
 		if (prepared != VK_SUCCESS) return prepared;
 		const VkResult result = ApplyGraphicsState(context, state, true);
@@ -3692,6 +4752,8 @@ static void DrawIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDevic
 	Record(commandBuffer, indexed ? "vkCmdDrawIndexedIndirect" : "vkCmdDrawIndirect",
 	       [state, buffer, offset, count, stride, indexed, countBuffer, countOffset](Lumen::MetalVulkan::EncodingContext& context) -> VkResult {
 		if (context.renderEncoder == nil || !context.logicalRenderPassActive) return VK_ERROR_INITIALIZATION_FAILED;
+		if (state->graphicsPipeline->tessellation || state->graphicsPipeline->cull)
+			return VK_ERROR_FEATURE_NOT_PRESENT;
 		if ((state->graphicsPipeline->dynamicStates.count(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY) ? state->topology : state->graphicsPipeline->topology) == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN) return VK_ERROR_FEATURE_NOT_PRESENT;
         if (count == 0) return VK_SUCCESS;
         id<MTLBuffer> arguments = buffer->metalBuffer;
@@ -3847,6 +4909,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBeginRenderPass(VkCommandBuffer commandBuffer, c
 		    context.retainedRenderArea.extent.height == renderArea.extent.height;
 		if (!reuse) Lumen::MetalVulkan::EndEncoding(context);
 		MTLRenderPassDescriptor* descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+		descriptor.renderTargetArrayLength = framebuffer->layers;
 		auto resolveView = [framebuffer](uint32_t attachment) -> id<MTLTexture>
 		{
 			if (attachment >= framebuffer->attachments.size() || framebuffer->attachments[attachment] == VK_NULL_HANDLE)
@@ -3863,13 +4926,19 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBeginRenderPass(VkCommandBuffer commandBuffer, c
 			auto* color = descriptor.colorAttachments[0];
 			color.texture = resolveView(attachment);
 			if (color.texture == nil) return VK_ERROR_INITIALIZATION_FAILED;
+			const auto view = framebuffer->attachments[attachment];
+			if (view->volumeAttachment)
+			{
+				if (framebuffer->layers > view->range.layerCount) return VK_ERROR_INITIALIZATION_FAILED;
+				color.level = view->range.baseMipLevel;
+				color.depthPlane = view->range.baseArrayLayer;
+			}
 			const auto& source = renderPass->attachments[attachment];
 			color.loadAction = ToMTLLoadAction(source.loadOp);
 			color.storeAction = ToMTLStoreAction(source.storeOp);
 			if (source.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR && attachment < clearValues.size())
 			{
-				const auto& value = clearValues[attachment].color.float32;
-				color.clearColor = MTLClearColorMake(value[0], value[1], value[2], value[3]);
+				color.clearColor = ToMTLClearColor(source.format, clearValues[attachment].color);
 			}
 		}
 		if (renderPass->hasDepthAttachment)
@@ -3955,13 +5024,19 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBeginRendering(VkCommandBuffer commandBuffer, co
 		descriptor.renderTargetArrayLength = layers;
 		descriptor.renderTargetWidth = area.offset.x + area.extent.width;
 		descriptor.renderTargetHeight = area.offset.y + area.extent.height;
-		auto apply = [](const VkRenderingAttachmentInfo& source, MTLRenderPassAttachmentDescriptor* target) -> VkResult {
+		auto apply = [layers](const VkRenderingAttachmentInfo& source, MTLRenderPassAttachmentDescriptor* target) -> VkResult {
 			if (source.imageView == VK_NULL_HANDLE) return VK_SUCCESS;
 			if (source.pNext != nullptr || !source.imageView->alive.load(std::memory_order_acquire))
 				return VK_ERROR_FEATURE_NOT_PRESENT;
 			const auto view = source.imageView;
 			target.texture = view->metalTexture != nil ? view->metalTexture : view->image->metalTexture;
 			if (target.texture == nil) return VK_ERROR_INITIALIZATION_FAILED;
+			if (view->volumeAttachment)
+			{
+				if (layers > view->range.layerCount) return VK_ERROR_INITIALIZATION_FAILED;
+				target.level = view->range.baseMipLevel;
+				target.depthPlane = view->range.baseArrayLayer;
+			}
 			target.loadAction = ToMTLLoadAction(source.loadOp);
 			target.storeAction = ToMTLStoreAction(source.storeOp);
 			if (source.resolveMode != VK_RESOLVE_MODE_NONE)
@@ -3979,8 +5054,8 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBeginRendering(VkCommandBuffer commandBuffer, co
 		{
 			auto* attachment = descriptor.colorAttachments[i];
 			if (const auto result = apply(colors[i], attachment); result != VK_SUCCESS) return result;
-			const auto* clear = colors[i].clearValue.color.float32;
-			attachment.clearColor = MTLClearColorMake(clear[0], clear[1], clear[2], clear[3]);
+			if (colors[i].imageView != VK_NULL_HANDLE)
+				attachment.clearColor = ToMTLClearColor(colors[i].imageView->format, colors[i].clearValue.color);
 		}
 		if (depth.resolveMode != VK_RESOLVE_MODE_NONE || stencil.resolveMode != VK_RESOLVE_MODE_NONE)
 			return VK_ERROR_FEATURE_NOT_PRESENT;
@@ -4209,6 +5284,37 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage(VkCommandBuffer commandBuffer, VkImage
 		return;
 	}
 	std::vector<VkImageCopy> copies(regions, regions + regionCount);
+	const bool sourceVolume = source->imageType == VK_IMAGE_TYPE_3D;
+	const bool destinationVolume = destination->imageType == VK_IMAGE_TYPE_3D;
+	for (const auto& copy: copies)
+	{
+		auto valid = [&copy](VkImage image, const VkImageSubresourceLayers& subresource, const VkOffset3D& offset) {
+			if (subresource.mipLevel >= image->mipLevels || subresource.layerCount == 0 ||
+			    subresource.baseArrayLayer >= image->arrayLayers ||
+			    subresource.layerCount > image->arrayLayers - subresource.baseArrayLayer ||
+			    offset.x < 0 || offset.y < 0 || offset.z < 0 ||
+			    copy.extent.width == 0 || copy.extent.height == 0 || copy.extent.depth == 0) return false;
+			const uint32_t width = std::max(1u, image->extent.width >> subresource.mipLevel);
+			const uint32_t height = std::max(1u, image->extent.height >> subresource.mipLevel);
+			const uint32_t depth = std::max(1u, image->extent.depth >> subresource.mipLevel);
+			if (uint32_t(offset.x) >= width || copy.extent.width > width - offset.x ||
+			    uint32_t(offset.y) >= height || copy.extent.height > height - offset.y) return false;
+			if (image->imageType == VK_IMAGE_TYPE_3D)
+				return uint32_t(offset.z) < depth && copy.extent.depth <= depth - offset.z;
+			return offset.z == 0;
+		};
+		const bool compatibleLayers = sourceVolume == destinationVolume
+		    ? copy.srcSubresource.layerCount == copy.dstSubresource.layerCount &&
+		      (sourceVolume || copy.extent.depth == 1)
+		    : (sourceVolume ? copy.dstSubresource.layerCount : copy.srcSubresource.layerCount) == copy.extent.depth;
+		if (!valid(source, copy.srcSubresource, copy.srcOffset) ||
+		    !valid(destination, copy.dstSubresource, copy.dstOffset) || !compatibleLayers ||
+		    source->samples != destination->samples)
+		{
+			RecordError(commandBuffer, __func__, VK_ERROR_INITIALIZATION_FAILED);
+			return;
+		}
+	}
 	Record(commandBuffer, __func__, [source, destination, copies = std::move(copies)](Lumen::MetalVulkan::EncodingContext& context)
 	{
 		Lumen::MetalVulkan::EndEncoding(context);
@@ -4217,15 +5323,26 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage(VkCommandBuffer commandBuffer, VkImage
 		if (context.blitEncoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 		for (const auto& copy: copies)
 		{
-			for (uint32_t layer = 0; layer < copy.srcSubresource.layerCount; ++layer)
+			const bool sourceVolume = source->imageType == VK_IMAGE_TYPE_3D;
+			const bool destinationVolume = destination->imageType == VK_IMAGE_TYPE_3D;
+			const bool volumeArrayCopy = sourceVolume != destinationVolume;
+			const uint32_t slices = volumeArrayCopy ? copy.extent.depth : copy.srcSubresource.layerCount;
+			for (uint32_t layer = 0; layer < slices; ++layer)
 			{
+				// Vulkan maps depth slices onto array layers for 3D/2D copies.
+				// Metal addresses those through origin.z and arraySlice respectively,
+				// and requires a one-plane native transfer for every such pair.
+				const uint32_t sourceSlice = sourceVolume ? 0 : copy.srcSubresource.baseArrayLayer + layer;
+				const uint32_t destinationSlice = destinationVolume ? 0 : copy.dstSubresource.baseArrayLayer + layer;
+				const uint32_t sourceZ = copy.srcOffset.z + (volumeArrayCopy && sourceVolume ? layer : 0);
+				const uint32_t destinationZ = copy.dstOffset.z + (volumeArrayCopy && destinationVolume ? layer : 0);
 				[context.blitEncoder copyFromTexture:source->metalTexture
-				                          sourceSlice:copy.srcSubresource.baseArrayLayer + layer sourceLevel:copy.srcSubresource.mipLevel
-				                         sourceOrigin:MTLOriginMake(copy.srcOffset.x, copy.srcOffset.y, copy.srcOffset.z)
-				                           sourceSize:MTLSizeMake(copy.extent.width, copy.extent.height, copy.extent.depth)
+				                          sourceSlice:sourceSlice sourceLevel:copy.srcSubresource.mipLevel
+				                         sourceOrigin:MTLOriginMake(copy.srcOffset.x, copy.srcOffset.y, sourceZ)
+				                           sourceSize:MTLSizeMake(copy.extent.width, copy.extent.height, volumeArrayCopy ? 1 : copy.extent.depth)
 				                            toTexture:destination->metalTexture
-				                     destinationSlice:copy.dstSubresource.baseArrayLayer + layer destinationLevel:copy.dstSubresource.mipLevel
-				                    destinationOrigin:MTLOriginMake(copy.dstOffset.x, copy.dstOffset.y, copy.dstOffset.z)];
+				                     destinationSlice:destinationSlice destinationLevel:copy.dstSubresource.mipLevel
+				                    destinationOrigin:MTLOriginMake(copy.dstOffset.x, copy.dstOffset.y, destinationZ)];
 			}
 		}
 		return VK_SUCCESS;
@@ -4340,6 +5457,15 @@ fragment float4 lumen_blit_fragment(BlitVertexOut in [[stage_in]], texture2d<flo
 		samplerDescriptor.sAddressMode = samplerDescriptor.tAddressMode = MTLSamplerAddressModeClampToEdge;
 		id<MTLSamplerState> sampler = [destination->device->metalDevice newSamplerStateWithDescriptor:samplerDescriptor];
 		if (sampler == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+		id<MTLTexture> sampledSource = source->metalTexture;
+		if (source->format == VK_FORMAT_BC1_RGB_UNORM_BLOCK || source->format == VK_FORMAT_BC1_RGB_SRGB_BLOCK)
+		{
+			sampledSource = [source->metalTexture newTextureViewWithPixelFormat:source->metalTexture.pixelFormat
+			    textureType:source->metalTexture.textureType levels:NSMakeRange(0, source->mipLevels)
+			    slices:NSMakeRange(0, source->arrayLayers)
+			    swizzle:MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleGreen, MTLTextureSwizzleBlue, MTLTextureSwizzleOne)];
+			if (sampledSource == nil) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+		}
 		for (const auto& blit: blits)
 		{
 			if (blit.srcOffsets[0].z != 0 || blit.srcOffsets[1].z != 1 || blit.dstOffsets[0].z != 0 || blit.dstOffsets[1].z != 1 ||
@@ -4355,7 +5481,7 @@ fragment float4 lumen_blit_fragment(BlitVertexOut in [[stage_in]], texture2d<flo
 			id<MTLRenderCommandEncoder> encoder = [context.commandBuffer renderCommandEncoderWithDescriptor:pass];
 			if (encoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 			[encoder setRenderPipelineState:pipeline];
-			[encoder setFragmentTexture:source->metalTexture atIndex:0];
+			[encoder setFragmentTexture:sampledSource atIndex:0];
 			[encoder setFragmentSamplerState:sampler atIndex:0];
 			const double width = std::abs(blit.dstOffsets[1].x - blit.dstOffsets[0].x);
 			const double height = std::abs(blit.dstOffsets[1].y - blit.dstOffsets[0].y);
@@ -4385,20 +5511,116 @@ VKAPI_ATTR void VKAPI_CALL vkCmdClearColorImage(VkCommandBuffer commandBuffer, V
 	{
 		Lumen::MetalVulkan::EndEncoding(context);
 		if (image->metalTexture == nil) return VK_ERROR_INITIALIZATION_FAILED;
+		if ((Lumen::MetalVulkan::FormatFeatures(image->format, VK_IMAGE_TILING_OPTIMAL) &
+		     VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) == 0 ||
+		    (image->metalTexture.usage & MTLTextureUsageRenderTarget) == 0)
+			return VK_ERROR_FORMAT_NOT_SUPPORTED;
+		id<MTLTexture> texture = image->metalTexture;
+		const auto pixelFormat = Lumen::MetalVulkan::ToMTLPixelFormat(image->format);
+		if (texture.pixelFormat != pixelFormat)
+		{
+			texture = [texture newTextureViewWithPixelFormat:pixelFormat];
+			if (texture == nil) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+		}
+		const MTLClearColor clearColor = ToMTLClearColor(image->format, clear);
+		// Validate every range before encoding any clears. A three-dimensional
+		// image has one Vulkan array layer, but every depth plane in each selected
+		// mip is part of that subresource and must be cleared.
 		for (const auto& range: copiedRanges)
 		{
-			uint32_t levelCount = range.levelCount == VK_REMAINING_MIP_LEVELS ? image->mipLevels - range.baseMipLevel : range.levelCount;
-			uint32_t layerCount = range.layerCount == VK_REMAINING_ARRAY_LAYERS ? image->arrayLayers - range.baseArrayLayer : range.layerCount;
-			if (range.baseMipLevel != 0 || levelCount != 1 || range.baseArrayLayer != 0 || layerCount != 1)
-				return VK_ERROR_FEATURE_NOT_PRESENT;
-			MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-			pass.colorAttachments[0].texture = image->metalTexture;
-			pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-			pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-			pass.colorAttachments[0].clearColor = MTLClearColorMake(clear.float32[0], clear.float32[1], clear.float32[2], clear.float32[3]);
-			id<MTLRenderCommandEncoder> encoder = [context.commandBuffer renderCommandEncoderWithDescriptor:pass];
-			if (encoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-			[encoder endEncoding];
+			if (range.aspectMask != VK_IMAGE_ASPECT_COLOR_BIT || range.baseMipLevel >= image->mipLevels ||
+			    range.baseArrayLayer >= image->arrayLayers) return VK_ERROR_INITIALIZATION_FAILED;
+			const uint32_t levels = range.levelCount == VK_REMAINING_MIP_LEVELS ? image->mipLevels - range.baseMipLevel : range.levelCount;
+			const uint32_t layers = range.layerCount == VK_REMAINING_ARRAY_LAYERS ? image->arrayLayers - range.baseArrayLayer : range.layerCount;
+			if (levels == 0 || layers == 0 || levels > image->mipLevels - range.baseMipLevel ||
+			    layers > image->arrayLayers - range.baseArrayLayer) return VK_ERROR_INITIALIZATION_FAILED;
+		}
+		for (const auto& range: copiedRanges)
+		{
+			const uint32_t levels = range.levelCount == VK_REMAINING_MIP_LEVELS ? image->mipLevels - range.baseMipLevel : range.levelCount;
+			const uint32_t layers = range.layerCount == VK_REMAINING_ARRAY_LAYERS ? image->arrayLayers - range.baseArrayLayer : range.layerCount;
+			for (uint32_t level = range.baseMipLevel; level < range.baseMipLevel + levels; ++level)
+			{
+				const bool volume = image->imageType == VK_IMAGE_TYPE_3D;
+				const uint32_t firstSlice = volume ? 0 : range.baseArrayLayer;
+				const uint32_t sliceCount = volume ? std::max(1u, image->extent.depth >> level) : layers;
+				for (uint32_t slice = firstSlice; slice < firstSlice + sliceCount; ++slice)
+				{
+					MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+					auto* attachment = pass.colorAttachments[0];
+					attachment.texture = texture;
+					attachment.level = level;
+					if (volume) attachment.depthPlane = slice;
+					else attachment.slice = slice;
+					attachment.loadAction = MTLLoadActionClear;
+					attachment.storeAction = MTLStoreActionStore;
+					attachment.clearColor = clearColor;
+					id<MTLRenderCommandEncoder> encoder = [context.commandBuffer renderCommandEncoderWithDescriptor:pass];
+					if (encoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+					[encoder endEncoding];
+				}
+			}
+		}
+		return VK_SUCCESS;
+	});
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdClearDepthStencilImage(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout,
+    const VkClearDepthStencilValue* value, uint32_t rangeCount, const VkImageSubresourceRange* ranges)
+{
+	if (image == VK_NULL_HANDLE || value == nullptr || rangeCount == 0 || ranges == nullptr)
+	{
+		RecordError(commandBuffer, __func__, VK_ERROR_INITIALIZATION_FAILED);
+		return;
+	}
+	const auto clear = *value;
+	std::vector<VkImageSubresourceRange> copiedRanges(ranges, ranges + rangeCount);
+	Record(commandBuffer, __func__, [image, clear, copiedRanges = std::move(copiedRanges)]
+	       (Lumen::MetalVulkan::EncodingContext& context) -> VkResult
+	{
+		Lumen::MetalVulkan::EndEncoding(context);
+		if (image->metalTexture == nil) return VK_ERROR_INITIALIZATION_FAILED;
+		const bool hasDepth = image->format == VK_FORMAT_D16_UNORM || image->format == VK_FORMAT_D32_SFLOAT ||
+		                      image->format == VK_FORMAT_D24_UNORM_S8_UINT || image->format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+		const bool hasStencil = image->format == VK_FORMAT_S8_UINT || image->format == VK_FORMAT_D24_UNORM_S8_UINT ||
+		                        image->format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+		for (const auto& range: copiedRanges)
+		{
+			if (range.baseMipLevel >= image->mipLevels || range.baseArrayLayer >= image->arrayLayers ||
+			    (range.aspectMask & ~(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0 ||
+			    range.aspectMask == 0 || ((range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) && !hasDepth) ||
+			    ((range.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) && !hasStencil))
+				return VK_ERROR_INITIALIZATION_FAILED;
+			const uint32_t levels = range.levelCount == VK_REMAINING_MIP_LEVELS ? image->mipLevels - range.baseMipLevel : range.levelCount;
+			const uint32_t layers = range.layerCount == VK_REMAINING_ARRAY_LAYERS ? image->arrayLayers - range.baseArrayLayer : range.layerCount;
+			if (levels == 0 || layers == 0 || levels > image->mipLevels - range.baseMipLevel ||
+			    layers > image->arrayLayers - range.baseArrayLayer) return VK_ERROR_INITIALIZATION_FAILED;
+			for (uint32_t level = range.baseMipLevel; level < range.baseMipLevel + levels; ++level)
+				for (uint32_t layer = range.baseArrayLayer; layer < range.baseArrayLayer + layers; ++layer)
+				{
+					MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+					if (hasDepth)
+					{
+						pass.depthAttachment.texture = image->metalTexture;
+						pass.depthAttachment.level = level;
+						pass.depthAttachment.slice = layer;
+						pass.depthAttachment.loadAction = range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT ? MTLLoadActionClear : MTLLoadActionLoad;
+						pass.depthAttachment.storeAction = MTLStoreActionStore;
+						pass.depthAttachment.clearDepth = clear.depth;
+					}
+					if (hasStencil)
+					{
+						pass.stencilAttachment.texture = image->metalTexture;
+						pass.stencilAttachment.level = level;
+						pass.stencilAttachment.slice = layer;
+						pass.stencilAttachment.loadAction = range.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT ? MTLLoadActionClear : MTLLoadActionLoad;
+						pass.stencilAttachment.storeAction = MTLStoreActionStore;
+						pass.stencilAttachment.clearStencil = clear.stencil;
+					}
+					id<MTLRenderCommandEncoder> encoder = [context.commandBuffer renderCommandEncoderWithDescriptor:pass];
+					if (encoder == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+					[encoder endEncoding];
+				}
 		}
 		return VK_SUCCESS;
 	});
@@ -4528,7 +5750,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdSetScissor(VkCommandBuffer commandBuffer, uint32
 {
 	const VkResult recording = ValidateCommandBufferForRecording(commandBuffer);
 	if (recording != VK_SUCCESS) { RecordError(commandBuffer, __func__, recording); return; }
-	if (firstScissor != 0 || scissorCount != 1)
+	if (scissorCount == 0 || firstScissor >= 16 || scissorCount > 16 - firstScissor)
 	{
 		RecordError(commandBuffer, __func__, VK_ERROR_FEATURE_NOT_PRESENT);
 		return;
@@ -4538,7 +5760,9 @@ VKAPI_ATTR void VKAPI_CALL vkCmdSetScissor(VkCommandBuffer commandBuffer, uint32
 		RecordError(commandBuffer, __func__, VK_ERROR_INITIALIZATION_FAILED);
 		return;
 	}
-	const VkRect2D rectangle = scissors[0];
+	for (uint32_t i = 0; i < scissorCount; ++i)
+	{
+	const VkRect2D rectangle = scissors[i];
 	if (rectangle.offset.x < 0 || rectangle.offset.y < 0 ||
 	    static_cast<uint64_t>(rectangle.offset.x) + rectangle.extent.width > static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ||
 	    static_cast<uint64_t>(rectangle.offset.y) + rectangle.extent.height > static_cast<uint64_t>(std::numeric_limits<int32_t>::max()))
@@ -4546,10 +5770,12 @@ VKAPI_ATTR void VKAPI_CALL vkCmdSetScissor(VkCommandBuffer commandBuffer, uint32
 		RecordError(commandBuffer, __func__, VK_ERROR_INITIALIZATION_FAILED);
 		return;
 	}
+	}
 	auto state = GetReplayState(commandBuffer);
 	if (!state) return;
-	state->scissor = rectangle;
-	state->scissorSet = true;
+	std::copy_n(scissors, scissorCount, state->scissors.begin() + firstScissor);
+	state->scissorMask |= ((1u << scissorCount) - 1) << firstScissor;
+	if (firstScissor == 0) { state->scissor = scissors[0]; state->scissorSet = true; }
 	// Scissor is consumed only by draws, which already freeze a full ReplayState.
 	// Keep no caller pointer and no eager graphics replay requiring other state.
 	// Empty extents still execute the draw and its vertex shader.

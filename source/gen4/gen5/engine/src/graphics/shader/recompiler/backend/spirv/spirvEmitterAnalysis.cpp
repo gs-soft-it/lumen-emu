@@ -212,6 +212,56 @@ uint32_t ImageDescriptorPointer(EmitterState& state, uint32_t resource, uint32_t
 	                                "image descriptor array was not emitted");
 }
 
+uint32_t ImageCoordinatesInBounds(EmitterState& state, uint32_t resource, uint32_t descriptor,
+                                 uint32_t coord, uint32_t lod, uint32_t sample) {
+	const auto& image = state.program.info.images.at(resource);
+	if (!image.explicit_image_bounds) return ConstantBool(state, true);
+	state.builder.RequireCapability(spv::CapabilityImageQuery);
+	const auto& dimension = ImageDimensionInfoFor(image.dimension);
+	const bool sampled = image.resource_class == IR::ImageResourceClass::Sampled;
+	const bool mipmapped = sampled && dimension.multisampled == 0u;
+	const auto binary = [&](spv::Op op, uint32_t left, uint32_t right) {
+		const auto id = state.builder.AllocateId();
+		state.builder.AddFunction(op, TypeBool(state), id, left, right);
+		return id;
+	};
+	auto valid = ConstantBool(state, true);
+	if (mipmapped) {
+		const auto levels = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpImageQueryLevels, TypeU32(state), levels, descriptor);
+		valid = binary(spv::OpULessThan, lod != 0u ? lod : ConstantU32(state, 0u), levels);
+	}
+	if (dimension.multisampled != 0u) {
+		const auto samples = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpImageQuerySamples, TypeU32(state), samples, descriptor);
+		valid = binary(spv::OpULessThan, sample != 0u ? sample : ConstantU32(state, 0u), samples);
+	}
+	const auto size_type = ImageViewSizeType(state, image.dimension);
+	// QuerySizeLod itself must not execute with an invalid LOD.
+	const auto size = EmitValueOrDefaultIfCondition(
+	    state, valid, size_type, state.builder.Constant(spv::OpConstantNull, size_type), [&]() {
+		    const auto id = state.builder.AllocateId();
+		    if (mipmapped)
+			    state.builder.AddFunction(spv::OpImageQuerySizeLod, size_type, id, descriptor,
+			                              lod != 0u ? lod : ConstantU32(state, 0u));
+		    else state.builder.AddFunction(spv::OpImageQuerySize, size_type, id, descriptor);
+		    return id;
+	    });
+	for (uint32_t component = 0; component < dimension.coordinate_components; ++component) {
+		auto location = coord;
+		auto extent = size;
+		if (dimension.coordinate_components != 1u) {
+			location = state.builder.AllocateId();
+			extent = state.builder.AllocateId();
+			state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), location, coord, component);
+			state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), extent, size, component);
+		}
+		// Unsigned comparison rejects negative guest coordinates as well.
+		valid = binary(spv::OpLogicalAnd, valid, binary(spv::OpULessThan, location, extent));
+	}
+	return valid;
+}
+
 void EmitStorageImageWrite(EmitterState& state, uint32_t resource, uint32_t mip_lod, uint32_t coord,
                            uint32_t texel, uint32_t array_index) {
 	const auto& image = state.program.info.images.at(resource);
@@ -220,14 +270,22 @@ void EmitStorageImageWrite(EmitterState& state, uint32_t resource, uint32_t mip_
 		state.builder.RequireCapability(spv::CapabilityStorageImageWriteWithoutFormat);
 	}
 	const auto EmitWrite = [&](uint32_t mip) {
-		state.builder.AddFunction(spv::OpImageWrite, LoadImageDescriptor(state, resource, mip, array_index),
-		                          coord, texel);
+		const auto descriptor = LoadImageDescriptor(state, resource, mip, array_index);
+		const auto write = [&]() { state.builder.AddFunction(spv::OpImageWrite, descriptor, coord, texel); };
+		if (image.explicit_image_bounds)
+			EmitIfCondition(state, ImageCoordinatesInBounds(state, resource, descriptor, coord), write);
+		else write();
 	};
 	if (image.mip_mode != IR::ImageMipMode::Dynamic) {
 		EmitWrite(0);
 		return;
 	}
-	EmitIndexSwitch(state, mip_lod, image.mip_count, 0, EmitWrite);
+	if (image.explicit_image_bounds) {
+		const auto valid = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpULessThan, TypeBool(state), valid, mip_lod,
+		                          ConstantU32(state, image.mip_count));
+		EmitIfCondition(state, valid, [&]() { EmitIndexSwitch(state, mip_lod, image.mip_count, 0, EmitWrite); });
+	} else EmitIndexSwitch(state, mip_lod, image.mip_count, 0, EmitWrite);
 }
 
 spv::ExecutionModel ExecutionModelForStage(ShaderType stage) {

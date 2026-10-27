@@ -103,6 +103,27 @@ int main() {
         Check(AdmitSpirvModule(words, supported) == SpirvModuleAdmission::Allowed,
               "ordinary fragment module needs no barycentric feature");
     Check(words == original, "ordinary module remains unchanged");
+    const Libs::Graphics::SpirvOptionalFeatures no_optional{false, false};
+    Check(AdmitSpirvModule(words, false, no_optional) == SpirvModuleAdmission::Allowed,
+          "ordinary shaders run without optional raster features");
+    const auto cull = Prefix({(2u << 16) | spv::OpCapability, spv::CapabilityCullDistance});
+    Check(AdmitSpirvModule(cull, false, no_optional) ==
+              SpirvModuleAdmission::CullDistanceUnavailable,
+          "actual cull operations require enabled cull distance");
+    Check(AdmitSpirvModule(cull, false, {true, false}) == SpirvModuleAdmission::Allowed,
+          "enabled cull support admits cull operations independently of viewport support");
+    for (const auto capability : {spv::CapabilityMultiViewport, spv::CapabilityShaderViewportIndex}) {
+        const auto viewport = Prefix({(2u << 16) | spv::OpCapability, capability});
+        Check(AdmitSpirvModule(viewport, false, no_optional) ==
+                  SpirvModuleAdmission::MultiViewportUnavailable,
+              "viewport-index shaders require enabled multiple viewports");
+        Check(AdmitSpirvModule(viewport, false, {false, true}) == SpirvModuleAdmission::Allowed,
+              "enabled viewport support admits viewport-index shaders independently of cull");
+    }
+    Check(AdmitSpirvModule(Prefix({(5u << 16) | spv::OpMemberDecorate, 3, 0,
+                                 spv::DecorationBuiltIn, spv::BuiltInCullDistance}),
+                          false, no_optional) == SpirvModuleAdmission::Allowed,
+          "unused gl_PerVertex cull members do not reject full-screen blit shaders");
     Required(Prefix({(2u << 16) | spv::OpCapability, spv::CapabilityFragmentBarycentricKHR}),
              "capability alone requires enabled feature");
     static_assert(spv::CapabilityFragmentBarycentricKHR == spv::CapabilityFragmentBarycentricNV);

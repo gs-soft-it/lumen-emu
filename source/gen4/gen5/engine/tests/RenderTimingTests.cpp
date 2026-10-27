@@ -14,10 +14,23 @@ void Check(bool value) {
 
 void CheckReadbackSamples(bool enabled) {
     using namespace Common::RenderTiming;
+    Check(std::strcmp(ReadbackOriginName(ReadbackOrigin::GuestMemoryRead), "guestMemoryRead") == 0);
+    Check(std::strcmp(ReadbackOriginName(ReadbackOrigin::GuestMemoryWrite), "guestMemoryWrite") == 0);
+    for (const auto origin : {ReadbackOrigin::Other, ReadbackOrigin::GuestReadFault,
+                              ReadbackOrigin::GuestWriteFault, ReadbackOrigin::ColorMetadata,
+                              ReadbackOrigin::Invalidation, ReadbackOrigin::GuestMemoryRead,
+                              ReadbackOrigin::GuestMemoryWrite}) {
+        ScopedReadbackOrigin caller(origin);
+        for (const bool write : {false, true}) {
+            const auto api = write ? ReadbackOrigin::GuestMemoryWrite : ReadbackOrigin::GuestMemoryRead;
+            const auto fallback = write ? ReadbackOrigin::GuestWriteFault : ReadbackOrigin::GuestReadFault;
+            Check(ReadbackOriginForFault(write) == (enabled && origin == api ? api : fallback));
+        }
+    }
     Check(CurrentReadbackOrigin() == ReadbackOrigin::Other);
     {
-        ScopedReadbackOrigin caller(ReadbackOrigin::GuestReadFault);
-        Check(CurrentReadbackOrigin() == (enabled ? ReadbackOrigin::GuestReadFault : ReadbackOrigin::Other));
+        ScopedReadbackOrigin caller(ReadbackOrigin::GuestMemoryRead);
+        Check(CurrentReadbackOrigin() == (enabled ? ReadbackOrigin::GuestMemoryRead : ReadbackOrigin::Other));
         {
             ScopedReadbackOrigin nested(ReadbackOrigin::ColorMetadata);
             Check(CurrentReadbackOrigin() == (enabled ? ReadbackOrigin::ColorMetadata : ReadbackOrigin::Other));
@@ -29,7 +42,7 @@ void CheckReadbackSamples(bool enabled) {
             Check(CurrentReadbackOrigin() == ReadbackOrigin::Other);
             {
                 ScopedReadbackOrigin restored(captured_origin);
-                Check(CurrentReadbackOrigin() == (enabled ? ReadbackOrigin::GuestReadFault : ReadbackOrigin::Other));
+                Check(CurrentReadbackOrigin() == (enabled ? ReadbackOrigin::GuestMemoryRead : ReadbackOrigin::Other));
             }
             Check(CurrentReadbackOrigin() == ReadbackOrigin::Other);
         });
@@ -47,7 +60,8 @@ void CheckReadbackSamples(bool enabled) {
             .payload_bytes = sequence * 3,
             .staging_bytes = sequence * 3 + 64,
             .native_wait_ns = sequence * 7,
-            .origin = sequence % 2 ? ReadbackOrigin::GuestReadFault : ReadbackOrigin::ColorMetadata
+            .origin = sequence % 2 ? ReadbackOrigin::GuestMemoryRead : ReadbackOrigin::GuestMemoryWrite,
+            .caller_gpu_thread = sequence % 3 == 0, .requested_dirty = sequence % 5 == 0
         });
     };
     const auto validate = [enabled](const ReadbackSnapshot& snapshot) {
@@ -71,7 +85,9 @@ void CheckReadbackSamples(bool enabled) {
             Check(sample.payload_bytes == sample.sequence * 3);
             Check(sample.staging_bytes == sample.payload_bytes + 64);
             Check(sample.native_wait_ns == sample.sequence * 7);
-            Check(sample.origin == (sample.sequence % 2 ? ReadbackOrigin::GuestReadFault : ReadbackOrigin::ColorMetadata));
+            Check(sample.origin == (sample.sequence % 2 ? ReadbackOrigin::GuestMemoryRead : ReadbackOrigin::GuestMemoryWrite));
+            Check(sample.caller_gpu_thread == (sample.sequence % 3 == 0));
+            Check(sample.requested_dirty == (sample.sequence % 5 == 0));
             previous = sample.sequence;
             previous_time = sample.steady_ns;
         }

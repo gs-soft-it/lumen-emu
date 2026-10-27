@@ -17,6 +17,7 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
+#include "graphics/host_gpu/renderer/drawCapture.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -1348,6 +1349,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (shader_write_stages) {
 		m_context.GetCommandScheduler().EndRendering();
 		ShaderWriteBarrier(vk_buffer, shader_write_stages);
+	}
+	if (Config::GetShaderLogDirection() == Config::LogDirection::File) {
+		CaptureDrawOutputs(m_context, buffer, {state.color_info, state.color_count},
+		    {.submit_id = submit_id,
+		     .vertex_id = state.programs.vertex[0].id,
+		     .vertex_hash = state.vertex_info[0].stage.program->shader_hash,
+		     .pixel_id = state.programs.pixel.id,
+		     .pixel_hash = state.ps_active ? state.ps_input_info.stage.program->shader_hash : 0,
+		     .count = draw.index_count, .instances = draw.instance_count,
+		     .indexed = draw.IsIndexed(),
+		     .attachment_clear = state.depth_info.depth_clear_enable ||
+		                         state.depth_info.stencil_clear_enable});
 	}
 	LogDrawPhase(draw.Name(), "DrawComplete");
 	if (!draw.IsIndexed()) {

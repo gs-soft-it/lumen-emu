@@ -168,6 +168,9 @@ struct ImageResource {
 	bool                          unfiltered_access_only = true;
 	bool                          depth_compare     = false;
 	bool                          cube              = false;
+	// Capability fallback: no shader access may reach the replacement descriptor.
+	bool                          null_descriptor   = false;
+	bool                          explicit_image_bounds = false;
 	bool                          r128              = false;
 	uint32_t                      indirect_root     = NoIndirectImage;
 	uint32_t                      indirect_mapping_offset   = 0;
@@ -498,7 +501,6 @@ struct ShaderInfo {
 	static constexpr uint32_t MaxBufferRoots  = 64;
 	static constexpr uint32_t MaxImages       = 64;
 	static constexpr uint32_t MaxSamplers     = 32;
-	static constexpr uint32_t MaxSampledPairs = 64;
 
 	std::vector<BufferResource>      buffers;
 	std::vector<ImageResource>       images;

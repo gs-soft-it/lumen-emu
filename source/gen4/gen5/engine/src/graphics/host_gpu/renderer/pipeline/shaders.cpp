@@ -246,6 +246,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	const auto& pixel_program  = programs.pixel;
 	const bool  tessellation   = vertex_info.size() == 3;
 	const bool ps_active = ps_input_info != nullptr;
+	const bool trace_creation = graphics_debug_dump_enabled() ||
+	                            Config::GetShaderLogDirection() == Config::LogDirection::File;
 	EXIT_IF(!vertex_program || (ps_active && !pixel_program));
 	const bool with_depth = rendering.depth_format != vk::Format::eUndefined ||
 	                        rendering.stencil_format != vk::Format::eUndefined;
@@ -254,6 +256,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	EXIT_NOT_IMPLEMENTED(mesh && !graphics.mesh_shader_enabled);
 	const bool rect_list =
 	    !mesh && !tessellation && static_params.topology == vk::PrimitiveTopology::ePatchList;
+	if ((tessellation || rect_list) && !graphics.tessellation_shader_enabled) {
+		EXIT("Pipeline: %s requires unsupported tessellation shaders\n",
+		     rect_list ? "rect-list expansion" : "guest tessellation");
+	}
 
 	vk::ShaderModule tess_control_shader_module = nullptr;
 	vk::ShaderModule tess_eval_shader_module    = nullptr;
@@ -331,6 +337,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	vk::PipelineShaderStageCreateInfo shader_stages[4] {};
 	vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo mesh_subgroup_size {};
+	vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo fragment_subgroup_size {};
 	uint32_t                          shader_stage_count = 0;
 	for (uint32_t i = 0; i < vertex_info.size(); i++) {
 		shader_stages[shader_stage_count++] = {.stage =
@@ -368,9 +375,22 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		                                      .pName = "main"};
 	}
 	if (ps_active) {
-		shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eFragment,
-		                                       .module = pixel_program.module,
-		                                       .pName  = "main"};
+		auto& fragment_stage = shader_stages[shader_stage_count++];
+		fragment_stage = {.stage = vk::ShaderStageFlagBits::eFragment,
+		                  .module = pixel_program.module,
+		                  .pName = "main"};
+		const auto guest_wave = ps_input_info->wave_size;
+		const auto selected_size = graphics.SelectFragmentSubgroupSize(guest_wave);
+		if (guest_wave == 32u && graphics.fragment_subgroup_size_control_enabled &&
+		    selected_size == guest_wave &&
+		    guest_wave >= graphics.min_subgroup_size && guest_wave <= graphics.max_subgroup_size) {
+			// Guest EXEC/VCC masks index a single wave. A larger native subgroup would
+			// make its upper lanes read another wave's ballot word when restoring EXEC.
+			fragment_subgroup_size.requiredSubgroupSize = selected_size;
+			fragment_stage.pNext = &fragment_subgroup_size;
+		}
+		LOGF("Vulkan fragment pipeline subgroup: guest=%u host=%u required=%u\n",
+		     guest_wave, selected_size, fragment_subgroup_size.requiredSubgroupSize);
 	}
 
 	vk::VertexInputAttributeDescription input_attr[ShaderVertexInputInfo::RES_MAX] {};
@@ -542,7 +562,15 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		AddLayoutBindings(descriptor_bindings, *ps_input_info->stage.program,
 		                  vk::ShaderStageFlagBits::eFragment);
 	}
+	if (trace_creation) {
+		LOGF("PipelineTrace: CreateDescriptorLayout begin VS=%" PRIu64 " PS=%" PRIu64 "\n",
+		     vertex_program.id, ps_active ? pixel_program.id : 0);
+	}
 	CreateDescriptorLayout(graphics, pipeline, descriptor_bindings);
+	if (trace_creation) {
+		LOGF("PipelineTrace: CreateDescriptorLayout done VS=%" PRIu64 " PS=%" PRIu64 "\n",
+		     vertex_program.id, ps_active ? pixel_program.id : 0);
+	}
 	const vk::PushConstantRange push_constants {graphics_stages, 0,
 	                                            ShaderRecompiler::IR::NativePushConstantSize};
 
@@ -554,15 +582,16 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	EXIT_IF(pipeline.pipeline_layout != nullptr);
 
-	if (graphics_debug_dump_enabled()) {
+	if (trace_creation) {
 		LOGF("PipelineTrace: vkCreatePipelineLayout begin VS=%" PRIu64 " PS=%" PRIu64
 		     " set_layouts=1 push_constants=%" PRIu32 "\n",
 		     vertex_program.id, ps_active ? pixel_program.id : 0, 1u);
 	}
 	auto result = graphics.device.createPipelineLayout(&pipeline_layout_info, nullptr,
 	                                                   &pipeline.pipeline_layout);
-	if (graphics_debug_dump_enabled()) {
-		LOGF("PipelineTrace: vkCreatePipelineLayout done result=%s layout=%p\n",
+	if (trace_creation) {
+		LOGF("PipelineTrace: vkCreatePipelineLayout done VS=%" PRIu64 " PS=%" PRIu64
+		     " result=%s layout=%p\n", vertex_program.id, ps_active ? pixel_program.id : 0,
 		     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline_layout));
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
@@ -629,7 +658,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	EXIT_IF(pipeline.pipeline != nullptr);
 
-	if (graphics_debug_dump_enabled()) {
+	if (trace_creation) {
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines begin VS=%" PRIu64 " PS=%" PRIu64
 		     " topology=%" PRIu32 " color_mask=0x%08" PRIx32
 		     " depth=%s blend=%s dyn_states=%" PRIu32 "\n",
@@ -640,12 +669,13 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	}
 	result = graphics.device.createGraphicsPipelines(driver_cache, 1, &pipeline_info, nullptr,
 	                                                 &pipeline.pipeline);
+	if (trace_creation) {
+		LOGF("PipelineTrace: vkCreateGraphicsPipelines done VS=%" PRIu64 " PS=%" PRIu64
+		     " result=%s pipeline=%p\n", vertex_program.id, ps_active ? pixel_program.id : 0,
+		     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
+	}
 	if (barycentric_geometry_module != nullptr) {
 		graphics.device.destroyShaderModule(barycentric_geometry_module, nullptr);
-	}
-	if (graphics_debug_dump_enabled()) {
-		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
-		     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 

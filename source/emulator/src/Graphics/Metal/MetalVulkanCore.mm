@@ -1,4 +1,5 @@
 #include "MetalVulkanInternal.h"
+#include "MetalCullDistance.h"
 
 #include <vulkan/vk_enum_string_helper.h>
 
@@ -75,6 +76,9 @@ bool DeviceExtensionSupported(const char* name)
 {
 	return name != nullptr &&
 	       (std::strcmp(name, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0 ||
+	        std::strcmp(name, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME) == 0 ||
+	        std::strcmp(name, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME) == 0 ||
+	        std::strcmp(name, VK_EXT_IMAGE_ROBUSTNESS_EXTENSION_NAME) == 0 ||
 	        std::strcmp(name, VK_KHR_MAINTENANCE1_EXTENSION_NAME) == 0 ||
 	        std::strcmp(name, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) == 0 ||
 	        std::strcmp(name, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME) == 0 ||
@@ -164,11 +168,22 @@ uint32_t BytesPerCompressedBlock(VkFormat format)
 {
 	switch (format)
 	{
-		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return 8;
+		case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+		case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+		case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+		case VK_FORMAT_BC4_UNORM_BLOCK:
+		case VK_FORMAT_BC4_SNORM_BLOCK: return 8;
 		case VK_FORMAT_BC2_UNORM_BLOCK:
+		case VK_FORMAT_BC2_SRGB_BLOCK:
 		case VK_FORMAT_BC3_UNORM_BLOCK:
 		case VK_FORMAT_BC3_SRGB_BLOCK:
-		case VK_FORMAT_BC7_UNORM_BLOCK: return 16;
+		case VK_FORMAT_BC5_UNORM_BLOCK:
+		case VK_FORMAT_BC5_SNORM_BLOCK:
+		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+		case VK_FORMAT_BC7_UNORM_BLOCK:
+		case VK_FORMAT_BC7_SRGB_BLOCK: return 16;
 		default: return 0;
 	}
 }
@@ -205,6 +220,7 @@ bool BuildMetalImageView(VkImageView view)
 		return false;
 	}
 	const bool stencilOnly = view->range.aspectMask == VK_IMAGE_ASPECT_STENCIL_BIT;
+	const bool opaqueBc1 = view->format == VK_FORMAT_BC1_RGB_UNORM_BLOCK || view->format == VK_FORMAT_BC1_RGB_SRGB_BLOCK;
     const MTLPixelFormat pixelFormat = stencilOnly && view->format == VK_FORMAT_D32_SFLOAT_S8_UINT
         ? MTLPixelFormatX32_Stencil8 : Lumen::MetalVulkan::ToMTLPixelFormat(view->format);
     const MTLTextureType viewType = view->image->samples != VK_SAMPLE_COUNT_1_BIT
@@ -216,32 +232,55 @@ bool BuildMetalImageView(VkImageView view)
 	}
 	const uint32_t baseLevel = view->range.baseMipLevel;
 	const uint32_t baseLayer = view->range.baseArrayLayer;
-	if (baseLevel >= view->image->mipLevels || baseLayer >= view->image->arrayLayers)
+	if (baseLevel >= view->image->mipLevels)
 	{
 		return false;
 	}
+	const bool volumeAttachment = view->image->imageType == VK_IMAGE_TYPE_3D &&
+	    (view->viewType == VK_IMAGE_VIEW_TYPE_2D || view->viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY);
+	const uint32_t availableLayers = volumeAttachment ? std::max(1u, view->image->extent.depth >> baseLevel)
+	                                                  : view->image->arrayLayers;
+	if (baseLayer >= availableLayers) return false;
 	const uint32_t levelCount = view->range.levelCount == VK_REMAINING_MIP_LEVELS
 	                                ? view->image->mipLevels - baseLevel
 	                                : view->range.levelCount;
 	const uint32_t layerCount = view->range.layerCount == VK_REMAINING_ARRAY_LAYERS
-	                                ? view->image->arrayLayers - baseLayer
+	                                ? availableLayers - baseLayer
 	                                : view->range.layerCount;
 	if (levelCount == 0 || layerCount == 0 || levelCount > view->image->mipLevels - baseLevel ||
-	    layerCount > view->image->arrayLayers - baseLayer)
+	    layerCount > availableLayers - baseLayer)
 	{
 		return false;
 	}
-	if (pixelFormat == view->image->metalTexture.pixelFormat && viewType == view->image->metalTexture.textureType && IsIdentityMapping(view->components) && baseLevel == 0 &&
+	if (volumeAttachment)
+	{
+		if ((view->image->flags & VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT) == 0 || levelCount != 1 ||
+		    (view->viewType == VK_IMAGE_VIEW_TYPE_2D && layerCount != 1) || !IsIdentityMapping(view->components))
+			return false;
+		view->volumeAttachment = true;
+		view->range.levelCount = levelCount;
+		view->range.layerCount = layerCount;
+		view->metalTexture = pixelFormat == view->image->metalTexture.pixelFormat ? view->image->metalTexture :
+		    [view->image->metalTexture newTextureViewWithPixelFormat:pixelFormat];
+		return view->metalTexture != nil;
+	}
+	if (!opaqueBc1 && pixelFormat == view->image->metalTexture.pixelFormat && viewType == view->image->metalTexture.textureType && IsIdentityMapping(view->components) && baseLevel == 0 &&
 	    levelCount == view->image->mipLevels && baseLayer == 0 && layerCount == view->image->arrayLayers)
 	{
 		view->metalTexture = view->image->metalTexture;
 		return true;
 	}
+	const auto component = [opaqueBc1](VkComponentSwizzle channel, MTLTextureSwizzle identity) {
+		const auto result = ToMTLTextureSwizzle(channel, identity);
+		// BC1 RGB has an opaque alpha component, including when the Vulkan
+		// swizzle selects that component for a different output channel.
+		return opaqueBc1 && result == MTLTextureSwizzleAlpha ? MTLTextureSwizzleOne : result;
+	};
 	const MTLTextureSwizzleChannels swizzle = MTLTextureSwizzleChannelsMake(
-	    ToMTLTextureSwizzle(view->components.r, MTLTextureSwizzleRed),
-	    ToMTLTextureSwizzle(view->components.g, MTLTextureSwizzleGreen),
-	    ToMTLTextureSwizzle(view->components.b, MTLTextureSwizzleBlue),
-	    ToMTLTextureSwizzle(view->components.a, MTLTextureSwizzleAlpha));
+	    component(view->components.r, MTLTextureSwizzleRed),
+	    component(view->components.g, MTLTextureSwizzleGreen),
+	    component(view->components.b, MTLTextureSwizzleBlue),
+	    component(view->components.a, MTLTextureSwizzleAlpha));
 	if (swizzle.red == static_cast<MTLTextureSwizzle>(UINT8_MAX) ||
 	    swizzle.green == static_cast<MTLTextureSwizzle>(UINT8_MAX) ||
 	    swizzle.blue == static_cast<MTLTextureSwizzle>(UINT8_MAX) ||
@@ -311,13 +350,27 @@ VkPhysicalDeviceFeatures SupportedFeatures(id<MTLDevice> device)
 		features.textureCompressionBC = device.supportsBCTextureCompression ? VK_TRUE : VK_FALSE;
 	}
 	features.fragmentStoresAndAtomics = VK_TRUE;
+	features.vertexPipelineStoresAndAtomics = VK_TRUE;
 	features.multiDrawIndirect = VK_TRUE;
 	features.independentBlend = VK_TRUE;
+	features.dualSrcBlend = VK_TRUE;
 	features.shaderStorageBufferArrayDynamicIndexing = VK_TRUE;
 	features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
 	features.shaderStorageImageArrayDynamicIndexing = VK_TRUE;
 	features.shaderStorageImageExtendedFormats = VK_TRUE;
 	features.shaderClipDistance = VK_TRUE;
+	features.shaderCullDistance = Lumen::MetalVulkan::MetalCullDistanceSupported(device);
+	// These types lower directly to MSL long/short/char storage and arithmetic;
+	// 64-bit atomics remain separately unavailable.
+	features.shaderInt64 = VK_TRUE;
+	features.shaderInt16 = VK_TRUE;
+	features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+	features.shaderImageGatherExtended = VK_TRUE;
+	features.sampleRateShading = VK_TRUE;
+	features.depthBiasClamp = VK_TRUE;
+	features.multiViewport = VK_TRUE;
+	features.tessellationShader = [device supportsFamily:MTLGPUFamilyApple1] ||
+	                              [device supportsFamily:MTLGPUFamilyMac2];
 	return features;
 }
 
@@ -381,6 +434,9 @@ std::vector<VkExtensionProperties> DeviceExtensions()
 {
 	std::vector<VkExtensionProperties> extensions;
 	for (const auto* name: {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_MAINTENANCE1_EXTENSION_NAME,
+	                       VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+	                       VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
+	                       VK_EXT_IMAGE_ROBUSTNESS_EXTENSION_NAME,
 	                       VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
 	                       VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME})
 	{
@@ -609,22 +665,44 @@ MTLPixelFormat ToMTLPixelFormat(VkFormat format)
 		case VK_FORMAT_D32_SFLOAT: return MTLPixelFormatDepth32Float;
 		case VK_FORMAT_D32_SFLOAT_S8_UINT: return MTLPixelFormatDepth32Float_Stencil8;
 		case VK_FORMAT_S8_UINT: return MTLPixelFormatStencil8;
+		case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+		case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
 		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+		case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
 		case VK_FORMAT_BC2_UNORM_BLOCK:
+		case VK_FORMAT_BC2_SRGB_BLOCK:
 		case VK_FORMAT_BC3_UNORM_BLOCK:
 		case VK_FORMAT_BC3_SRGB_BLOCK:
+		case VK_FORMAT_BC4_UNORM_BLOCK:
+		case VK_FORMAT_BC4_SNORM_BLOCK:
+		case VK_FORMAT_BC5_UNORM_BLOCK:
+		case VK_FORMAT_BC5_SNORM_BLOCK:
+		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
 		case VK_FORMAT_BC7_UNORM_BLOCK:
+		case VK_FORMAT_BC7_SRGB_BLOCK:
 #if TARGET_OS_IPHONE
 			if (@available(iOS 16.4, *))
 #endif
 			{
 				switch (format)
 				{
+					case VK_FORMAT_BC1_RGB_UNORM_BLOCK: return MTLPixelFormatBC1_RGBA;
+					case VK_FORMAT_BC1_RGB_SRGB_BLOCK: return MTLPixelFormatBC1_RGBA_sRGB;
 					case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return MTLPixelFormatBC1_RGBA;
+					case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: return MTLPixelFormatBC1_RGBA_sRGB;
 					case VK_FORMAT_BC2_UNORM_BLOCK: return MTLPixelFormatBC2_RGBA;
+					case VK_FORMAT_BC2_SRGB_BLOCK: return MTLPixelFormatBC2_RGBA_sRGB;
 					case VK_FORMAT_BC3_UNORM_BLOCK: return MTLPixelFormatBC3_RGBA;
 					case VK_FORMAT_BC3_SRGB_BLOCK: return MTLPixelFormatBC3_RGBA_sRGB;
+					case VK_FORMAT_BC4_UNORM_BLOCK: return MTLPixelFormatBC4_RUnorm;
+					case VK_FORMAT_BC4_SNORM_BLOCK: return MTLPixelFormatBC4_RSnorm;
+					case VK_FORMAT_BC5_UNORM_BLOCK: return MTLPixelFormatBC5_RGUnorm;
+					case VK_FORMAT_BC5_SNORM_BLOCK: return MTLPixelFormatBC5_RGSnorm;
+					case VK_FORMAT_BC6H_UFLOAT_BLOCK: return MTLPixelFormatBC6H_RGBUfloat;
+					case VK_FORMAT_BC6H_SFLOAT_BLOCK: return MTLPixelFormatBC6H_RGBFloat;
 					case VK_FORMAT_BC7_UNORM_BLOCK: return MTLPixelFormatBC7_RGBAUnorm;
+					case VK_FORMAT_BC7_SRGB_BLOCK: return MTLPixelFormatBC7_RGBAUnorm_sRGB;
 					default: break;
 				}
 			}
@@ -739,8 +817,8 @@ VkFormatFeatureFlags FormatFeatures(VkFormat format, VkImageTiling tiling)
 	{
 		features |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
         if (!integerFormat) features |= VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
-		// BC7 can be sampled by the existing blit renderer, but cannot be its
-		// compressed render target. Preserve the earlier BC1/2/3 advertisement.
+		// BC textures can be sampled by the blit renderer, but cannot be
+		// compressed render targets or storage images.
 		if (!compressed && !integerFormat) features |= VK_FORMAT_FEATURE_BLIT_DST_BIT;
 		if (!compressed)
 		{
@@ -755,11 +833,20 @@ VkFormatFeatureFlags FormatFeatures(VkFormat format, VkImageTiling tiling)
 	return features;
 }
 
-constexpr VkImageCreateFlags kSupportedImageCreateFlags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+constexpr VkImageCreateFlags kSupportedImageCreateFlags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
+    VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
 
 bool IsSupportedMutableImageViewPair(VkFormat imageFormat, VkFormat viewFormat)
 {
     if (imageFormat == viewFormat) return true;
+	if (BytesPerCompressedBlock(imageFormat) != 0 || BytesPerCompressedBlock(viewFormat) != 0)
+	{
+		// Only the two encodings in the same BC family share a Metal view
+		// class. Equal block byte counts do not permit BC2/BC5/etc aliasing.
+		return imageFormat >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && imageFormat <= VK_FORMAT_BC7_SRGB_BLOCK &&
+		       viewFormat >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && viewFormat <= VK_FORMAT_BC7_SRGB_BLOCK &&
+		       (imageFormat - VK_FORMAT_BC1_RGB_UNORM_BLOCK) / 2 == (viewFormat - VK_FORMAT_BC1_RGB_UNORM_BLOCK) / 2;
+	}
     const auto depth = [](VkFormat f) { return f == VK_FORMAT_D16_UNORM || f == VK_FORMAT_D32_SFLOAT || f == VK_FORMAT_D32_SFLOAT_S8_UINT || f == VK_FORMAT_S8_UINT; };
     if (depth(imageFormat) || depth(viewFormat)) return false;
     const auto bytes = BytesPerPixel(imageFormat);
@@ -1231,7 +1318,14 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physica
 		features->features = SupportedFeatures(physicalDevice->metalDevice);
 		for (auto* next = static_cast<VkBaseOutStructure*>(features->pNext); next != nullptr; next = next->pNext)
 		{
-			if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES)
+			if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES)
+			{
+				auto* feature = reinterpret_cast<VkPhysicalDeviceVulkan11Features*>(next);
+				void* tail = feature->pNext;
+				*feature = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, tail};
+				feature->storageBuffer16BitAccess = VK_TRUE;
+			}
+			else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES)
 			{
 				auto* feature = reinterpret_cast<VkPhysicalDeviceVulkan12Features*>(next);
 				void* tail = feature->pNext;
@@ -1239,7 +1333,32 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physica
 				feature->timelineSemaphore = VK_TRUE;
                 feature->drawIndirectCount = VK_TRUE;
 				feature->bufferDeviceAddress = MakeAddressQueryPipeline(physicalDevice->metalDevice) != nil;
+				feature->samplerMirrorClampToEdge = VK_TRUE;
+				feature->storageBuffer8BitAccess = VK_TRUE;
+				feature->shaderInt8 = VK_TRUE;
+				feature->shaderFloat16 = VK_TRUE;
+				feature->shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+				feature->shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+				feature->shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+				feature->shaderOutputLayer = VK_TRUE;
+				feature->shaderOutputViewportIndex = VK_TRUE;
 			}
+			else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES)
+			{
+				auto* feature = reinterpret_cast<VkPhysicalDeviceVulkan13Features*>(next);
+				void* tail = feature->pNext;
+				*feature = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, tail};
+				feature->dynamicRendering = VK_TRUE;
+				feature->synchronization2 = VK_TRUE;
+				// Apple GPU texture reads return zero outside the view and writes
+				// are discarded. This does not imply robust buffer pointer access.
+				feature->robustImageAccess = [physicalDevice->metalDevice supportsFamily:MTLGPUFamilyApple1];
+			}
+			else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_ROBUSTNESS_FEATURES)
+				reinterpret_cast<VkPhysicalDeviceImageRobustnessFeatures*>(next)->robustImageAccess =
+				    [physicalDevice->metalDevice supportsFamily:MTLGPUFamilyApple1];
+			else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT)
+				reinterpret_cast<VkPhysicalDeviceDepthClipControlFeaturesEXT*>(next)->depthClipControl = VK_TRUE;
 			else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES)
 			{
 				reinterpret_cast<VkPhysicalDeviceTimelineSemaphoreFeatures*>(next)->timelineSemaphore = VK_TRUE;
@@ -1301,8 +1420,8 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDevice physic
 	limits.bufferImageGranularity = kResourceAlignment;
 	limits.maxBoundDescriptorSets = 8;
 	limits.maxPerStageDescriptorSamplers = 16;
-	limits.maxPerStageDescriptorUniformBuffers = 31;
-	limits.maxPerStageDescriptorStorageBuffers = 31;
+	limits.maxPerStageDescriptorUniformBuffers = 29;
+	limits.maxPerStageDescriptorStorageBuffers = 29;
 	limits.maxPerStageDescriptorSampledImages = 128;
 	limits.maxPerStageDescriptorStorageImages = 8;
 	limits.maxPerStageResources = 128;
@@ -1316,8 +1435,20 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDevice physic
 	limits.maxVertexInputAttributeOffset = 2047;
 	limits.maxVertexInputBindingStride = 2048;
 	limits.maxVertexOutputComponents = 124;
+	limits.maxTessellationGenerationLevel = 64;
+	limits.maxTessellationPatchSize = 32;
+	limits.maxTessellationControlPerVertexInputComponents = 128;
+	limits.maxTessellationControlPerVertexOutputComponents = 128;
+	limits.maxTessellationControlPerPatchOutputComponents = 120;
+	limits.maxTessellationControlTotalOutputComponents = 4096;
+	limits.maxTessellationEvaluationInputComponents = 128;
+	limits.maxTessellationEvaluationOutputComponents = 128;
+	limits.maxClipDistances = 8;
+	limits.maxCullDistances = 8;
+	limits.maxCombinedClipAndCullDistances = 8;
 	limits.maxFragmentInputComponents = 124;
 	limits.maxFragmentOutputAttachments = 8;
+	limits.maxFragmentDualSrcAttachments = 1;
 	limits.maxFragmentCombinedOutputResources = 128;
 	limits.maxComputeSharedMemorySize = 32768;
 	limits.maxComputeWorkGroupCount[0] = limits.maxComputeWorkGroupCount[1] = limits.maxComputeWorkGroupCount[2] = 65535;
@@ -1329,7 +1460,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDevice physic
 	limits.maxDrawIndirectCount = UINT32_MAX;
 	limits.maxSamplerLodBias = 16.0f;
 	limits.maxSamplerAnisotropy = 16.0f;
-	limits.maxViewports = 1;
+	limits.maxViewports = 16;
 	limits.maxViewportDimensions[0] = limits.maxViewportDimensions[1] = 16384;
 	limits.viewportBoundsRange[0] = -32768.0f;
 	limits.viewportBoundsRange[1] = 32767.0f;
@@ -1433,6 +1564,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties(VkPhysic
 	                                                                   VkImageFormatProperties* properties)
 {
 	if (physicalDevice == VK_NULL_HANDLE || properties == nullptr ||
+	    (type != VK_IMAGE_TYPE_1D && type != VK_IMAGE_TYPE_2D && type != VK_IMAGE_TYPE_3D) ||
+	    ((flags & VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT) != 0 && type != VK_IMAGE_TYPE_3D) ||
+	    (type == VK_IMAGE_TYPE_3D && (Lumen::MetalVulkan::FormatFeatures(format, tiling) &
+	                              VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) ||
+	    (BytesPerCompressedBlock(format) != 0 && type != VK_IMAGE_TYPE_2D) ||
 	    !Lumen::MetalVulkan::ImageCreateFlagsSupported(format, flags) ||
 	    !Lumen::MetalVulkan::ImageUsageSupported(
         (flags & VK_IMAGE_CREATE_EXTENDED_USAGE_BIT) && format == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_R8G8B8A8_UNORM :
@@ -1447,9 +1583,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties(VkPhysic
 	}
 	*properties = {};
 	properties->maxExtent = type == VK_IMAGE_TYPE_3D ? VkExtent3D {2048, 2048, 2048} : VkExtent3D {16384, 16384, 1};
-	properties->maxMipLevels = 15;
-	properties->maxArrayLayers = 2048;
-	properties->sampleCounts = format == VK_FORMAT_BC7_UNORM_BLOCK ? VK_SAMPLE_COUNT_1_BIT
+	properties->maxMipLevels = type == VK_IMAGE_TYPE_3D ? 12 : 15;
+	properties->maxArrayLayers = type == VK_IMAGE_TYPE_3D ? 1 : 2048;
+	properties->sampleCounts = BytesPerCompressedBlock(format) != 0 || type != VK_IMAGE_TYPE_2D ? VK_SAMPLE_COUNT_1_BIT
 	    : VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
 	properties->maxResourceSize = DeviceWorkingSetSize(physicalDevice->metalDevice);
 	return VK_SUCCESS;
@@ -1458,18 +1594,44 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties(VkPhysic
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
                                                          VkPhysicalDeviceProperties2* properties)
 {
-	if (properties == nullptr) return;
+	if (physicalDevice == VK_NULL_HANDLE || properties == nullptr) return;
 	vkGetPhysicalDeviceProperties(physicalDevice, &properties->properties);
+	const uint32_t subgroupSize = uint32_t(MakeAddressQueryPipeline(physicalDevice->metalDevice).threadExecutionWidth);
+	// CompilerMSL lowers these SPIR-V operations to Metal simd_* intrinsics,
+	// including ballot masks and AllEqual. Keep the Vulkan 1.1 aggregate and
+	// standalone query identical; neither implies subgroup-size control.
+	const VkSubgroupFeatureFlags subgroupOperations = VK_SUBGROUP_FEATURE_BASIC_BIT |
+	    VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
+	    VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
+	    VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT;
+	const VkShaderStageFlags subgroupStages = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 	for (auto* next = static_cast<VkBaseOutStructure*>(properties->pNext); next != nullptr; next = next->pNext)
 	{
 		if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_PROPERTIES)
 			reinterpret_cast<VkPhysicalDeviceTimelineSemaphoreProperties*>(next)->maxTimelineSemaphoreValueDifference = UINT64_MAX;
+		else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR)
+			reinterpret_cast<VkPhysicalDevicePushDescriptorPropertiesKHR*>(next)->maxPushDescriptors = 128;
 		else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES) {
 			auto* extended = reinterpret_cast<VkPhysicalDeviceVulkan11Properties*>(next);
-			extended->subgroupSize = uint32_t(MakeAddressQueryPipeline(physicalDevice->metalDevice).threadExecutionWidth);
-			extended->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-			extended->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT;
+			extended->subgroupSize = subgroupSize;
+			extended->subgroupSupportedStages = subgroupStages;
+			extended->subgroupSupportedOperations = subgroupOperations;
+			extended->subgroupQuadOperationsInAllStages = VK_FALSE;
 			extended->maxMemoryAllocationSize = DeviceWorkingSetSize(physicalDevice->metalDevice);
+		}
+		else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES) {
+			auto* extended = reinterpret_cast<VkPhysicalDeviceSubgroupProperties*>(next);
+			extended->subgroupSize = subgroupSize;
+			extended->supportedStages = subgroupStages;
+			extended->supportedOperations = subgroupOperations;
+			extended->quadOperationsInAllStages = VK_FALSE;
+		}
+		else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES) {
+			auto* extended = reinterpret_cast<VkPhysicalDeviceSubgroupSizeControlProperties*>(next);
+			extended->minSubgroupSize = subgroupSize;
+			extended->maxSubgroupSize = subgroupSize;
+			extended->maxComputeWorkgroupSubgroups = subgroupSize ? properties->properties.limits.maxComputeWorkGroupInvocations / subgroupSize : 0;
+			extended->requiredSubgroupSizeStages = 0;
 		}
 		else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES) {
 			auto* extended = reinterpret_cast<VkPhysicalDeviceVulkan12Properties*>(next);
@@ -1561,9 +1723,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, c
                                             physicalDevice->metalDevice)) return VK_ERROR_FEATURE_NOT_PRESENT;
         } else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES) {
             const auto* requested = reinterpret_cast<const VkPhysicalDeviceVulkan11Features*>(next);
+            VkPhysicalDeviceVulkan11Features supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+            VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supported};
+            vkGetPhysicalDeviceFeatures2(physicalDevice, &query);
             const auto* values = &requested->storageBuffer16BitAccess;
+            const auto* have = &supported.storageBuffer16BitAccess;
             constexpr auto count = (offsetof(VkPhysicalDeviceVulkan11Features, shaderDrawParameters) - offsetof(VkPhysicalDeviceVulkan11Features, storageBuffer16BitAccess)) / sizeof(VkBool32) + 1;
-            for (size_t i = 0; i < count; ++i) if (values[i]) return VK_ERROR_FEATURE_NOT_PRESENT;
+            for (size_t i = 0; i < count; ++i) if (values[i] && !have[i]) return VK_ERROR_FEATURE_NOT_PRESENT;
         } else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES) {
             const auto* requested = reinterpret_cast<const VkPhysicalDeviceVulkan12Features*>(next);
             VkPhysicalDeviceVulkan12Features supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
@@ -1576,6 +1742,19 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, c
         } else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT) {
             const auto* requested = reinterpret_cast<const VkPhysicalDeviceExtendedDynamicState2FeaturesEXT*>(next);
             if (requested->extendedDynamicState2LogicOp || requested->extendedDynamicState2PatchControlPoints) return VK_ERROR_FEATURE_NOT_PRESENT;
+		} else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_ROBUSTNESS_FEATURES) {
+			const auto* requested = reinterpret_cast<const VkPhysicalDeviceImageRobustnessFeatures*>(next);
+			if (requested->robustImageAccess && ![physicalDevice->metalDevice supportsFamily:MTLGPUFamilyApple1])
+				return VK_ERROR_FEATURE_NOT_PRESENT;
+		} else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES) {
+			const auto* requested = reinterpret_cast<const VkPhysicalDeviceVulkan13Features*>(next);
+			VkPhysicalDeviceVulkan13Features supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+			VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supported};
+			vkGetPhysicalDeviceFeatures2(physicalDevice, &query);
+			const auto* want = &requested->robustImageAccess;
+			const auto* have = &supported.robustImageAccess;
+			constexpr auto count = (offsetof(VkPhysicalDeviceVulkan13Features, maintenance4) - offsetof(VkPhysicalDeviceVulkan13Features, robustImageAccess)) / sizeof(VkBool32) + 1;
+			for (size_t i = 0; i < count; ++i) if (want[i] && !have[i]) return VK_ERROR_FEATURE_NOT_PRESENT;
         }
     }
 
@@ -2654,6 +2833,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkBindImageMemory(VkDevice device, VkImage image,
 	descriptor.arrayLength = image->arrayLayers;
 	descriptor.sampleCount = static_cast<NSUInteger>(image->samples);
 	descriptor.usage = Lumen::MetalVulkan::ToMTLTextureUsage(image->usage) | MTLTextureUsagePixelFormatView;
+	// Vulkan transfer clears use Metal attachment load actions, even for an
+	// image which is never bound as a Vulkan framebuffer. Compressed formats
+	// are deliberately excluded because Metal cannot render into them.
+	if ((image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0 &&
+	    (Lumen::MetalVulkan::FormatFeatures(image->format, VK_IMAGE_TILING_OPTIMAL) &
+	     (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) != 0)
+		descriptor.usage |= MTLTextureUsageRenderTarget;
 	descriptor.storageMode = Lumen::MetalVulkan::ToMTLStorageMode(memory->properties);
 	std::lock_guard lock(image->mutex);
 	image->metalTexture = [device->metalDevice newTextureWithDescriptor:descriptor];
@@ -2723,9 +2909,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(VkDevice device, const VkImageV
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 	VkImageUsageFlags viewUsage = createInfo->image->usage;
-    for (auto* next = static_cast<const VkBaseInStructure*>(createInfo->pNext); next != nullptr; next = next->pNext)
+    for (auto* next = static_cast<const VkBaseInStructure*>(createInfo->pNext); next != nullptr; next = next->pNext) {
         if (next->sType == VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO)
             viewUsage = reinterpret_cast<const VkImageViewUsageCreateInfo*>(next)->usage;
+		else if (next->sType == VK_STRUCTURE_TYPE_IMAGE_VIEW_MIN_LOD_CREATE_INFO_EXT &&
+		         reinterpret_cast<const VkImageViewMinLodCreateInfoEXT*>(next)->minLod != 0.0f)
+			return VK_ERROR_FEATURE_NOT_PRESENT;
+	}
     const bool alternateFormat = createInfo->format != createInfo->image->format;
 	if ((alternateFormat &&
 	     (((createInfo->image->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) == 0) ||
@@ -3643,12 +3833,14 @@ PFN_vkVoidFunction ResolveFunction(const char* name)
 	    LUMEN_VK_ENTRY(vkCmdDrawIndirect), LUMEN_VK_ENTRY(vkCmdDrawIndexedIndirect),
         LUMEN_VK_ENTRY(vkCmdDrawIndirectCount), LUMEN_VK_ENTRY(vkCmdDrawIndexedIndirectCount),
 	    LUMEN_VK_ENTRY(vkCmdBindPipeline), LUMEN_VK_ENTRY(vkCmdBindDescriptorSets),
+	    LUMEN_VK_ENTRY(vkCmdPushDescriptorSetKHR),
 	    LUMEN_VK_ENTRY(vkCmdPushConstants), LUMEN_VK_ENTRY(vkCmdBindVertexBuffers),
 	    LUMEN_VK_ENTRY(vkCmdBindIndexBuffer), LUMEN_VK_ENTRY(vkCmdDraw), LUMEN_VK_ENTRY(vkCmdDrawIndexed),
 	    LUMEN_VK_ENTRY(vkCmdDispatch), LUMEN_VK_ENTRY(vkCmdCopyBuffer), LUMEN_VK_ENTRY(vkCmdCopyBufferToImage),
 	    LUMEN_VK_ENTRY(vkCmdCopyImageToBuffer), LUMEN_VK_ENTRY(vkCmdCopyImage), LUMEN_VK_ENTRY(vkCmdBlitImage),
         LUMEN_VK_ENTRY(vkCmdResolveImage),
 	    LUMEN_VK_ENTRY(vkCmdClearColorImage), LUMEN_VK_ENTRY(vkCmdPipelineBarrier), LUMEN_VK_ENTRY(vkCmdSetEvent),
+	    LUMEN_VK_ENTRY(vkCmdClearDepthStencilImage),
 	    LUMEN_VK_ENTRY(vkCmdSetEvent2),
 	    LUMEN_VK_ENTRY(vkCmdSetScissor), LUMEN_VK_ENTRY(vkCmdSetLineWidth), LUMEN_VK_ENTRY(vkCmdSetStencilCompareMask),
 	    LUMEN_VK_ENTRY(vkCmdSetStencilWriteMask), LUMEN_VK_ENTRY(vkCmdSetStencilReference),

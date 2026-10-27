@@ -13,7 +13,7 @@
 namespace {
 namespace Direct = Lumen::Ps5::DirectFex;
 using Common::HostException::AccessViolationType;
-constexpr std::size_t Page = 4096;
+std::size_t Page = 4096;
 void* watched = MAP_FAILED;
 AccessViolationType expected_access = AccessViolationType::Unknown;
 std::uintptr_t expected_native_pc {};
@@ -84,7 +84,9 @@ bool ExecuteGuest(GuestFixture& fixture, std::size_t offset, std::uint64_t expec
 } // namespace
 
 int main() {
-    if (::sysconf(_SC_PAGESIZE) != Page) return 1;
+    const auto host_page = ::sysconf(_SC_PAGESIZE);
+    if (host_page != 4096 && host_page != 16384) return 1;
+    Page = static_cast<std::size_t>(host_page);
     LumenAndroidFexCoreRuntimeStatusV1 status {};
     if (Direct::Probe(&status) != 0 ||
         !Common::HostException::InitializeThreadSignalStack() ||

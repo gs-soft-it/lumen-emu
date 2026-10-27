@@ -8,7 +8,10 @@
 #include "loader/symbolDatabase.h"
 
 #include <filesystem>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -107,6 +110,7 @@ struct DynamicInfo {
 	uint64_t flags   = 0;
 
 	const char* so_name = nullptr;
+	std::vector<std::string> needed;
 
 	std::vector<ModuleId>  export_modules;
 	std::vector<ModuleId>  import_modules;
@@ -121,6 +125,15 @@ struct Program {
 	int32_t                      unique_id = -1;
 	RuntimeLinker*               rt        = nullptr;
 	uint32_t                     load_count = 0; // Successful sceKernelLoadStartModule calls.
+	uint32_t                     module_call_count = 0; // Protected by the linker mutex.
+	uint32_t                     dependency_count = 0; // References from loaded DT_NEEDED consumers.
+	std::vector<Program*>        dependencies;
+	bool                         module_started = false;
+	bool                         module_starting = false;
+	int                          module_start_result = 0;
+	std::mutex                   module_state_mutex;
+	std::condition_variable      module_state_changed;
+	std::thread::id              module_start_thread;
 	std::filesystem::path        file_name;
 	std::unique_ptr<Elf64>       elf;
 	std::unique_ptr<DynamicInfo> dynamic_info;
@@ -151,12 +164,15 @@ public:
 	Program* LoadProgram(const std::filesystem::path& elf_name);
 	void     SaveMainProgram(const std::filesystem::path& elf_name);
 	void     SaveProgram(Program* program, const std::filesystem::path& elf_name);
-	void     UnloadProgram(Program* program);
+	bool     UnloadProgram(Program* program);
+	bool     RetainProgram(Program* program);
+	void     ReleaseProgram(Program* program);
 
 	[[nodiscard]] uint64_t GetEntry();
 	[[nodiscard]] uint64_t GetProcParam();
 
 	void PreparePrograms();
+	void StartAllModules();
 	void SetUpstreamFunctionFallback(bool enabled);
 	bool UpstreamFunctionFallbackEnabled() const { return m_upstream_function_fallback; }
 	void RelocateAll();
@@ -195,11 +211,13 @@ private:
 	static void Relocate(Program* program);
 	static void DeleteProgram(Program* program);
 	static void SetupTlsHandler(Program* program);
+	void PreloadDependencies();
 
 	static const ModuleId*  FindModule(const Program& program, const std::string& id);
 	static const LibraryId* FindLibrary(const Program& program, const std::string& id);
 
 	std::vector<Program*>           m_programs;
+	std::vector<Program*>           m_start_order;
 	std::unique_ptr<SymbolDatabase> m_symbols;
 	Common::Mutex                   m_mutex;
 	bool m_programs_prepared = false;

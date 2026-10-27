@@ -495,12 +495,11 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 	if (!GuestRange {address, size}.Valid()) EXIT("PS5 WRITE_DATA destination range is invalid\n");
 	PrepareNativeGuestBackingWrite(address, size);
 
-	if (write_one_address) {
-		for (uint32_t i = 0; i < dw_num; i++) {
-			dst[0] = src[i];
-		}
-	} else {
-		memcpy(dst, src, static_cast<size_t>(dw_num) * sizeof(uint32_t));
+	// Completion labels can be reused immediately; memcpy may write a destination twice.
+	auto* output = static_cast<volatile uint32_t*>(dst);
+	for (uint32_t i = 0; i < dw_num; i++) {
+		*output = src[i];
+		output += !write_one_address;
 	}
 	if (GuestAsyncPrivateBackingEnabled() && GuestGpuWriteOwnershipSupported() &&
 	    m_renderer.IsMapped(address, size))

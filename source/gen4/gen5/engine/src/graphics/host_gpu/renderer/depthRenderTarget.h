@@ -11,6 +11,10 @@
 
 namespace Libs::Graphics {
 
+[[nodiscard]] vk::Format ResolveHostDepthAttachmentFormat(const CommandBuffer& buffer,
+                                                         const DepthFormatPolicy& policy,
+                                                         bool has_stencil, uint32_t samples);
+
 // Without a stencil plane, Hi-Stencil fields are inactive. An active plane is compatible when
 // Hi-Stencil is disabled or HTile backing is present.
 inline constexpr bool depth_htile_stencil_acceleration_compatible(bool has_stencil, bool has_htile,

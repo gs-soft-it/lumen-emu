@@ -17,7 +17,11 @@ namespace Libs::Graphics {
 
 struct VulkanImage;
 
+#if defined(LUMEN_PS5_NATIVE_METAL)
+inline constexpr uint32_t VULKAN_TARGET_API_VERSION = VK_API_VERSION_1_2;
+#else
 inline constexpr uint32_t VULKAN_TARGET_API_VERSION = VK_API_VERSION_1_3;
+#endif
 
 struct GraphicContext {
 	vk::Instance                       instance                              = nullptr;
@@ -28,8 +32,19 @@ struct GraphicContext {
 	vk::Device                         device                                = nullptr;
 	VmaAllocator                       allocator                             = nullptr;
 	bool                               memory_budget_ext_enabled             = false;
+	bool                               null_descriptor_enabled               = false;
+	bool                               null_descriptor_fallback_enabled      = false;
+	bool                               image_view_min_lod_enabled             = false;
+	bool                               shader_cull_distance_enabled           = false;
+	bool                               shader_image_gather_extended_enabled   = false;
+	bool                               multi_viewport_enabled                 = false;
+	bool                               large_points_enabled                   = false;
+	bool                               fill_mode_non_solid_enabled             = false;
+	bool                               tessellation_shader_enabled            = false;
+	bool                               robust_image_access_enabled            = false;
 	bool                               compute_subgroup_size_control_enabled = false;
 	bool                               mesh_subgroup_size_control_enabled    = false;
+	bool                               fragment_subgroup_size_control_enabled = false;
 	bool                               sample_rate_shading_enabled           = false;
 	bool                               fragment_shader_barycentric_enabled   = false;
 	bool                               geometry_shader_enabled               = false;
@@ -95,6 +110,14 @@ struct GraphicContext {
 		return subgroup_size == 64u || compute_subgroup_size_control_enabled;
 	}
 
+	[[nodiscard]] uint32_t SelectFragmentSubgroupSize(uint32_t guest_wave) const noexcept {
+		if (guest_wave == 32u && fragment_subgroup_size_control_enabled &&
+		    guest_wave >= min_subgroup_size && guest_wave <= max_subgroup_size) {
+			return guest_wave;
+		}
+		return subgroup_size;
+	}
+
 	[[nodiscard]] static constexpr uint64_t MeshHostInvocationCount(
 	    uint64_t logical_threads, uint32_t guest_wave, uint32_t host_wave) noexcept {
 		// This is the same two-logical-lanes lowering used by the SPIR-V emitter.
@@ -131,6 +154,7 @@ struct GraphicContext {
 	[[nodiscard]] bool CreateAllocator();
 	void               DestroyAllocator();
 	void               LogMemoryBudget() const;
+	void               RefreshMemoryBudget(uint32_t frame_index) const;
 	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
 	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
 	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;

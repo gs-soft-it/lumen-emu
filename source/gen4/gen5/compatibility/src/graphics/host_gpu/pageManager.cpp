@@ -68,13 +68,16 @@ class SpinGuard final {
 public:
 	explicit SpinGuard(std::atomic_flag& lock): m_lock(lock) {
 		while (m_lock.test_and_set(std::memory_order_acquire)) {
+			// Preserve the acquire hand-off without an exchange on every busy poll.
+			do {
 #if defined(__x86_64__) || defined(_M_X64)
-			_mm_pause();
+				_mm_pause();
 #elif defined(_M_ARM64)
-			__yield();
+				__yield();
 #elif defined(__aarch64__)
-			asm volatile("yield");
+				asm volatile("yield");
 #endif
+			} while (m_lock.test(std::memory_order_relaxed));
 		}
 	}
 	~SpinGuard() { m_lock.clear(std::memory_order_release); }

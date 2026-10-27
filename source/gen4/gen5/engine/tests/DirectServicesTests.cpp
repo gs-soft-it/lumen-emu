@@ -18,11 +18,14 @@
 #include "loader/timer.h"
 #include "DirectFexRuntime.h"
 #include "DirectPerformanceOptions.h"
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <thread>
 #include <vector>
 #include <unistd.h>
@@ -165,14 +168,122 @@ void LoadDlsymFixture(Loader::RuntimeLinker* rt) {
     std::memcpy(image.data()+header.e_phoff,segments,sizeof(segments));
     std::memcpy(image.data()+0x300,dynamic.data(),dynamic.size()*sizeof(Elf64_Dyn));
     image[0x200] = 0xc3;
-    char path[] = "/data/local/tmp/lumen-direct-dlsym-XXXXXX";
-    const int fd = mkstemp(path);
+#if defined(__ANDROID__)
+    std::string temporary_root = "/data/local/tmp";
+#else
+    const char* configured_tmp = std::getenv("TMPDIR");
+    std::string temporary_root = configured_tmp != nullptr && *configured_tmp != '\0'
+        ? configured_tmp : "/tmp";
+#endif
+    std::string directory = temporary_root + "/lumen-direct-services-XXXXXX";
+    Check(mkdtemp(directory.data()) != nullptr, "isolated temporary module directory");
+    std::string path = directory + "/module-XXXXXX";
+    const int fd = mkstemp(path.data());
     Check(fd >= 0,"synthetic module file creation");
     auto* file = fdopen(fd,"wb");
     Check(file && std::fwrite(image.data(),1,image.size(),file) == image.size(),"synthetic module write");
     Check(std::fclose(file) == 0,"synthetic module file close");
-    Check(rt->LoadProgram(path) != nullptr,"production loader accepts synthetic module");
-    Check(std::remove(path) == 0,"synthetic module file removal");
+    const bool loaded = rt->LoadProgram(path) != nullptr;
+    Check(std::remove(path.c_str()) == 0 && rmdir(directory.c_str()) == 0,
+          "synthetic module file and isolated directory removal");
+    Check(loaded,"production loader accepts synthetic module");
+}
+
+void CheckGuestMemoryAccess() {
+    const auto base = Memory::AllocateRuntimeMemory(0, 3 * Page, Mode::ReadWrite,
+                                                   "guest access fixture");
+    Check(base != 0, "guest access fixture allocation");
+    std::memset(reinterpret_cast<void*>(base), 0x5a, 3 * Page);
+    std::array<uint8_t, 8> bytes {};
+    const std::array<uint8_t, 8> replacement {1, 2, 3, 4, 5, 6, 7, 8};
+    const auto unchanged = [&] {
+        return std::all_of(bytes.begin(), bytes.end(), [](uint8_t value) { return value == 0xa5; });
+    };
+    const auto denied_read = [&](uint64_t address, size_t size) {
+        bytes.fill(0xa5);
+        return !Memory::ReadGuestMemory(nullptr, address, bytes.data(), size) && unchanged();
+    };
+    Check(Memory::QueryGuestAccess(base, 3 * Page, Mode::ReadWrite) &&
+          Memory::QueryGuestAccess(base, 3 * Page, Mode::NoAccess) &&
+          !Memory::QueryGuestAccess(base, 3 * Page, Mode::Execute) &&
+          !Memory::QueryGuestAccess(0, 8, Mode::Read) &&
+          !Memory::QueryGuestAccess(base, 0, Mode::Read) &&
+          !Memory::QueryGuestAccess(UINT64_MAX - 3, 8, Mode::Read) &&
+          !Memory::QueryGuestAccess(base, 8, static_cast<Mode>(8)) &&
+          !Memory::QueryGuestAccess(base, 8, static_cast<Mode>(-1)),
+          "guest access validates complete rights, zero spans, overflow and invalid modes");
+    Check(denied_read(0, bytes.size()) && denied_read(base, 0) &&
+          denied_read(UINT64_MAX - 3, bytes.size()) &&
+          !Memory::ReadGuestMemory(nullptr, base, nullptr, 8) &&
+          !Memory::WriteGuestMemory(nullptr, base, nullptr, 8),
+          "invalid guest copies reject before changing the destination");
+    Check(Memory::ReadGuestMemory(nullptr, base + Page - 4, bytes.data(), bytes.size()) &&
+          std::all_of(bytes.begin(), bytes.end(), [](uint8_t value) { return value == 0x5a; }),
+          "guest read crosses a mapped page boundary");
+    Check(Memory::ProtectGuestMemory(base + Page, Page, Mode::Read),
+          "guest access fixture has adjacent different permissions");
+    Check(Memory::QueryGuestAccess(base, 3 * Page, Mode::Read) &&
+          !Memory::QueryGuestAccess(base, 3 * Page, Mode::ReadWrite) &&
+          Memory::ReadGuestMemory(nullptr, base + Page - 4, bytes.data(), bytes.size()) &&
+          !Memory::WriteGuestMemory(nullptr, base + Page - 4, replacement.data(), replacement.size()) &&
+          std::all_of(reinterpret_cast<const uint8_t*>(base + Page - 4),
+                      reinterpret_cast<const uint8_t*>(base + Page + 4),
+                      [](uint8_t value) { return value == 0x5a; }),
+          "fragmented read passes while partial write denial preserves every destination byte");
+    Check(Memory::ProtectGuestMemory(base + Page, Page, Mode::NoAccess) &&
+          !Memory::QueryGuestAccess(base, 3 * Page, Mode::Read) &&
+          Memory::QueryGuestAccess(base + Page, Page, Mode::NoAccess) &&
+          denied_read(base + Page - 4, bytes.size()) &&
+          denied_read(base + Page, bytes.size()),
+          "guest protection revocation immediately denies full and crossing reads without copying");
+    Check(Memory::ProtectGuestMemory(base + Page, Page, Mode::ReadWrite),
+          "guest access permission restoration");
+
+    std::atomic<bool> begin {}, failed {};
+    std::thread reader([&] {
+        while (!begin.load(std::memory_order_acquire)) std::this_thread::yield();
+        for (unsigned i = 0; i < 256; ++i) {
+            std::array<uint8_t, 8> result;
+            result.fill(0xa5);
+            const bool read = Memory::ReadGuestMemory(nullptr, base + Page, result.data(), result.size());
+            const uint8_t expected = read ? 0x5a : 0xa5;
+            if (!std::all_of(result.begin(), result.end(), [expected](uint8_t value) {
+                    return value == expected;
+                })) failed.store(true, std::memory_order_relaxed);
+        }
+    });
+    begin.store(true, std::memory_order_release);
+    for (unsigned i = 0; i < 128; ++i) {
+        if (!Memory::ProtectGuestMemory(base + Page, Page, Mode::NoAccess) ||
+            !Memory::ProtectGuestMemory(base + Page, Page, Mode::ReadWrite)) failed = true;
+    }
+    reader.join();
+    Check(!failed.load(), "guest reads remain transactional during concurrent protection changes");
+
+    Check(Memory::FreeGuestMemory(base + Page, Page) &&
+          !Memory::QueryGuestAccess(base, 3 * Page, Mode::Read) &&
+          !Memory::QueryGuestAccess(base + Page, Page, Mode::NoAccess) &&
+          Memory::QueryGuestAccess(base, Page, Mode::ReadWrite) &&
+          Memory::QueryGuestAccess(base + 2 * Page, Page, Mode::ReadWrite) &&
+          denied_read(base + Page - 4, bytes.size()),
+          "unmapped interior gap rejects spanning access and preserves its neighbors");
+    Check(Memory::AllocateRuntimeMemory(base + Page, Page, Mode::ReadWrite,
+                                        "guest access replacement", true) == base + Page &&
+          Memory::QueryGuestAccess(base, 3 * Page, Mode::ReadWrite) &&
+          Memory::WriteGuestMemory(nullptr, base + Page - 4, replacement.data(), replacement.size()) &&
+          Memory::ReadGuestMemory(nullptr, base + Page - 4, bytes.data(), bytes.size()) && bytes == replacement,
+          "remap restores cross-range access and copies actual bytes through the guest view");
+    Check(Memory::FreeGuestMemory(base, 3 * Page) && denied_read(base, bytes.size()),
+          "guest access fixture retirement revokes reads");
+
+    void* reserved = nullptr;
+    Check(Memory::KernelReserveVirtualRange(&reserved, Page, 0, Page) == 0 && reserved != nullptr,
+          "guest access reservation fixture");
+    const auto reservation = reinterpret_cast<uint64_t>(reserved);
+    Check(!Memory::QueryGuestAccess(reservation, Page, Mode::Read) &&
+          !Memory::QueryGuestAccess(reservation, Page, Mode::NoAccess) &&
+          denied_read(reservation, bytes.size()) && Memory::KernelMunmap(reservation, Page) == 0,
+          "reserved uncommitted memory never grants CPU access");
 }
 }
 
@@ -192,6 +303,7 @@ int main() {
     auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
     Libs::InitAll(rt->Symbols());
     Check(Loader::GuestExecution::PrepareRuntime(), "complete service import registration");
+    CheckGuestMemoryAccess();
     const auto self = Kernel::PthreadSelf();
     Check(!Kernel::PthreadHasAnyPendingSignal(self) && !Kernel::PthreadHasAnyPendingSignal(nullptr),
           "signal mask initially empty and null thread denied");

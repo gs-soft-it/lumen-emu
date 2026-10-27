@@ -83,7 +83,11 @@ void Initialize() {
 	g_renderer      = &presenter.Renderer();
 	g_renderer->InitializeGpu(&video_out);
 	// Native driver module startup reserves its DMEM before the guest can allocate it.
-	EXIT_IF(Gen5Driver::Initialize() != OK);
+	const auto driver_result = Gen5Driver::Initialize();
+	if (driver_result != OK) {
+		EXIT("PS5_AGC_INITIALIZATION_FAILED result=0x%08" PRIx32
+		     " guestExecution=NOT_STARTED\n", static_cast<uint32_t>(driver_result));
+	}
 	ShaderInit();
 }
 
@@ -4149,8 +4153,26 @@ int Initialize() {
 		EXIT_IF(LibKernel::Memory::KernelCheckedReleaseDirectMemory(physical_offset, DriverDmemSize) != OK);
 		return result;
 	}
-	EXIT_IF(reinterpret_cast<uint64_t>(address) != DriverDmemBase);
-	std::memset(address, 0, DriverDmemSize);
+	if (reinterpret_cast<uint64_t>(address) != DriverDmemBase) {
+		// Guest shader instructions contain the fixed system-table VA. A
+		// successful non-fixed allocation elsewhere cannot satisfy that ABI.
+		// Release through the owner so backing, GPU aliases and metadata retire
+		// together; do not publish driver state or initialize the wrong address.
+		const auto release_result = LibKernel::Memory::KernelCheckedReleaseDirectMemory(
+		    physical_offset, DriverDmemSize);
+		LOGF("PS5_AGC_DMEM_ADDRESS_UNAVAILABLE requested=0x%016" PRIx64
+		     " returned=0x%016" PRIx64 " size=0x%08" PRIx32
+		     " rollback=0x%08" PRIx32 " guestAddressTranslation=REQUIRED\n",
+		     DriverDmemBase, reinterpret_cast<uint64_t>(address), DriverDmemSize,
+		     static_cast<uint32_t>(release_result));
+		return release_result != OK ? release_result : LibKernel::KERNEL_ERROR_ENOMEM;
+	}
+	uint64_t host_address = 0;
+	if (!LibKernel::Memory::TranslateGuestMemory(DriverDmemBase, DriverDmemSize, &host_address)) {
+		const auto release_result = LibKernel::Memory::KernelCheckedReleaseDirectMemory(physical_offset, DriverDmemSize);
+		return release_result != OK ? release_result : LibKernel::KERNEL_ERROR_ENOMEM;
+	}
+	std::memset(reinterpret_cast<void*>(host_address), 0, DriverDmemSize);
 	struct FunctionShaderBindings {
 		uint64_t code;
 		uint32_t user_data[2];
@@ -4173,9 +4195,11 @@ int Initialize() {
 	    static_cast<uint32_t>(function_table >> 32u) | 0x00100000u,
 	    static_cast<uint32_t>(functions.size()), 0x5204u,
 	};
-	std::memcpy(reinterpret_cast<void*>(function_table), functions.data(), sizeof(functions));
-	std::memcpy(reinterpret_cast<void*>(code_address), validator.data(), sizeof(validator));
-	std::memcpy(reinterpret_cast<void*>(base), descriptor.data(), sizeof(descriptor));
+	// Descriptors retain the guest ABI addresses. Only native initialization uses
+	// the watched host view; the writable physical backing alias is not exposed.
+	std::memcpy(reinterpret_cast<void*>(host_address + function_table - DriverDmemBase), functions.data(), sizeof(functions));
+	std::memcpy(reinterpret_cast<void*>(host_address + code_address - DriverDmemBase), validator.data(), sizeof(validator));
+	std::memcpy(reinterpret_cast<void*>(host_address + base - DriverDmemBase), descriptor.data(), sizeof(descriptor));
 	g_driver_dmem.physical_offset = physical_offset;
 	return OK;
 }

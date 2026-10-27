@@ -818,7 +818,7 @@ private:
 };
 
 static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSnapshot& snapshot,
-                                        ResourceSpecialization& specialization) {
+                                        ResourceSpecialization& specialization, bool null_fallback, bool explicit_bounds) {
 	for (uint32_t i = 0; i < specialization.images.size(); i++) {
 		const auto& descriptor = snapshot.images[i];
 		auto&       image      = specialization.images[i];
@@ -832,6 +832,8 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			return SpecializationFail(fmt::format("image resource {} has an invalid class", i));
 		}
 		image.mip_count = ImageMipCount(base, descriptor);
+		image.null_descriptor = null_fallback && NullImageDescriptor(descriptor);
+		image.explicit_image_bounds = explicit_bounds;
 		if (NullImageDescriptor(descriptor)) {
 			image.numeric_class = base.atomic ? Prospero::TextureNumericClass::Uint
 			                                  : Prospero::TextureNumericClass::Float;
@@ -1680,7 +1682,8 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		}
 	}
 	snapshot.user_data.assign(runtime.user_data.begin(), runtime.user_data.end());
-	return BuildResourceSpecialization(program, snapshot, specialization);
+	return BuildResourceSpecialization(program, snapshot, specialization, runtime.null_descriptor_fallback,
+	                                   runtime.explicit_image_bounds);
 }
 
 void ApplyResourceSpecialization(Program& program, const ResourceSpecialization& specialization) {
@@ -1733,6 +1736,11 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 		image.indirect_mapping_offset    = source.indirect_mapping_offset;
 		image.indirect_search_iterations = source.indirect_search_iterations;
 		image.cube                       = source.cube;
+		image.null_descriptor            = source.null_descriptor;
+		image.explicit_image_bounds       = source.explicit_image_bounds;
+		// A discarded null atomic does not require a native 64-bit image descriptor.
+		// Its instruction result keeps its original U64 type in the emitter.
+		if (source.null_descriptor) image.atomic64 = false;
 		image.indirect_resources.clear();
 	}
 	for (uint32_t index = 0; index < images.size(); index++) {

@@ -238,8 +238,17 @@ EngineResult<std::vector<detail::HostMapping>> CaptureHostMappings() {
         VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&information), &count, &object);
     if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
     if (result == KERN_INVALID_ADDRESS && !mappings.empty()) return mappings;
-    if (result != KERN_SUCCESS || begin < cursor || size == 0 || begin > UINTPTR_MAX - size)
+    if (result != KERN_SUCCESS || size == 0 || begin > UINTPTR_MAX - size || begin + size <= cursor)
       return Failure(EngineStage::Mapping, EFAULT);
+    // A neighboring mapping can merge with a region already visited while
+    // another thread changes its permissions. mach_vm_region then returns
+    // the containing region, whose beginning precedes the requested cursor.
+    // Replace that overlapping suffix with its current permissions instead
+    // of rejecting an unrelated stack or emitting overlapping mappings.
+    if (begin < cursor) {
+      while (!mappings.empty() && mappings.back().Begin >= begin) mappings.pop_back();
+      if (!mappings.empty() && mappings.back().End > begin) mappings.back().End = begin;
+    }
     const auto protection = information.protection;
     cursor = begin + size;
     mappings.push_back({begin, cursor, (protection & VM_PROT_READ) != 0,

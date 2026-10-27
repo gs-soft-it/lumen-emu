@@ -771,6 +771,7 @@ static void WindowCreate(WindowContext& context) {
 
 	uint32_t window_flags = WindowContext::InitialWindowFlags(Config::FullscreenEnabled());
 #if defined(__APPLE__)
+#if !defined(LUMEN_PS5_NATIVE_METAL)
 	// SDL loads Vulkan while creating a Vulkan window, so select the bundled
 	// MoltenVK loader before calling SDL_CreateWindow. Keep an explicit user
 	// override, and fall back to SDL's normal loader search when no bundle is present.
@@ -787,6 +788,8 @@ static void WindowCreate(WindowContext& context) {
 			}
 		}
 	}
+
+#endif // !LUMEN_PS5_NATIVE_METAL
 
 	// macOS 26 window chrome (CoreUI asset decode, SwiftUI titlebar) has been observed
 	// throwing NSExceptions under Rosetta during the first CATransaction commit. A
@@ -808,7 +811,11 @@ static void WindowCreate(WindowContext& context) {
 }
 
 uint32_t WindowContext::InitialWindowFlags(bool fullscreen) noexcept {
+	#if defined(LUMEN_PS5_NATIVE_METAL)
+	auto flags = static_cast<uint32_t>(SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE);
+#else
 	auto flags = static_cast<uint32_t>(SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+#endif
 	if (fullscreen) {
 		flags |= static_cast<uint32_t>(SDL_WINDOW_FULLSCREEN);
 	}

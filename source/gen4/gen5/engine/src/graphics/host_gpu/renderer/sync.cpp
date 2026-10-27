@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/presentation/videoOut.h"
 #include "kernel/eventQueue.h"
+#include "kernel/memory.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 
@@ -127,7 +128,11 @@ void ReadGds(const Buffer& gds, uint32_t* dst, uint32_t dw_offset, uint32_t dw_s
 	const auto size   = uint64_t {dw_size} * sizeof(uint32_t);
 	EXIT_IF(dst == nullptr || offset > gds.Size() || size > gds.Size() - offset ||
 	        gds.Mapped().empty());
-	std::memcpy(dst, gds.Mapped().data() + offset, static_cast<size_t>(size));
+	if (size == 0) return;
+	uint64_t host = 0;
+	EXIT_IF(!LibKernel::Memory::TranslateGuestMemory(reinterpret_cast<uint64_t>(dst), size, &host));
+	std::memcpy(reinterpret_cast<void*>(host), gds.Mapped().data() + offset,
+	            static_cast<size_t>(size));
 }
 
 } // namespace Libs::Graphics::Sync

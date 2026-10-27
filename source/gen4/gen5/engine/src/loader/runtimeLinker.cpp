@@ -993,13 +993,22 @@ void RuntimeLinker::RelocateProgram(Program* program) {
 	}
 }
 
-void RuntimeLinker::UnloadProgram(Program* program) {
+bool RuntimeLinker::UnloadProgram(Program* program) {
 	// EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 
 	Common::LockGuard lock(m_mutex);
 
 	auto it = std::find(m_programs.begin(), m_programs.end(), program);
-	EXIT_IF(it == m_programs.end());
+	if (it == m_programs.end()) return false;
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	if (program->dependency_count != 0 || program->module_call_count != 0 || program->load_count > 1) return false;
+	for (auto* dependency: program->dependencies) {
+		EXIT_IF(dependency->dependency_count == 0);
+		--dependency->dependency_count;
+	}
+	m_start_order.erase(std::remove(m_start_order.begin(), m_start_order.end(), program),
+	                    m_start_order.end());
+#endif
 	m_programs.erase(it);
 
 	for (auto* importer: m_programs) {
@@ -1044,6 +1053,21 @@ void RuntimeLinker::UnloadProgram(Program* program) {
 		});
 	}
 	DeleteProgram(program);
+	return true;
+}
+
+bool RuntimeLinker::RetainProgram(Program* program) {
+	Common::LockGuard lock(m_mutex);
+	if (std::find(m_programs.begin(), m_programs.end(), program) == m_programs.end()) return false;
+	++program->load_count;
+	return true;
+}
+
+void RuntimeLinker::ReleaseProgram(Program* program) {
+	Common::LockGuard lock(m_mutex);
+	EXIT_IF(std::find(m_programs.begin(), m_programs.end(), program) == m_programs.end());
+	EXIT_IF(program->load_count == 0);
+	--program->load_count;
 }
 
 RuntimeLinker::RuntimeLinker(): m_symbols(std::make_unique<SymbolDatabase>()) {
@@ -1126,7 +1150,45 @@ void RuntimeLinker::SaveProgram(Program* program, const std::filesystem::path& e
 	}
 }
 
+void RuntimeLinker::PreloadDependencies() {
+	// Only declared dependencies are candidates. A missing firmware PRX may be
+	// supplied by HLE; its imports still pass through the strict normal resolver.
+	const auto app = Libs::LibKernel::FileSystem::GetRealFilename("/app0");
+	for (size_t index = 0; index < m_programs.size(); ++index) {
+		auto* program = m_programs[index];
+		for (const auto& needed: program->dynamic_info->needed) {
+			const std::filesystem::path name(needed);
+			std::vector<std::filesystem::path> candidates;
+			if (name.is_absolute()) {
+				candidates.push_back(Libs::LibKernel::FileSystem::GetRealFilename(needed));
+			} else {
+				candidates.push_back(program->file_name.parent_path() / name);
+				if (!app.empty()) {
+					candidates.push_back(app / name);
+					candidates.push_back(app / "sce_module" / name);
+				}
+			}
+			Program* dependency = nullptr;
+			for (auto candidate: candidates) {
+				if (candidate.empty() || !Common::File::IsFileExisting(candidate)) continue;
+				candidate = candidate.lexically_normal();
+				dependency = FindProgramByFileName(candidate);
+				if (dependency == nullptr) dependency = LoadProgram(candidate);
+				EXIT_IF(dependency == nullptr || !dependency->elf->IsShared());
+				break;
+			}
+			if (dependency != nullptr && dependency != program &&
+			    std::find(program->dependencies.begin(), program->dependencies.end(), dependency) ==
+			        program->dependencies.end()) {
+				program->dependencies.push_back(dependency);
+				++dependency->dependency_count;
+			}
+		}
+	}
+}
+
 void RuntimeLinker::PreparePrograms() {
+	Common::LockGuard lock(m_mutex);
 	if (m_programs_prepared) {
 		return;
 	}
@@ -1136,6 +1198,9 @@ void RuntimeLinker::PreparePrograms() {
 	if (Common::File::IsFileExisting(path) && FindProgramByFileName(path) == nullptr) {
 		LoadProgram(path);
 	}
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	PreloadDependencies();
+#endif
 	RelocateAll();
 	m_programs_prepared = true;
 }
@@ -1174,10 +1239,9 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	}
 #endif
 
-	// The runtime automatically loads libc; other PRXs are requested by the application.
+	// Load declared static dependencies before relocation; initialize them on the
+	// guest thread, with dependencies preceding the modules that consume them.
 	PreparePrograms();
-	const auto libc_path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/libc.prx");
-	auto* libc = FindProgramByFileName(libc_path);
 
 	if (!game_patch.empty()) {
 		if (!GamePatch::Apply(game_patch, m_programs.empty() ? nullptr : m_programs.front(),
@@ -1185,9 +1249,13 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 			EXIT("Failed to apply game cheat\n");
 		}
 	}
-	if (libc != nullptr && libc->dynamic_info->init_vaddr != 0) {
-		StartModule(libc, 0, nullptr, nullptr);
-	}
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	StartAllModules();
+#else
+	const auto libc_path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/libc.prx");
+	if (auto* libc = FindProgramByFileName(libc_path);
+	    libc != nullptr && libc->dynamic_info->init_vaddr != 0) StartModule(libc, 0, nullptr, nullptr);
+#endif
 
 	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Execute: %s\n---\n", "Main");
 
@@ -1223,6 +1291,7 @@ void RuntimeLinker::Clear() {
 		DeleteProgram(p);
 	}
 	m_programs.clear();
+	m_start_order.clear();
 	for (const auto page: g_unresolved_stub_thunk_pages) {
 		EXIT_IF(!Libs::LibKernel::Memory::FreeGuestMemory(page, UNRESOLVED_STUB_PAGE_SIZE));
 	}
@@ -1449,45 +1518,150 @@ void RuntimeLinker::StackTrace(uint64_t frame_ptr, uint64_t stack_ptr) {
 	}
 }
 
-void RuntimeLinker::StopAllModules() {
-	Common::LockGuard lock(m_mutex);
-
-	for (auto* p: m_programs) {
-		if (p->elf->IsShared() && p->dynamic_info->fini_vaddr != 0) {
-			StopModule(p, 0, nullptr, nullptr);
-		}
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+// Pins cover callbacks and condition-variable waiters. The linker mutex is held
+// only to adjust metadata, never while guest code can request TLS on a worker.
+struct ModuleCallPin {
+	Common::Mutex& mutex;
+	Program* program;
+	~ModuleCallPin() {
+		Common::LockGuard lock(mutex);
+		EXIT_IF(program->module_call_count == 0);
+		--program->module_call_count;
 	}
+};
+struct ModuleCallScope {
+	Program* program;
+	~ModuleCallScope() {
+		{ std::lock_guard lock(program->module_state_mutex);
+		  program->module_starting = false; program->module_start_thread = {}; }
+		program->module_state_changed.notify_all();
+	}
+};
+#endif
+
+void RuntimeLinker::StartAllModules() {
+	std::vector<int32_t> ids;
+	{ Common::LockGuard lock(m_mutex);
+	  for (auto* program: m_programs) if (program->elf->IsShared()) ids.push_back(program->unique_id); }
+	for (auto id: ids) {
+		auto* program = FindProgramById(id);
+		if (program == nullptr) continue;
+		const int result = StartModule(program, 0, nullptr, nullptr);
+		if (result < 0 && result != Libs::LibKernel::KERNEL_ERROR_ESRCH)
+			EXIT("Module initialization failed: id=%d result=%d\n", id, result);
+	}
+}
+
+void RuntimeLinker::StopAllModules() {
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	std::vector<int32_t> ids;
+	{ Common::LockGuard lock(m_mutex);
+	  for (auto* program: m_start_order) ids.push_back(program->unique_id); }
+	for (auto it = ids.rbegin(); it != ids.rend(); ++it) {
+		if (auto* program = FindProgramById(*it)) StopModule(program, 0, nullptr, nullptr);
+	}
+#else
+	Common::LockGuard lock(m_mutex);
+	for (auto* program: m_programs)
+		if (program->elf->IsShared() && program->dynamic_info->fini_vaddr != 0)
+			StopModule(program, 0, nullptr, nullptr);
+#endif
 }
 
 int RuntimeLinker::StartModule(Program* program, size_t args, const void* argp,
                                module_func_t func) {
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	{ Common::LockGuard lock(m_mutex);
+	  if (std::find(m_programs.begin(), m_programs.end(), program) == m_programs.end())
+		  return Libs::LibKernel::KERNEL_ERROR_ESRCH;
+	  ++program->module_call_count; }
+	ModuleCallPin pin {m_mutex, program};
+#else
+	{ Common::LockGuard lock(m_mutex);
+	  EXIT_IF(std::find(m_programs.begin(), m_programs.end(), program) == m_programs.end()); }
+#endif
 	EXIT_IF(program == nullptr);
 	EXIT_IF(program->dynamic_info == nullptr);
 	EXIT_IF(program->elf == nullptr);
 	EXIT_IF(!program->elf->IsShared());
-
-	EXIT_IF(std::find(m_programs.begin(), m_programs.end(), program) == m_programs.end());
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	std::unique_lock state_lock(program->module_state_mutex);
+	if (program->module_starting && program->module_start_thread == std::this_thread::get_id()) return OK;
+	program->module_state_changed.wait(state_lock, [&] { return !program->module_starting; });
+	if (program->module_started) return program->module_start_result;
+	program->module_starting = true;
+	program->module_start_thread = std::this_thread::get_id();
+	state_lock.unlock();
+	ModuleCallScope starting {program};
+	std::vector<Program*> dependencies;
+	{ Common::LockGuard lock(m_mutex); dependencies = program->dependencies; }
+	for (auto* dependency: dependencies) {
+		const int result = StartModule(dependency, 0, nullptr, nullptr);
+		if (result < 0) return result;
+	}
+#endif
 
 	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Start module: %s\n---\n",
 	           Common::PathToString(program->file_name).c_str());
 
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	const int result = program->dynamic_info->init_vaddr == 0 ? OK :
+	    GuestCallback::Call(reinterpret_cast<module_ini_fini_func_t>(
+	        program->dynamic_info->init_vaddr + program->base_vaddr), args, argp, func);
+	if (result >= 0) {
+		{ std::lock_guard lock(program->module_state_mutex);
+		  program->module_started = true; program->module_start_result = result; }
+		Common::LockGuard lock(m_mutex);
+		m_start_order.push_back(program);
+	}
+	return result;
+#else
 	return GuestCallback::Call(reinterpret_cast<module_ini_fini_func_t>(
 	    program->dynamic_info->init_vaddr + program->base_vaddr), args, argp, func);
+#endif
 }
 
 int RuntimeLinker::StopModule(Program* program, size_t args, const void* argp, module_func_t func) {
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	{ Common::LockGuard lock(m_mutex);
+	  if (std::find(m_programs.begin(), m_programs.end(), program) == m_programs.end())
+		  return Libs::LibKernel::KERNEL_ERROR_ESRCH;
+	  ++program->module_call_count; }
+	ModuleCallPin pin {m_mutex, program};
+#else
+	{ Common::LockGuard lock(m_mutex);
+	  EXIT_IF(std::find(m_programs.begin(), m_programs.end(), program) == m_programs.end()); }
+#endif
 	EXIT_IF(program == nullptr);
 	EXIT_IF(program->dynamic_info == nullptr);
 	EXIT_IF(program->elf == nullptr);
 	EXIT_IF(!program->elf->IsShared());
-
-	EXIT_IF(std::find(m_programs.begin(), m_programs.end(), program) == m_programs.end());
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	std::unique_lock state_lock(program->module_state_mutex);
+	if (program->module_starting) return Libs::LibKernel::KERNEL_ERROR_EBUSY;
+	if (!program->module_started) return OK;
+	program->module_starting = true;
+	program->module_start_thread = std::this_thread::get_id();
+	state_lock.unlock();
+	ModuleCallScope stopping {program};
+#endif
 
 	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Stop module: %s\n---\n",
 	           Common::PathToString(program->file_name).c_str());
 
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	int result = program->dynamic_info->fini_vaddr == 0 ? OK :
+	    GuestCallback::Call(reinterpret_cast<module_ini_fini_func_t>(
+	        program->dynamic_info->fini_vaddr + program->base_vaddr), args, argp, func);
+	if (result < 0) return result;
+	{ std::lock_guard lock(program->module_state_mutex); program->module_started = false; }
+	{ Common::LockGuard lock(m_mutex);
+	  m_start_order.erase(std::remove(m_start_order.begin(), m_start_order.end(), program), m_start_order.end()); }
+#else
 	int result = GuestCallback::Call(reinterpret_cast<module_ini_fini_func_t>(
 	    program->dynamic_info->fini_vaddr + program->base_vaddr), args, argp, func);
+#endif
 
 	Libs::LibKernel::PthreadDeleteStaticObjects(program);
 
@@ -1798,6 +1972,17 @@ void RuntimeLinker::ParseProgramDynamicInfo(Program* program) {
 
 	EXIT_NOT_IMPLEMENTED(program->dynamic_info->debug != 0);
 	EXIT_NOT_IMPLEMENTED(program->dynamic_info->textrel != 0);
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	for (const auto* needed: elf->GetDynList(DT_NEEDED)) {
+		const auto offset = needed->d_un.d_val;
+		const auto& info = *program->dynamic_info;
+		EXIT_IF(info.str_table == nullptr || offset >= info.str_table_size);
+		const auto* name = info.str_table + offset;
+		const auto* end = static_cast<const char*>(std::memchr(name, '\0', info.str_table_size - offset));
+		EXIT_IF(end == nullptr || end == name);
+		program->dynamic_info->needed.emplace_back(name, end);
+	}
+#endif
 
 	uint64_t so_name = 0;
 	GetDynValue(elf, &so_name, DT_SONAME);
@@ -1835,8 +2020,10 @@ void RuntimeLinker::Relocate(Program* program) {
 	EXIT_IF(program == nullptr);
 
 	if (g_invalid_memory == 0) {
+		// Relocations use the returned address, not the historical hint. A host
+		// mapping may occupy that hint; the sentinel only requires NoAccess.
 		g_invalid_memory = Libs::LibKernel::Memory::AllocateRuntimeMemory(
-		    INVALID_MEMORY, 4096, Common::VirtualMemory::Mode::NoAccess, "invalid_memory", true);
+		    INVALID_MEMORY, 4096, Common::VirtualMemory::Mode::NoAccess, "invalid_memory");
 		EXIT_NOT_IMPLEMENTED(g_invalid_memory == 0);
 	}
 

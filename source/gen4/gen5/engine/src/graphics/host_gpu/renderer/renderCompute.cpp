@@ -216,7 +216,10 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 	auto& cache = context.GetBufferCache();
 	if (indirect_args != 0) {
 		cache.ReadMemory(indirect_args, sizeof(vk::DispatchIndirectCommand));
-		std::memcpy(input.workgroup_counts, reinterpret_cast<const void*>(indirect_args),
+		uint64_t host = 0;
+		EXIT_IF(!LibKernel::Memory::TranslateGuestMemory(
+		    indirect_args, sizeof(input.workgroup_counts), &host));
+		std::memcpy(input.workgroup_counts, reinterpret_cast<const void*>(host),
 		            sizeof(input.workgroup_counts));
 	}
 	// LDS has no contents to preserve between dispatches. The existing shader hazard

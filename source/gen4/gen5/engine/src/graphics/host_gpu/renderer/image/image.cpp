@@ -734,13 +734,20 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	    info.samples);
 }
 
-uint64_t Image::HashGuestEdges() const {
-	std::array<uint8_t, TRACKER_PAGE_SIZE * 2> bytes {};
+uint64_t Image::HashGuestEdges(uint64_t host_page_size) const {
+#if defined(__APPLE__)
+	constexpr uint64_t max_host_page_size = 4 * TRACKER_PAGE_SIZE;
+#else
+	constexpr uint64_t max_host_page_size = TRACKER_PAGE_SIZE;
+#endif
+	EXIT_IF(host_page_size != TRACKER_PAGE_SIZE && host_page_size != max_host_page_size);
+	// Only the used bytes are read and hashed. The bound covers two Apple host-page edges.
+	std::array<uint8_t, max_host_page_size * 2> bytes;
 	const auto                                 range = info.data;
 	const uint64_t head_end =
-	    std::min(range.End(), Common::AlignUp(range.address, TRACKER_PAGE_SIZE));
+	    std::min(range.End(), Common::AlignUp(range.address, host_page_size));
 	const uint64_t tail_begin =
-	    std::max(range.address, Common::AlignDown(range.End(), TRACKER_PAGE_SIZE));
+	    std::max(range.address, Common::AlignDown(range.End(), host_page_size));
 	const uint64_t head_size    = head_end - range.address;
 	const uint64_t tail_address = tail_begin < head_end ? head_end : tail_begin;
 	const uint64_t tail_size    = range.End() - tail_address;

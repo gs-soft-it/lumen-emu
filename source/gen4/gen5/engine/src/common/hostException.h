@@ -39,6 +39,19 @@ using Handler = bool (*)(const ExceptionInfo&);
 
 bool InstallHandler(Handler handler);
 
+// Optional owner-supplied translation for immutable inaccessible host regions.
+// All callbacks and the provider object outlive active signal handlers. The
+// owner unregisters it only after stopping users and before destroying arenas.
+struct TranslatedMemoryProvider {
+	bool (*is_nonidentity)(uint64_t, uint64_t) noexcept;
+	bool (*translate_guest)(uint64_t, uint64_t, uint64_t*) noexcept;
+	bool (*translate_host)(uint64_t, uint64_t*) noexcept;
+	bool (*query_guest)(uint64_t, uint64_t, bool) noexcept;
+	bool (*query_host)(uint64_t, uint64_t, bool) noexcept;
+	bool (*resolve_watch)(uint64_t, bool) noexcept;
+};
+void SetTranslatedMemoryProvider(const TranslatedMemoryProvider* provider) noexcept;
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 bool InitializeThreadSignalStack();
 #endif

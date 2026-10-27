@@ -76,9 +76,9 @@ public:
 	[[nodiscard]] bool IsCpuDirty() const { return m_cpu_dirty || m_maybe_cpu_dirty; }
 	[[nodiscard]] bool IsDefinitelyCpuDirty() const { return m_cpu_dirty; }
 	[[nodiscard]] bool IsMaybeCpuDirty() const { return m_maybe_cpu_dirty; }
-	void               MarkMaybeCpuDirty() {
+	void               MarkMaybeCpuDirty(uint64_t host_page_size) {
 		if (!IsCpuDirty()) {
-			m_maybe_cpu_hash  = HashGuestEdges();
+			m_maybe_cpu_hash  = HashGuestEdges(host_page_size);
 			m_maybe_cpu_dirty = true;
 		}
 	}
@@ -119,7 +119,7 @@ public:
 	[[nodiscard]] uint64_t AccountedSize() const noexcept {
 		return backing.image == nullptr ? 0 : Common::AlignUp(info.data.size, 1024);
 	}
-	[[nodiscard]] uint64_t HashGuestEdges() const;
+	[[nodiscard]] uint64_t HashGuestEdges(uint64_t host_page_size) const;
 
 	ImageInfo        info;
 	VulkanImage      backing;

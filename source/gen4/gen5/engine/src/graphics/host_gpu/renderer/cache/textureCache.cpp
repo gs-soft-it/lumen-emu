@@ -10,6 +10,7 @@
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "common/memoryBudget.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
@@ -125,15 +126,10 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
       m_buffer_cache(buffer_cache),
       m_readback_linear_images(Config::ReadbackLinearImagesEnabled()) {
 	if (m_graphics.CanReportMemoryUsage()) {
-		constexpr int64_t GiB = 1024ll * 1024 * 1024;
-		const auto        budget =
-		    static_cast<int64_t>(std::min<uint64_t>(m_graphics.GetTotalMemoryBudget(), INT64_MAX));
-		const auto threshold = std::min<int64_t>(budget, 8 * GiB);
-		m_pressure_gc_memory = static_cast<uint64_t>(
-		    std::max<int64_t>(std::min(budget - 6 * threshold / 10, budget - GiB), GiB + GiB / 2));
-		m_critical_gc_memory = static_cast<uint64_t>(
-		    std::max<int64_t>(std::min(budget - 2 * threshold / 10, budget - GiB / 2), 3 * GiB));
-		m_trigger_gc_memory = static_cast<uint64_t>(std::max<int64_t>((budget - threshold) / 2, 0));
+		const auto thresholds = MemoryBudget::TextureThresholds(m_graphics.GetTotalMemoryBudget());
+		m_trigger_gc_memory = thresholds.trigger;
+		m_pressure_gc_memory = thresholds.pressure;
+		m_critical_gc_memory = thresholds.critical;
 	}
 }
 
@@ -197,6 +193,28 @@ TextureCache::BindingType TextureCache::UploadBinding(const Image& image) {
 		return BindingType::VideoOut;
 	}
 	return image.usage.storage ? BindingType::Storage : BindingType::Texture;
+}
+
+vk::ImageView TextureCache::FindNullTexture(const ImageDesc& desc) {
+	std::scoped_lock lock {m_lock};
+	EXIT_IF(!desc.info.data.Empty() || !m_graphics.null_descriptor_fallback_enabled);
+	for (const auto& image: m_null_images) {
+		if (image->info.pixel_format == desc.info.pixel_format &&
+		    image->info.type == desc.info.type && image->info.resources == desc.info.resources &&
+		    image->info.samples == desc.info.samples) {
+			return image->FindView(desc.view_info);
+		}
+	}
+	// Shader specialization guarantees zero reads and discarded writes/atomics.
+	// This image only satisfies native descriptor validity, never guest memory.
+	auto image = std::make_unique<Image>(m_graphics, m_scheduler, desc.info);
+	m_scheduler.EndRendering();
+	image->Transit(vk::ImageLayout::eGeneral,
+	               vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
+	               {}, m_scheduler.Current().Handle());
+	const auto view = image->FindView(desc.view_info);
+	m_null_images.push_back(std::move(image));
+	return view;
 }
 
 ImageId TextureCache::InsertImage(const ImageInfo& info) {
@@ -287,7 +305,7 @@ void TextureCache::TouchImage(Image& image) {
 }
 
 void TextureCache::MarkAsMaybeDirty(ImageId id, Image& image) {
-	image.MarkMaybeCpuDirty();
+	image.MarkMaybeCpuDirty(m_page_manager.GetHostPageSize());
 	UntrackImage(id);
 }
 
@@ -370,11 +388,12 @@ void TextureCache::UntrackImageHead(ImageId id) {
 	if (!image.IsTracked() || begin < image.track_addr) {
 		return;
 	}
-	const auto address = Common::AlignDown(begin + TRACKER_PAGE_SIZE, TRACKER_PAGE_SIZE);
+	const auto host_page_size = m_page_manager.GetHostPageSize();
+	const auto address = Common::AlignDown(begin + host_page_size, host_page_size);
 	const auto size    = address - begin;
 	// Later CPU writes to this opened edge page no longer fault. Preserve the
 	// first edge hash while keeping the interior pages watched.
-	image.MarkMaybeCpuDirty();
+	image.MarkMaybeCpuDirty(host_page_size);
 	image.track_addr   = address;
 	if (image.track_addr == image.track_addr_end) {
 		MarkAsMaybeDirty(id, image);
@@ -390,11 +409,12 @@ void TextureCache::UntrackImageTail(ImageId id) {
 	if (!image.IsTracked() || image.track_addr_end < end) {
 		return;
 	}
-	const auto address   = Common::AlignDown(end, TRACKER_PAGE_SIZE);
+	const auto host_page_size = m_page_manager.GetHostPageSize();
+	const auto address   = Common::AlignDown(end, host_page_size);
 	const auto size      = end - address;
 	// Later CPU writes to this opened edge page no longer fault. Preserve the
 	// first edge hash while keeping the interior pages watched.
-	image.MarkMaybeCpuDirty();
+	image.MarkMaybeCpuDirty(host_page_size);
 	image.track_addr_end = address;
 	if (image.track_addr == image.track_addr_end) {
 		MarkAsMaybeDirty(id, image);
@@ -1173,7 +1193,7 @@ void TextureCache::RefreshImage(ImageId id) {
 	}
 	TrackImage(id);
 	if (image.IsMaybeCpuDirty()) {
-		(void)image.ResolveMaybeCpuHash(image.HashGuestEdges());
+		(void)image.ResolveMaybeCpuHash(image.HashGuestEdges(m_page_manager.GetHostPageSize()));
 	}
 	bool cpu_dirty = image.IsBufferModified() || image.IsDefinitelyCpuDirty();
 	if (image.info.metadata.compression != VideoOutCompression::Uncompressed) {
@@ -1679,6 +1699,11 @@ void TextureCache::InvalidateMemory(uint64_t address, uint64_t size) {
 	InvalidateCpuAliases(address, size);
 }
 
+void TextureCache::HandleWriteFault(uint64_t fault_address) {
+	// Keep the actual byte range separate from the host-page watch coverage below.
+	InvalidateMemory(fault_address, 1);
+}
+
 void TextureCache::DownloadDepth(Image& image, Buffer& destination, uint64_t destination_offset) {
 	const auto&    info             = image.info;
 	const auto     layers           = info.resources.layers;
@@ -1869,9 +1894,12 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
 }
 
 void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
-	const auto page_begin = Common::AlignDown(address, TRACKER_PAGE_SIZE);
-	const auto page_end   = Common::AlignUp(address + size, TRACKER_PAGE_SIZE);
-	for (const auto id: FindImagesInRegion(address, size, true)) {
+	const auto host_page_size = m_page_manager.GetHostPageSize();
+	const auto page_begin = Common::AlignDown(address, host_page_size);
+	const auto page_end   = Common::AlignUp(address + size, host_page_size);
+	// Every logical slice on an opened host page loses its native write watch, but
+	// byte-disjoint images remain GPU-authoritative until their edge baseline changes.
+	for (const auto id: FindImagesInRegion(page_begin, page_end - page_begin, true)) {
 		auto owner = m_slot_images.try_get(id);
 		if (owner == nullptr) {
 			continue;
@@ -1961,7 +1989,14 @@ void TextureCache::RunGarbageCollector() {
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
+		// Texture collection precedes buffer collection at each cache-maintenance point.
+		m_graphics.RefreshMemoryBudget(static_cast<uint32_t>(tick));
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
+		// Android/UMA budgets can shrink while a session is running.
+		const auto thresholds = MemoryBudget::TextureThresholds(m_graphics.GetTotalMemoryBudget());
+		m_trigger_gc_memory = thresholds.trigger;
+		m_pressure_gc_memory = thresholds.pressure;
+		m_critical_gc_memory = thresholds.critical;
 	}
 	if (m_total_used_memory < m_trigger_gc_memory) {
 		return;
@@ -1969,13 +2004,14 @@ void TextureCache::RunGarbageCollector() {
 	const auto collect = [&](bool allow_aggressive) {
 		bool           pressured  = m_total_used_memory >= m_pressure_gc_memory;
 		bool           aggressive = allow_aggressive && m_total_used_memory >= m_critical_gc_memory;
-		const uint64_t age       = std::min<uint64_t>(aggressive ? 160 : pressured ? 80 : 16, tick);
+		const auto cutoff = MemoryBudget::CollectionCutoff(tick, aggressive ? 160 : pressured ? 80 : 16);
+		if (!cutoff) return;
 		size_t         deletions = aggressive ? 40 : pressured ? 20 : 10;
 		std::vector<ImageId> candidates;
 		candidates.reserve(deletions);
 		// Deleting depth recursively deletes its stencil association, so finish LRU traversal
 		// first.
-		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
+		m_lru_cache.ForEachItemBelow(*cutoff, [&](ImageId id) {
 			candidates.push_back(id);
 			return candidates.size() == deletions;
 		});

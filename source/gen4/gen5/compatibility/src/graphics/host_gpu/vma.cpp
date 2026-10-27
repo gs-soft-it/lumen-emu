@@ -18,6 +18,7 @@
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "../../../../engine/src/common/memoryBudget.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -58,6 +59,14 @@ void GraphicContext::DestroyAllocator() {
 	}
 	vmaDestroyAllocator(allocator);
 	allocator = nullptr;
+}
+
+void GraphicContext::RefreshMemoryBudget(uint32_t frame_index) const {
+	if (allocator != nullptr && CanReportMemoryUsage()) {
+		// VMA otherwise refreshes its Vulkan budget only after allocation activity.
+		// It synchronizes the budget update with concurrent allocation queries.
+		vmaSetCurrentFrameIndex(allocator, frame_index);
+	}
 }
 
 void GraphicContext::LogMemoryBudget() const {
@@ -106,26 +115,18 @@ uint64_t GraphicContext::GetTotalMemoryBudget() const {
 	const bool discrete =
 	    physical_device_properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu;
 	uint64_t budget = 0;
-	uint64_t local  = 0;
-	uint64_t usage  = 0;
+	uint64_t capacity = 0;
 	for (uint32_t heap = 0; heap < physical_device_memory_properties.memoryHeapCount; heap++) {
 		const auto& properties = physical_device_memory_properties.memoryHeaps[heap];
-		const bool  device_local =
+		const bool device_local =
 		    static_cast<bool>(properties.flags & vk::MemoryHeapFlagBits::eDeviceLocal);
-		if (device_local) {
-			local += properties.size;
-		}
 		if (!discrete || device_local) {
-			budget += CanReportMemoryUsage() ? budgets[heap].budget : properties.size;
-			usage += CanReportMemoryUsage() ? budgets[heap].usage : 0;
+			capacity += properties.size;
+			budget += CanReportMemoryUsage() ? std::min<uint64_t>(budgets[heap].budget, properties.size)
+			                                : properties.size;
 		}
 	}
-	if (discrete) {
-		return budget - std::min<uint64_t>(budget / 8, 1024ull * 1024 * 1024);
-	}
-	constexpr uint64_t system_reserve = 8ull * 1024 * 1024 * 1024;
-	const auto         available      = budget > usage ? budget - usage : uint64_t {0};
-	return std::max(local, available > system_reserve ? available - system_reserve : uint64_t {0});
+	return MemoryBudget::RendererBudget(discrete, capacity, budget);
 }
 
 bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanImage& image) {

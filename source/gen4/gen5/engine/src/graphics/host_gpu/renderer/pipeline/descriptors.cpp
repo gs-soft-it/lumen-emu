@@ -76,8 +76,8 @@ vk::DescriptorType NativeDescriptorType(BindingKind kind) {
 }
 
 vk::DescriptorImageInfo MakeImageInfo(const TextureBinding& texture, uint32_t element) {
-	if (!texture.image_id) {
-		EXIT_IF(texture.image_view != nullptr || !texture.mip_views.empty());
+	if (!texture.image_id && texture.image_view == nullptr) {
+		EXIT_IF(!texture.mip_views.empty());
 		return {nullptr, nullptr, vk::ImageLayout::eGeneral};
 	}
 	vk::ImageView view = nullptr;
@@ -478,6 +478,51 @@ static bool ResolveTextureMipView(ImageInfo& info, uint32_t physical_levels, boo
 	return false;
 }
 
+static TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::ImageResource& resource) {
+	TextureCache::ImageDesc desc {};
+	desc.info.guest_format = resource.numeric_class == Prospero::TextureNumericClass::Sint
+	                             ? Prospero::BufferFormat::k32SInt
+	                         : resource.numeric_class == Prospero::TextureNumericClass::Uint
+	                             ? Prospero::BufferFormat::k32UInt
+	                             : Prospero::BufferFormat::k32Float;
+	desc.info.pixel_format = resource.depth_compare ? vk::Format::eD32Sfloat
+	                                               : VulkanFormat(desc.info.guest_format);
+	desc.info.bytes_per_block = 4;
+	desc.info.pitch = 1;
+	desc.info.mip_layout[0] = {0, 4, 1, 1};
+	desc.view_info.format = desc.info.pixel_format;
+	desc.view_info.aspect = resource.depth_compare ? vk::ImageAspectFlagBits::eDepth
+	                                              : vk::ImageAspectFlagBits::eColor;
+	const bool storage = resource.resource_class == ShaderRecompiler::IR::ImageResourceClass::Storage;
+	desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
+	desc.view_info.usage = storage ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlagBits::eSampled;
+	using Dimension = ShaderRecompiler::Decoder::ImageDimension;
+	switch (resource.dimension) {
+		case Dimension::Dim1D:
+		case Dimension::Dim1DArray:
+			desc.info.type = Prospero::ImageType::kColor1D;
+			desc.view_info.type = resource.dimension == Dimension::Dim1D
+			    ? vk::ImageViewType::e1D : vk::ImageViewType::e1DArray;
+			break;
+		case Dimension::Dim3D:
+			desc.info.type = Prospero::ImageType::kColor3D;
+			desc.view_info.type = vk::ImageViewType::e3D;
+			break;
+		case Dimension::Dim2D:
+		case Dimension::Dim2DArray:
+		case Dimension::Dim2DMsaa:
+		case Dimension::Dim2DMsaaArray:
+			desc.view_info.type = resource.dimension == Dimension::Dim2DArray ||
+			                              resource.dimension == Dimension::Dim2DMsaaArray
+			    ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
+			if (resource.dimension == Dimension::Dim2DMsaa || resource.dimension == Dimension::Dim2DMsaaArray)
+				desc.info.samples = 2;
+			break;
+		default: EXIT("unsupported null image dimension\n");
+	}
+	return desc;
+}
+
 TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   resource,
                                               const ShaderRecompiler::IR::DescriptorValue& value) {
 	if (resource.atomic64 && !m_context.GetGraphics().shader_image_int64_atomics_enabled) {
@@ -491,7 +536,16 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 
 	auto& texture_cache = m_context.GetTextureCache();
 	if (descriptor.IsNull()) {
-		return {.layout = vk::ImageLayout::eGeneral};
+		if (m_context.GetGraphics().null_descriptor_enabled)
+			return {.layout = vk::ImageLayout::eGeneral};
+		EXIT_IF(!m_context.GetGraphics().null_descriptor_fallback_enabled || !resource.null_descriptor);
+		auto desc = NullTextureDesc(resource);
+		const auto view = texture_cache.FindNullTexture(desc);
+		TextureBinding binding {.image_view = view, .desc = std::move(desc),
+		                        .layout = vk::ImageLayout::eGeneral};
+		if (resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::Dynamic)
+			binding.mip_views.assign(resource.mip_count, view);
+		return binding;
 	}
 
 	const auto address         = descriptor.Base40();
@@ -705,8 +759,10 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
 		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i]);
 		BindImage(binding.image_id, binding.desc.type == TextureCache::BindingType::Storage);
-		binding.mip_views.swap(prepared.images[i].mip_views);
-		binding.mip_views.clear();
+		if (binding.image_id) {
+			binding.mip_views.swap(prepared.images[i].mip_views);
+			binding.mip_views.clear();
+		}
 		prepared.images[i] = std::move(binding);
 	}
 	prepared.samplers.reserve(program.info.samplers.size());

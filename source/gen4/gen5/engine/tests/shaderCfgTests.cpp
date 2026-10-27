@@ -1967,6 +1967,31 @@ void TestNggVertexEntryState() {
   }
 }
 
+void TestScalarDataCacheInvalidation() {
+  using namespace ShaderRecompiler;
+  const std::array code = {0xf4800000u, 0xfa000000u, EncodeSopp(0x01)};
+  Decoder::Program decoded;
+  Decoder::DecodeProgram(code, decoded);
+  const auto &inst = decoded.instructions.front();
+  Check(inst.opcode == Decoder::Opcode::S_DCACHE_INV && inst.word_count == 2 &&
+            inst.src_count == 0 && inst.data_dwords == 0 &&
+            inst.dst.kind == Decoder::OperandKind::Unknown,
+        "S_DCACHE_INV acquired a scalar memory operand or lost its encoding");
+  auto options = MakeCompileOptions(ShaderType::Compute);
+  options.dump_ir = true;
+  ShaderComputeInputInfo compute{};
+  compute.threads_num[1] = compute.threads_num[2] = 1;
+  options.input_info.compute = &compute;
+  for (const uint32_t wave_size : {32u, 64u}) {
+    compute.threads_num[0] = compute.wave_size = options.wave_size = wave_size;
+    const auto result = RecompileForTest(code, options);
+    CheckSpirvBinaryValidates(result.spirv);
+    Check(result.ir_dump.find("MemoryBarrier") == std::string::npos &&
+              result.ir_dump.find("ReadConstBuffer") == std::string::npos,
+          "S_DCACHE_INV emitted a memory load or unnecessary fence");
+  }
+}
+
 void TestNativeStoreCompletion() {
   using namespace ShaderRecompiler;
   const std::array register_wait = {EncodeSopk(0x17, 4, static_cast<int16_t>(0x9234)), EncodeSopp(0x01)};
@@ -9273,8 +9298,18 @@ void TestNativeScalarReadDescriptorPlanning() {
     options.user_data = user_data;
     const auto result = RecompileForTest(shader, options, ReadHostTestMemory);
     const auto expected = mode == 2u ? table : std::array<uint32_t, 4>{};
-    Check(!result.program.dispatcher_fallback && result.resources.buffers.size() == 1u &&
-              std::ranges::equal(result.resources.flattened_srt, expected),
+    const bool correct_plan = !result.program.dispatcher_fallback &&
+        result.resources.buffers.size() == 1u &&
+        std::ranges::equal(result.resources.flattened_srt, expected);
+    if (!correct_plan) {
+      std::fprintf(stderr, "NativeScalarReadDescriptorPlanning: mode=%u fallback=%u buffers=%zu srt=",
+                   mode, unsigned(result.program.dispatcher_fallback), result.resources.buffers.size());
+      for (uint32_t word : result.resources.flattened_srt) std::fprintf(stderr, " %08x", word);
+      std::fprintf(stderr, " expected=");
+      for (uint32_t word : expected) std::fprintf(stderr, " %08x", word);
+      std::fprintf(stderr, "\n");
+    }
+    Check(correct_plan,
           "scalar descriptor planning retained an unrelated native execution mask");
     Check(std::equal(expected.begin(), expected.end(), result.resources.buffers[0].dwords.begin()),
           "scalar descriptor planning selected the wrong native resource");
@@ -11022,6 +11057,8 @@ void TestMeshExportStorage() {
               !SpirvSourceHasInstructionUsing(source, "OpAccessChain",
                                               "vsharp %uint_0 %uint_4294967295"),
           "mesh draw prefix was lost or spilled shader data wrapped into push constants");
+    Check(SpirvSourceHasInstructionUsing(source, "OpBitFieldUExtract", "%uint_10 %uint_9"),
+          "NGG primitive vertex indices must be 9 bits; bit 9 of each field is the edge flag");
     const auto &binary = result.spirv;
     for (const auto builtin : {3u, 4u}) {
       auto expected = builtin == 3u ? std::vector<uint32_t>{0, 3}
@@ -12394,6 +12431,71 @@ void TestFinalSsaRejectsRegisterStatePseudos() {
   check_rejected(true);
 }
 #endif
+
+void TestSsaRewriteSealsFilledBlocks() {
+  using namespace ShaderRecompiler::IR;
+  constexpr ScalarReg s0{0};
+
+  const auto add_blocks = [](Program &program) {
+    std::array<Block *, 4> blocks{};
+    for (auto &block : blocks) {
+      block =
+          program.block_storage.emplace_back(std::make_unique<Block>()).get();
+      program.blocks.push_back(block);
+    }
+    return blocks;
+  };
+  const auto use = [&](Block *block) {
+    const auto value = IREmitter(block).GetScalarReg(s0);
+    return &block->AppendNewInst(ValueOpcode::ReferenceU32, {value});
+  };
+  const auto is_phi = [](Value value, const Block *first, Value first_value,
+                         const Block *second, Value second_value) {
+    const auto *phi = value.TryInstruction();
+    return phi != nullptr && phi->GetOpcode() == ValueOpcode::Phi &&
+           phi->NumArgs() == 2u && phi->PhiBlock(0) == first &&
+           phi->Arg(0) == first_value && phi->PhiBlock(1) == second &&
+           phi->Arg(1) == second_value;
+  };
+
+  {
+    // entry(s0 = 7) -> left(s0 = 9) | right -> join.
+    Program program;
+    const auto [entry, left, right, join] = add_blocks(program);
+    entry->AddBranch(left);
+    entry->AddBranch(right);
+    left->AddBranch(join);
+    right->AddBranch(join);
+    IREmitter(entry).SetScalarReg(s0, U32(Value(7u)));
+    IREmitter(left).SetScalarReg(s0, U32(Value(9u)));
+    const auto *right_use = use(right);
+    const auto *join_use = use(join);
+    RewriteToSsa(program.blocks);
+    Check(right_use->Arg(0) == Value(7u) && right->Instructions().size() == 2u,
+          "SSA read in a single-predecessor block went through a trivial Phi");
+    Check(is_phi(join_use->Arg(0), left, Value(9u), right, Value(7u)),
+          "SSA join Phi lost a predecessor value");
+  }
+
+  // entry(s0 = 1) -> header <-> latch(s0 += 1), header -> tail.
+  Program program;
+  const auto [entry, header, latch, tail] = add_blocks(program);
+  entry->AddBranch(header);
+  header->AddBranch(latch);
+  header->AddBranch(tail);
+  latch->AddBranch(header);
+  IREmitter(entry).SetScalarReg(s0, U32(Value(1u)));
+  const auto *header_use = use(header);
+  IREmitter latch_ir(latch);
+  const auto sum = latch_ir.IAdd(latch_ir.GetScalarReg(s0), U32(Value(1u)));
+  latch_ir.SetScalarReg(s0, sum);
+  RewriteToSsa(program.blocks);
+  const auto phi = header_use->Arg(0);
+  Check(is_phi(phi, entry, Value(1u), latch, sum),
+        "SSA loop header Phi lost its entry or back-edge value");
+  Check(sum.Instruction()->Arg(0) == phi && latch->Instructions().size() == 3u,
+        "SSA read after a loop header went through a trivial Phi");
+}
 
 void TestValuePhiValidation() {
   using namespace ShaderRecompiler::IR;
@@ -16472,10 +16574,22 @@ void TestNewShaderRecompilerSpirvSizeBaselines() {
 } // namespace
 } // namespace Libs::Graphics
 
-int main() {
+int main(int argc, char **argv) {
   using namespace Libs::Graphics;
 
   EnsureConfigInitialized();
+  if (argc == 2 && std::strcmp(argv[1], "--upstream-shader-only") == 0) {
+    TestSsaRewriteSealsFilledBlocks();
+    TestScalarDataCacheInvalidation();
+    TestMeshExportStorage();
+    std::printf("ShaderCfgTests: upstream SSA, scalar cache invalidation and NGG cases passed\n");
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--native-scalar-read-only") == 0) {
+    TestNativeScalarReadDescriptorPlanning();
+    std::printf("ShaderCfgTests: NativeScalarReadDescriptorPlanning passed\n");
+    return 0;
+  }
   TestRayTracingInstructions();
   TestResourceDescriptorClassification();
   TestShaderBufferResourceSize();
@@ -16523,6 +16637,7 @@ int main() {
   TestNewShaderDecoderArchitecture();
   TestImageAddressOperands();
   TestSopkCompareImmediateExtension();
+  TestScalarDataCacheInvalidation();
   TestNativeStoreCompletion();
   TestNewShaderRecompilerCapturedVopcSdwaCmpxClass();
   TestVopcCmpxClassF16Decoder();
@@ -16613,6 +16728,7 @@ int main() {
 #if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
   TestFinalSsaRejectsRegisterStatePseudos();
 #endif
+  TestSsaRewriteSealsFilledBlocks();
   TestValuePhiValidation();
   TestLaneMaskProjection();
   TestLateConstantPropagation();

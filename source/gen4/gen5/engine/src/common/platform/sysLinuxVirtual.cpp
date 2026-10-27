@@ -48,6 +48,13 @@ void Init() {
 }
 
 static int get_protection_flag(Mode mode) {
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	// These are x86 guest mappings. FEX executes only its own MAP_JIT buffers;
+	// requesting native W+X here is both unnecessary and denied by hardened Darwin.
+	if (IsExecute(mode))
+		mode = static_cast<Mode>((static_cast<uint32_t>(mode) & ~uint32_t(Mode::Execute)) |
+		                         uint32_t(Mode::Read));
+#endif
 	int protect = PROT_NONE;
 	switch (mode) {
 		case Mode::Read: protect = PROT_READ; break;
@@ -233,6 +240,23 @@ uint64_t AllocAligned(uint64_t address, uint64_t size, Mode mode, uint64_t align
 }
 
 #if defined(__APPLE__)
+#if defined(LUMEN_PS5_DIRECT_FEX)
+static void* map_fixed_no_replace(uintptr_t address, size_t size, int protection) {
+	const auto page = static_cast<uintptr_t>(getpagesize());
+	if (address == 0 || size == 0 || address % page != 0 || size > UINTPTR_MAX - address ||
+	    size > SIZE_MAX - (page - 1)) return MAP_FAILED;
+	const auto mapped_size = (size + page - 1) & ~(page - 1);
+	mach_vm_address_t target = address;
+	// VM_FLAGS_FIXED, without VM_FLAGS_OVERWRITE, atomically rejects a collision.
+	if (mach_vm_allocate(mach_task_self(), &target, mapped_size, VM_FLAGS_FIXED) != KERN_SUCCESS)
+		return MAP_FAILED;
+	if (mprotect(reinterpret_cast<void*>(target), mapped_size, protection) != 0) {
+		mach_vm_deallocate(mach_task_self(), target, mapped_size);
+		return MAP_FAILED;
+	}
+	return reinterpret_cast<void*>(target);
+}
+#else
 // macOS has no /proc/self/maps; query the Mach VM map directly. mach_vm_region returns
 // the first mapped region at or above `region_addr`; if it begins before the end of the
 // requested range, the range overlaps an existing mapping.
@@ -252,6 +276,7 @@ static bool is_mapped(void* ptr, size_t length) {
 	}
 	return region_addr < (query_addr + length);
 }
+#endif
 #else
 static bool is_mapped(void* ptr, size_t length) {
 	FILE* file = fopen("/proc/self/maps", "r");
@@ -285,7 +310,9 @@ bool AllocFixed(uint64_t address, uint64_t size, Mode mode) {
 	auto addr    = static_cast<uintptr_t>(address);
 	int  protect = get_protection_flag(mode);
 
-#ifdef KYTY_FIXED_NOREPLACE
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	void* ptr = map_fixed_no_replace(addr, size, protect);
+#elif defined(KYTY_FIXED_NOREPLACE)
 	// NOLINTNEXTLINE
 	void* ptr = mmap(reinterpret_cast<void*>(addr), size, protect,
 	                 MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -408,7 +435,9 @@ bool ReserveFixed(uint64_t address, uint64_t size) {
 
 	auto addr = static_cast<uintptr_t>(address);
 
-#ifdef KYTY_FIXED_NOREPLACE
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	void* ptr = map_fixed_no_replace(addr, size, PROT_NONE);
+#elif defined(KYTY_FIXED_NOREPLACE)
 	// NOLINTNEXTLINE
 	void* ptr = mmap(reinterpret_cast<void*>(addr), size, PROT_NONE,
 	                 MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
@@ -543,9 +572,11 @@ bool FreeRange(uint64_t address, uint64_t size) {
 
 bool Protect(uint64_t address, uint64_t size, Mode mode) {
 	const auto addr       = static_cast<uintptr_t>(address);
-	const auto page_start = addr >> 12u;
-	const auto page_end   = (addr + size - 1) >> 12u;
-	return mprotect(reinterpret_cast<void*>(page_start << 12u), (page_end - page_start + 1) << 12u,
+	if (size == 0 || size > UINTPTR_MAX - addr) return false;
+	const auto page_size = static_cast<uintptr_t>(::getpagesize());
+	const auto page_start = addr & ~(page_size - 1);
+	const auto page_end = (addr + size - 1) & ~(page_size - 1);
+	return mprotect(reinterpret_cast<void*>(page_start), page_end - page_start + page_size,
 	                get_protection_flag(mode)) == 0;
 }
 

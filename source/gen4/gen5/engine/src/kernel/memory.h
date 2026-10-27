@@ -127,6 +127,17 @@ static_assert(sizeof(KernelMemoryPoolBlockStats) == 16,
               "KernelMemoryPoolBlockStats struct size is incorrect");
 
 // Direct translated-CPU bridge. Rights are queried from the live original VM map.
+// Pure address conversion: identity is valid; zero-sized/overflowing ranges or
+// spans crossing an arena boundary are rejected. No mapping/rights admission.
+bool TranslateGuestMemory(uint64_t guest, uint64_t size, uint64_t* host) noexcept;
+// Inverse conversion accepts only native aliases, never ordinary host pointers.
+bool TranslateHostMemoryFault(uint64_t host, uint64_t* guest) noexcept;
+bool IsGuestNonIdentity(uint64_t guest, uint64_t size) noexcept;
+// Signal-safe semantic admission for a complete nonidentity range only. Identity
+// ranges return false and retain their existing native protection checks.
+bool QueryTranslatedGuestAccess(uint64_t guest, uint64_t size, bool write) noexcept;
+// Signal-safe native-view permissions, including temporary GPU watch state.
+bool QueryTranslatedHostAccess(uint64_t guest, uint64_t size, bool write) noexcept;
 bool QueryGuestAccess(uint64_t address, uint64_t size, Common::VirtualMemory::Mode mode) noexcept;
 uint32_t QueryGuestExecutable(void*, uint64_t address, uint64_t* base, uint64_t* size,
                               uint32_t* writable) noexcept;
@@ -149,6 +160,11 @@ uint64_t BackingMutationGeneration() noexcept;
 bool                   TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size);
 bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
+// Ordinary GPU shader-table reads: exact dirty-byte synchronization on the GPU
+// lane, followed by a complete readable-backing copy. Private/unavailable spans
+// return false without changing the destination; retain the watched-read fallback.
+// This is not a CPU ABI access check and never takes the outer VM operation lock.
+bool                   TryReadShaderBufferBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   CopySparseMemory(uint64_t vaddr, void* data, uint64_t size);
 [[nodiscard]] uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size);

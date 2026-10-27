@@ -24,7 +24,7 @@
 #include "kernel/memory.h"
 #include "loader/systemContent.h"
 
-#if defined(__ANDROID__) && defined(LUMEN_PS5_DIRECT_FEX)
+#if defined(LUMEN_PS5_DIRECT_FEX)
 #include "DirectPerformanceOptions.h"
 #endif
 
@@ -123,9 +123,92 @@ bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) 
 	       Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes());
 }
 
+#if defined(LUMEN_PS5_DIRECT_FEX)
+bool ReadShaderWatchedMemory(void*, uint64_t address, std::span<uint32_t> values) {
+	uint64_t host = 0;
+	if (values.empty() ||
+	    !LibKernel::Memory::TranslateGuestMemory(address, values.size_bytes(), &host)) return false;
+	// Ordinary scalar reads retain the watched-view fault/readback protocol. The
+	// callback also prevents the SRT JIT from emitting identity-address raw loads.
+	std::memcpy(values.data(), reinterpret_cast<const void*>(host), values.size_bytes());
+	return true;
+}
+
+bool ReadShaderExactMemory(void* opaque, uint64_t address, std::span<uint32_t> values) {
+	if (values.empty()) return false;
+	if (LibKernel::Memory::TryReadShaderBufferBacking(address, values.data(), values.size_bytes()))
+		return true;
+	// Keep private mappings and other ineligible sources on the established
+	// watched path. A callback disables direct SRT JIT loads, including nested
+	// pointers, so every ordinary read retains its complete requested byte span.
+	return ReadShaderWatchedMemory(opaque, address, values);
+}
+#endif
+
+bool ShaderCaptureEnabled() {
+	// File diagnostics retain executable inputs/outputs without enabling the much
+	// larger per-command register dump or changing shader debug instrumentation.
+	return Config::GraphicsDebugDumpEnabled() ||
+	       Config::GetShaderLogDirection() == Config::LogDirection::File;
+}
+
+void WriteCaptureText(const std::filesystem::path& path, std::string_view text) {
+	Common::File::CreateDirectories(path.parent_path());
+	Common::File file(path);
+	if (file.IsInvalid()) {
+		LOGF_COLOR(Log::Color::BrightRed, "Can't create file: %s\n",
+		           Common::PathToString(path).c_str());
+		return;
+	}
+	file.Write(text.data(), static_cast<uint32_t>(text.size()));
+}
+
+std::string ShaderCaptureMetadata(const ShaderRecompiler::CompileOptions& options,
+                                  const ShaderRecompiler::IR::Program& program,
+                                  uint64_t shader_id) {
+	std::string text = fmt::format(
+	    "ShaderCaptureV1 id={} hash=0x{:016x} stage={} wave={} buffers={} images={} samplers={}\n",
+	    shader_id, options.shader_hash, static_cast<uint32_t>(options.stage), options.wave_size,
+	    program.info.buffers.size(), program.info.images.size(), program.info.samplers.size());
+	if (options.stage == ShaderType::Pixel && options.input_info.pixel != nullptr) {
+		const auto& pixel = *options.input_info.pixel;
+		text += fmt::format("pixel shader_mask=0x{:08x} dual_source={} alpha_source={} kill={}\n",
+		                    pixel.target_shader_mask, pixel.dual_source_blending,
+		                    static_cast<uint32_t>(pixel.alpha_blend_source),
+		                    pixel.ps_pixel_kill_enable);
+		for (uint32_t slot = 0; slot < pixel.target_export_mapping.size(); ++slot) {
+			text += fmt::format("target slot={} mode={} mapping=0x{:02x}\n", slot,
+			                    pixel.target_output_mode[slot], pixel.target_export_mapping[slot].packed);
+		}
+	}
+	for (uint32_t i = 0; i < program.info.buffers.size(); ++i) {
+		const auto& buffer = program.info.buffers[i];
+		text += fmt::format(
+		    "buffer index={} source={} descriptor={} pc=0x{:x} format={} swizzle=0x{:x} "
+		    "stride={} read={} written={} formatted={}\n", i, buffer.source,
+		    buffer.descriptor_index, buffer.first_use_pc, static_cast<uint32_t>(buffer.descriptor_format),
+		    buffer.descriptor_swizzle, buffer.packed_stride, buffer.read, buffer.written, buffer.formatted);
+	}
+	for (uint32_t i = 0; i < program.info.images.size(); ++i) {
+		const auto& image = program.info.images[i];
+		text += fmt::format(
+		    "image index={} source={} descriptor={} pc=0x{:x} class={} numeric={} dimension={} "
+		    "format={} swizzle=0x{:x} mips={} read={} written={} null={}\n", i, image.source,
+		    image.descriptor_index, image.first_use_pc, static_cast<uint32_t>(image.resource_class),
+		    static_cast<uint32_t>(image.numeric_class), static_cast<uint32_t>(image.dimension),
+		    static_cast<uint32_t>(image.conversion_format), image.shader_swizzle, image.mip_count,
+		    image.read, image.written, image.null_descriptor);
+	}
+	for (const auto& pair: program.info.sampled_pairs) {
+		text += fmt::format("sampled image={} sampler={} pc=0x{:x}\n", pair.image,
+		                    pair.sampler, pair.first_use_pc);
+	}
+	return text;
+}
+
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
-                     const std::vector<uint32_t>& spirv) {
-	if (!Config::GraphicsDebugDumpEnabled()) {
+                     const std::vector<uint32_t>& spirv, std::string_view metadata = {}) {
+	if (!ShaderCaptureEnabled()) {
 		return;
 	}
 	static std::atomic_int id = 0;
@@ -139,11 +222,16 @@ void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
 		return;
 	}
 	file.Write(spirv.data(), spirv.size() * sizeof(uint32_t));
+	if (!metadata.empty()) {
+		auto metadata_path = path;
+		metadata_path.replace_extension(".txt");
+		WriteCaptureText(metadata_path, metadata);
+	}
 }
 
 void DumpShaderOriginal(const char* stage_name, uint64_t shader_hash,
                         std::span<const uint32_t> code) {
-	if (!Config::GraphicsDebugDumpEnabled()) {
+	if (!ShaderCaptureEnabled()) {
 		return;
 	}
 	EXIT_IF(code.empty());
@@ -157,7 +245,11 @@ void DumpShaderOriginal(const char* stage_name, uint64_t shader_hash,
 		LOGF_COLOR(Log::Color::BrightRed, "Can't create file: %s\n", path_text.c_str());
 		return;
 	}
-	file.Write(code.data(), code.size_bytes());
+	uint64_t host = 0;
+	EXIT_IF(!LibKernel::Memory::TranslateGuestMemory(
+	    reinterpret_cast<uint64_t>(code.data()), code.size_bytes(), &host));
+	// The file syscall must receive a native pointer, while shader_base remains guest VA.
+	file.Write(reinterpret_cast<const void*>(host), code.size_bytes());
 }
 
 bool ValidateShaderSpirv(const char* label, uint64_t shader_hash,
@@ -382,7 +474,10 @@ struct PipelineCache::ProgramCache {
 			EXIT("%s failed hash=0x%016" PRIx64 ": SPIR-V validation failed\n", options.dump_label,
 			     options.shader_hash);
 		}
-		DumpShaderSpirv(stage_name, options.shader_hash, result.spirv);
+		if (ShaderCaptureEnabled()) {
+			DumpShaderSpirv(stage_name, options.shader_hash, result.spirv,
+			                ShaderCaptureMetadata(options, result.program, next_shader_id + 1u));
+		}
 
 		const auto module = CompileSPV(result.spirv, graphics);
 		EXIT_IF(module == nullptr);
@@ -424,7 +519,18 @@ struct PipelineCache::ProgramCache {
 		ShaderRecompiler::IR::SrtRuntime             runtime {
 		    .user_data                  = user_data,
 		    .shader_base                = params.Base(),
+#if defined(LUMEN_PS5_DIRECT_FEX)
+		    .read_memory                = Lumen::Ps5::DirectPerformance::Get().srt_exact_readback
+		                                      ? ReadShaderExactMemory
+#if defined(__APPLE__)
+		                                      : ReadShaderWatchedMemory,
+#else
+		                                      : nullptr,
+#endif
+#endif
 		    .read_specialization_memory = ReadShaderGuestMemory,
+		    .null_descriptor_fallback = graphics.null_descriptor_fallback_enabled,
+		    .explicit_image_bounds = !graphics.robust_image_access_enabled,
 		};
 		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
 			runtime.workgroup_counts = input_info.workgroup_counts;
@@ -1148,6 +1254,16 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 	static_params.provoking_vtx_last = mc.provoking_vtx_last;
 	static_params.polygon_mode =
 	    ResolvePolygonMode(mc, static_params.cull_front, static_params.cull_back);
+	if (static_params.polygon_mode != vk::PolygonMode::eFill && !m_graphics.fill_mode_non_solid_enabled) {
+		EXIT("Pipeline: non-solid polygon mode is required but unsupported by the host\n");
+	}
+	if (topology == vk::PrimitiveTopology::ePointList && !m_graphics.large_points_enabled &&
+	    std::ranges::any_of(vs_input_info.stage.program->info.outputs, [](const auto& output) {
+		    return output.kind == ShaderRecompiler::IR::StageOutputKind::PointSize;
+	    })) {
+		EXIT("Pipeline: programmable point size is required but unsupported by the host\n");
+	}
+
 
 	if (vs_input_info.stage.program->stage != ShaderType::Mesh) {
 		EXIT_IF(vs_input_info.buffers_num < 0 ||
@@ -1174,6 +1290,52 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 
 	if (auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
 		return *iter->second;
+	}
+
+	if (Config::GetShaderLogDirection() == Config::LogDirection::File) {
+		// One creation-state snapshot per unique pipeline, never a per-draw log.
+		// Addresses/extents describe its first use; they are not part of the key.
+		static std::atomic_uint capture_count {0};
+		const auto capture_id = capture_count.fetch_add(1, std::memory_order_relaxed);
+		constexpr uint32_t CaptureLimit = 4096;
+		if (capture_id < CaptureLimit) {
+			std::string text = fmt::format(
+			    "PipelineCaptureV1 id={} vs_id={} vs_hash=0x{:016x} ps_id={} ps_hash=0x{:016x} "
+			    "topology={} samples={} colors={} target_mask=0x{:08x}\n",
+			    capture_id, vs_id, vs_input_info.stage.program->shader_hash, ps_id,
+			    ps_active ? ps_input_info->stage.program->shader_hash : 0u,
+			    static_cast<uint32_t>(topology), attachment_samples, color_count,
+			    ctx.GetRenderTargetMask());
+			for (const auto& color: colors) {
+				const auto slot = color.target_slot;
+				const auto& rt = ctx.GetRenderTarget(slot);
+				const auto& blend = ctx.GetBlendControl(slot);
+				const auto& info = color.desc.info;
+				text += fmt::format(
+				    "color slot={} address=0x{:x} extent={}x{} guest_format={} host_format={} "
+				    "mapping=0x{:02x} mask=0x{:x} guest_blend={} bypass={} src={} dst={} op={} "
+				    "separate={} alpha_src={} alpha_dst={} alpha_op={} host_blend={} "
+				    "host_src={} host_dst={} host_op={} host_separate={} "
+				    "host_alpha_src={} host_alpha_dst={} host_alpha_op={}\n",
+				    slot, info.data.address, info.extent.width, info.extent.height,
+				    static_cast<uint32_t>(info.guest_format),
+				    static_cast<uint32_t>(color.desc.view_info.format), color.export_mapping.packed,
+				    static_params.color_mask[slot], blend.enable, rt.info.blend_bypass,
+				    blend.color_srcblend, blend.color_destblend, blend.color_comb_fcn,
+				    blend.separate_alpha_blend, blend.alpha_srcblend, blend.alpha_destblend,
+				    blend.alpha_comb_fcn, static_params.blend_enable[slot],
+				    static_params.color_srcblend[slot], static_params.color_destblend[slot],
+				    static_params.color_comb_fcn[slot], static_params.separate_alpha_blend[slot],
+				    static_params.alpha_srcblend[slot], static_params.alpha_destblend[slot],
+				    static_params.alpha_comb_fcn[slot]);
+			}
+			WriteCaptureText(Config::GetShaderLogFolder() / "pipelines" /
+			                     fmt::format("{:04d}.txt", capture_id), text);
+			LOGF("PipelineCaptureV1 id=%u vs_id=%" PRIu64 " ps_id=%" PRIu64 "\n",
+			     capture_id, vs_id, ps_id);
+		} else if (capture_id == CaptureLimit) {
+			LOGF("PipelineCaptureV1 limit=%u reached\n", CaptureLimit);
+		}
 	}
 
 	if (graphics_debug_dump_enabled()) {

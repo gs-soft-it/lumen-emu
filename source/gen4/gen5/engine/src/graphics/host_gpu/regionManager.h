@@ -37,14 +37,17 @@ public:
 	void lock() noexcept {
 		const auto thread = CurrentThread();
 		while (m_lock.test_and_set(std::memory_order_acquire)) {
-			EXIT_NOT_IMPLEMENTED(m_owner.load(std::memory_order_relaxed) == thread);
+			// Poll without writing the shared cache line while another thread owns it.
+			do {
+				EXIT_NOT_IMPLEMENTED(m_owner.load(std::memory_order_relaxed) == thread);
 #if defined(__x86_64__) || defined(_M_X64)
-			_mm_pause();
+				_mm_pause();
 #elif defined(_M_ARM64)
-			__yield();
+				__yield();
 #elif defined(__aarch64__)
-			asm volatile("yield");
+				asm volatile("yield");
 #endif
+			} while (m_lock.test(std::memory_order_relaxed));
 		}
 		m_owner.store(thread, std::memory_order_relaxed);
 	}

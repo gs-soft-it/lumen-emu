@@ -362,6 +362,10 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	                         : image.usage & ~vk::ImageUsageFlagBits::eStorage;
 	vk::ImageViewMinLodCreateInfoEXT min_lod {};
 	if (normalized.min_lod != 0) {
+		if (!m_graphics.image_view_min_lod_enabled) {
+			EXIT("texture view requires unsupported image-view minimum LOD: "
+			     "base_level=%u min_lod=%u\n", normalized.base_level, normalized.min_lod);
+		}
 		min_lod.minLod = static_cast<float>(normalized.base_level) +
 		                 static_cast<float>(normalized.min_lod) / 256.0f;
 		usage.pNext    = &min_lod;

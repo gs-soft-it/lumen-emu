@@ -58,6 +58,19 @@ namespace {
 
 constexpr uint64_t AddressMask = 0x0000ffffffffffffull;
 
+#if defined(__aarch64__)
+bool ReadArm64SrtWords(void* context, uint64_t address, uint32_t* output, size_t count) noexcept {
+	const auto& runtime = *static_cast<const SrtRuntime*>(context);
+	try {
+		return runtime.read_memory(runtime.userdata, address, {output, count});
+	} catch (...) {
+		// Generated code has no C++ unwind metadata. Reader failures must return
+		// through its checked epilogue, preserving the caller's register frame.
+		return false;
+	}
+}
+#endif
+
 bool AddSignedAddress(uint64_t base, int64_t offset, uint64_t& result) {
 	if (base > AddressMask) {
 		return false;
@@ -161,9 +174,11 @@ bool IsRuntimeUniformOp(ValueOpcode op) {
 		case ValueOpcode::ULessThan32:
 		case ValueOpcode::ULessThanEqual32:
 		case ValueOpcode::IEqual32:
+		case ValueOpcode::IEqual64:
 		case ValueOpcode::UGreaterThan32:
 		case ValueOpcode::SGreaterThanEqual32:
 		case ValueOpcode::INotEqual32:
+		case ValueOpcode::INotEqual64:
 		case ValueOpcode::LogicalOr:
 		case ValueOpcode::LogicalAnd:
 		case ValueOpcode::LogicalXor:
@@ -454,29 +469,58 @@ void CompileSrtWalker(ResourcePlan& program) {
 #if defined(__aarch64__)
 	try {
 		Arm64SrtEmitter code;
-		code.Begin(user_data_count);
-		const auto visit = [&](auto&& self, int64_t pointer_offset, const Reads& reads,
-		                       uint32_t depth) -> bool {
+		using Entry = ResourcePlan::EvaluationContext::Entry;
+		const auto memo_value_offset = [&](const SrtRead& read) {
+			const auto index = read.value.ResolveInstruction()->EvaluationIndex(program.evaluation_value_count);
+			return size_t{index} * sizeof(Entry) + offsetof(Entry, value);
+		};
+		const auto visit = [&](auto&& self, Arm64SrtEmitter& output, int64_t pointer_offset, const Reads& reads,
+		                       uint32_t depth, size_t low_memo, size_t high_memo) -> bool {
 			// Unusually deep tables retain the evaluator without growing the native stack.
 			if (depth > 64) return false;
-			code.EnterTable(pointer_offset, reads.begin()->first, reads.rbegin()->first);
+			output.EnterTable(pointer_offset, reads.begin()->first, reads.rbegin()->first,
+			                  low_memo, high_memo);
 			for (const auto& [offset, read]: reads) {
-				const auto index = read->value.ResolveInstruction()->EvaluationIndex(program.evaluation_value_count);
-				using Entry = ResourcePlan::EvaluationContext::Entry;
-				code.Read(offset, read->flat_offset, size_t{index} * sizeof(Entry),
-				          offsetof(Entry, value), offsetof(Entry, generation));
+				const auto* inst = read->value.ResolveInstruction();
+				const auto index = inst->EvaluationIndex(program.evaluation_value_count);
+				output.Read(offset, read->flat_offset, size_t{index} * sizeof(Entry),
+				            offsetof(Entry, value), offsetof(Entry, generation));
 			}
 			for (const auto& [offset, read]: reads) {
 				const auto child = pointer_uses.find(read->value.ResolveInstruction());
-				if (child != pointer_uses.end() && !self(self, offset, child->second, depth + 1)) return false;
+				if (child != pointer_uses.end()) {
+					// Eligibility already proved that the pointer's high DWORD is
+					// the next read in this same parent table.
+					const auto high = reads.find(offset + 4);
+					if (high == reads.end() || !self(self, output, offset, child->second, depth + 1,
+					        memo_value_offset(*read), memo_value_offset(*high->second))) return false;
+				}
 			}
-			code.LeaveTable();
+			output.LeaveTable();
 			return true;
 		};
-		for (const auto& [reg, reads]: roots) {
-			if (!visit(visit, uint64_t{reg} * sizeof(uint32_t), reads, 0)) return;
+		const auto emit = [&](Arm64SrtEmitter& output) {
+			output.Begin(user_data_count);
+			for (const auto& [reg, reads]: roots) {
+				if (!visit(visit, output, uint64_t{reg} * sizeof(uint32_t), reads, 0, SIZE_MAX, SIZE_MAX)) return false;
+			}
+			return true;
+		};
+		if (!emit(code)) return;
+		Arm64SrtEmitter checked(true);
+		bool checked_ready = false;
+		// OFF retains the original code size and portable callback path on every
+		// host. Clean reads continue using their separate strict evaluator.
+		if (options.srt_exact_readback && std::ranges::all_of(program.srt_reads, [](const auto& read) {
+			return read.value.ResolveInstruction()->template Flags<SrtReadFlags>().clean == 0;
+		})) {
+			try {
+				checked_ready = emit(checked);
+			} catch (const std::bad_alloc&) {
+				// Failure of the optional variant must not discard the raw walker.
+			}
 		}
-		program.srt_arm64_code = code.Finish();
+		program.srt_arm64_code = code.Finish(checked_ready ? &checked : nullptr);
 	} catch (const std::bad_alloc&) {
 		// Code emission is optional; retain the existing resource evaluator.
 		return;
@@ -562,6 +606,8 @@ SrtWalker::~SrtWalker() {
 }
 
 bool SrtWalker::Evaluate(Value value, uint32_t& result) {
+	if (m_session->m_native_refresh_failed) return false;
+	m_session->m_evaluation_started = true;
 	uint64_t wide = 0;
 	if (!EvaluateWide(value, wide)) {
 		return false;
@@ -1096,6 +1142,11 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 				return true;
 			}
 			return false;
+		case ValueOpcode::IEqual64:
+		case ValueOpcode::INotEqual64:
+			if (!binary()) return false;
+			result = inst.GetOpcode() == ValueOpcode::IEqual64 ? a == b : a != b;
+			return true;
 		case ValueOpcode::ULessThan32:
 			// No U32 is below zero, including an unknown loop-carried value.
 			if (!Arg(inst, 1, b)) return false;
@@ -1203,22 +1254,38 @@ bool SrtWalker::EvaluateDescriptor(uint32_t source, DescriptorValue& result) {
 }
 
 bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
-	if (!m_program.srt_plan_complete) return false;
-	if (m_program.srt_arm64_code && m_runtime.read_memory == nullptr) {
+	if (m_session->m_native_refresh_failed || !m_program.srt_plan_complete) return false;
+	const auto finish_native = [this](bool success) {
+		m_session->m_native_refresh_failed = !success;
+		return success;
+	};
+	if (!m_session->m_evaluation_started && m_program.srt_arm64_code &&
+	    (m_runtime.read_memory == nullptr || m_program.srt_arm64_code->CheckedFunction() != nullptr)) {
 		flat.resize(m_program.srt_reads.size());
 		m_program.active_sources.clear();
 		m_context.values.resize(m_program.evaluation_value_count);
-		return m_program.srt_arm64_code->Function()(m_runtime.user_data.data(), flat.data(),
-		    m_context.values.data(), m_context.generation, m_runtime.user_data.size());
+		m_session->m_evaluation_started = true;
+		if (m_runtime.read_memory != nullptr) {
+#if defined(__aarch64__)
+			return finish_native(m_program.srt_arm64_code->CheckedFunction()(m_runtime.user_data.data(), flat.data(),
+			    m_context.values.data(), m_context.generation, m_runtime.user_data.size(),
+			    ReadArm64SrtWords, &m_runtime));
+#else
+			return finish_native(false); // ARM64 executable plans cannot be created on another host.
+#endif
+		}
+		return finish_native(m_program.srt_arm64_code->Function()(m_runtime.user_data.data(), flat.data(),
+		    m_context.values.data(), m_context.generation, m_runtime.user_data.size()));
 	}
-	if (m_program.srt_code && m_runtime.read_memory == nullptr) {
+	if (!m_session->m_evaluation_started && m_program.srt_code && m_runtime.read_memory == nullptr) {
 		flat.resize(m_program.srt_reads.size());
 		m_program.active_sources.clear();
 		m_context.values.resize(m_program.evaluation_value_count);
+		m_session->m_evaluation_started = true;
 		using Walker = bool KYTY_SYSV_ABI (*)(const uint32_t*, uint32_t*,
 		    ResourcePlan::EvaluationContext::Entry*, uint64_t, size_t);
-		return m_program.srt_code->getCode<Walker>()(m_runtime.user_data.data(), flat.data(),
-		    m_context.values.data(), m_context.generation, m_runtime.user_data.size());
+		return finish_native(m_program.srt_code->getCode<Walker>()(m_runtime.user_data.data(), flat.data(),
+		    m_context.values.data(), m_context.generation, m_runtime.user_data.size()));
 	}
 	const auto refresh = [&](uint32_t slot) {
 		if (slot >= m_program.srt_reads.size()) return false;

@@ -12,6 +12,7 @@
 #include "kernel/eventFlag.h"
 #include "kernel/eventQueue.h"
 #include "kernel/fileSystem.h"
+#include "kernel/guestIoBuffer.h"
 #include "kernel/memory.h"
 #include "kernel/module.h"
 #include "kernel/pthread.h"
@@ -1315,11 +1316,24 @@ KernelModule KYTY_SYSV_ABI KernelLoadStartModule(const char* module_file_name, s
 
 	auto* program = rt->FindProgramByFileName(module_path);
 	if (program != nullptr) {
-		++program->load_count;
-		if (res != nullptr) {
-			*res = OK;
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+		if (!rt->RetainProgram(program)) return KERNEL_ERROR_ESRCH;
+		const auto handle = program->unique_id;
+		const int result = rt->StartModule(program, args, argp, nullptr);
+		if (result < 0) {
+			rt->ReleaseProgram(program);
+			if (res != nullptr) *res = result;
+			return result;
 		}
-		return static_cast<KernelModule>(program->unique_id);
+#else
+		constexpr int result = OK;
+		const auto handle = program->unique_id;
+		++program->load_count;
+#endif
+		if (res != nullptr) {
+			*res = result;
+		}
+		return static_cast<KernelModule>(handle);
 	}
 
 	program = rt->LoadProgram(module_path);
@@ -1367,6 +1381,14 @@ int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args, const
 		--program->load_count;
 		return OK;
 	}
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	if (program->dependency_count != 0) {
+		if (program->load_count == 0) return KERNEL_ERROR_EBUSY;
+		--program->load_count;
+		if (res != nullptr) *res = OK;
+		return OK; // Static consumers still own this module and its initialized data.
+	}
+#endif
 
 	if (g_get_thread_atexit_count_func != nullptr &&
 	    Loader::GuestCallback::Call(g_get_thread_atexit_count_func, program->unique_id) > 0) {
@@ -1382,13 +1404,19 @@ int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args, const
 
 	LOGF("\tmodule_stop() result = %d\n", result);
 
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+	if (result < 0) {
+		if (res != nullptr) *res = result;
+		return result;
+	}
+#else
 	EXIT_NOT_IMPLEMENTED(result < 0);
-
+#endif
 	if (res != nullptr) {
 		*res = result;
 	}
 
-	rt->UnloadProgram(program);
+	if (!rt->UnloadProgram(program)) return KERNEL_ERROR_EBUSY;
 
 	return OK;
 }
@@ -1430,14 +1458,6 @@ static int KYTY_SYSV_ABI KernelGetOperationMode(int* mode, int* submode) {
 	return OK;
 }
 
-static int KYTY_SYSV_ABI KernelFsync(int fd) {
-	PRINT_NAME();
-
-	LOGF("\t fd = %d\n", fd);
-
-	return OK;
-}
-
 static void KYTY_SYSV_ABI KernelSync() {
 	PRINT_NAME();
 }
@@ -1467,22 +1487,8 @@ static void KYTY_SYSV_ABI KernelRtldSetApplicationHeapAPI(void* api[]) {
 	[[maybe_unused]] auto* heap_posix_memalign = api[6];
 }
 
-static int64_t KYTY_SYSV_ABI write(int d, const char* str, int64_t size) {
-	// PRINT_NAME();
-
-	EXIT_NOT_IMPLEMENTED(d < 0);
-
-	if (Network::Net::IsSocket(d)) {
-		return Network::Net::Send(d, str, static_cast<uint64_t>(size), 0);
-	}
-
-	if (d > 2) {
-		return POSIX_N_CALL(FileSystem::KernelWrite(d, str, size));
-	}
-
-	int size_int = static_cast<int>(size);
-
-	return size_int;
+static int64_t KYTY_SYSV_ABI write(int d, const void* buf, size_t nbytes) {
+	return POSIX_N_CALL(FileSystem::KernelWrite(d, buf, nbytes));
 }
 
 static int KYTY_SYSV_ABI open(const char* path, int flags, int mode) {
@@ -1506,7 +1512,7 @@ static int KYTY_SYSV_ABI close(int d) {
 	return POSIX_CALL(FileSystem::KernelClose(d));
 }
 
-static int64_t KYTY_SYSV_ABI read(int d, void* buf, uint64_t nbytes) {
+int64_t KYTY_SYSV_ABI read(int d, void* buf, uint64_t nbytes) {
 	// PRINT_NAME();
 
 	if (buf == nullptr) {
@@ -1531,9 +1537,52 @@ static int64_t KYTY_SYSV_ABI read(int d, void* buf, uint64_t nbytes) {
 		return 0;
 	}
 
-	auto* str = std::fgets(static_cast<char*>(buf), static_cast<int>(nbytes), stdin);
-
-	return (str != nullptr ? static_cast<int64_t>(strlen(str)) : 0);
+	if (nbytes > INT_MAX) {
+		*Posix::GetErrorAddr() = Posix::POSIX_EINVAL;
+		return -1;
+	}
+	Memory::GuestIoBuffer io;
+	if (const auto error = io.Prepare(buf, nbytes, true); error != Memory::GuestIoError::None) {
+		*Posix::GetErrorAddr() = error == Memory::GuestIoError::NoMemory
+		    ? Posix::POSIX_ENOMEM : Posix::POSIX_EFAULT;
+		return -1;
+	}
+	if (!Memory::IsGuestNonIdentity(reinterpret_cast<uint64_t>(buf), nbytes)) {
+		auto* str = std::fgets(static_cast<char*>(io.Data()), static_cast<int>(nbytes), stdin);
+		return str != nullptr ? static_cast<int64_t>(strlen(str)) : 0;
+	}
+	// Preserve fgets' line limit, NUL terminator and strlen return convention,
+	// including bytes after an embedded NUL. A single strlen cannot tell us how
+	// many bytes fgets wrote, so consume bounded characters under its stream lock.
+#if defined(_WIN32)
+	_lock_file(stdin);
+#else
+	flockfile(stdin);
+#endif
+	auto* data = static_cast<char*>(io.Data());
+	size_t written = 0;
+	bool success = nbytes == 1;
+	while (written + 1 < nbytes) {
+		char character[2];
+		if (std::fgets(character, sizeof(character), stdin) == nullptr) {
+			success = written != 0 && std::ferror(stdin) == 0;
+			break;
+		}
+		data[written++] = character[0];
+		success = true;
+		if (character[0] == '\n') break;
+	}
+	if (success) data[written++] = '\0';
+#if defined(_WIN32)
+	_unlock_file(stdin);
+#else
+	funlockfile(stdin);
+#endif
+	if (!io.Commit(written)) {
+		*Posix::GetErrorAddr() = Posix::POSIX_EFAULT;
+		return -1;
+	}
+	return success ? static_cast<int64_t>(strlen(data)) : 0;
 }
 
 static bool DecodeEhFramePointer(const uint8_t* data, const uint8_t* end, uint8_t encoding,
@@ -2075,6 +2124,12 @@ int KYTY_SYSV_ABI ftruncate(int d, int64_t length) {
 	return POSIX_CALL(LibKernel::FileSystem::KernelFtruncate(d, length));
 }
 
+int KYTY_SYSV_ABI fsync(int d) {
+	PRINT_NAME();
+
+	return POSIX_CALL(LibKernel::FileSystem::KernelFsync(d));
+}
+
 int KYTY_SYSV_ABI socket(int family, int type, int protocol) {
 	PRINT_NAME();
 	return Network::Net::Socket(family, type, protocol);
@@ -2263,6 +2318,7 @@ LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("E6ao34wPw+U", stat);
 	LIB_FUNC("JGMio+21L4c", mkdir);
 	LIB_FUNC("ih4CD9-gghM", Posix::ftruncate);
+	LIB_FUNC("juWbTNM+8hw", Posix::fsync);
 	LIB_FUNC("8nY19bKoiZk", Posix::fcntl);
 	LIB_FUNC("pDuPEf3m4fI", Posix::sem_init);
 	LIB_FUNC("cDW233RAwWo", Posix::sem_destroy);
@@ -2970,7 +3026,7 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("959qrazPIrg", LibKernel::KernelGetProcParam);
 	LIB_FUNC("tU5e3f9gSiU", LibKernel::KernelIsTrinityMode);
 	LIB_FUNC("NH6xARDOVv8", LibKernel::KernelGetOperationMode);
-	LIB_FUNC("fTx66l5iWIA", LibKernel::KernelFsync);
+	LIB_FUNC("fTx66l5iWIA", FileSystem::KernelFsync);
 	LIB_FUNC("uvT2iYBBnkY", LibKernel::KernelSync);
 	LIB_FUNC("HoLVWNanBBc", LibKernel::getpid);
 	LIB_FUNC("9BcDykPmo1I", LibKernel::get_error_addr);

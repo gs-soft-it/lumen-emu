@@ -386,9 +386,11 @@ public:
 	~Swapchain();
 	KYTY_CLASS_NO_COPY(Swapchain);
 
-	void                 Create();
-	void                 Recreate(bool surface_lost = false);
+	[[nodiscard]] bool   Create();
+	[[nodiscard]] bool   Recreate(bool surface_lost = false);
 	[[nodiscard]] bool   NeedsResize() const;
+	void                 MarkSurfaceLost() noexcept { m_surface_lost = true; }
+	[[nodiscard]] bool   IsSurfaceLost() const noexcept { return m_surface_lost; }
 	[[nodiscard]] Status AcquireNextImage(CommandScheduler& scheduler);
 	[[nodiscard]] bool   PrepareSystemOverlay();
 	void     RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
@@ -407,6 +409,7 @@ private:
 
 	WindowContext&   m_window;
 	vk::SwapchainKHR m_handle = nullptr;
+	bool            m_surface_lost = false;
 	vk::Format       m_format = vk::Format::eUndefined;
 	vk::Extent2D     m_extent {};
 	// Drawable pixel size observed when this swapchain was created.
@@ -433,15 +436,22 @@ struct Presenter::Impl {
 	    : renderer(*owner.render_context), window(owner), swapchain(owner),
 	      present_scheduler(renderer, owner.graphic_ctx), frames(owner, present_scheduler) {
 		EXIT_IF(owner.render_context == nullptr);
-		swapchain.Create();
-		frames.Initialize(swapchain.ImageCount(), swapchain.Format());
+		const bool ready = swapchain.Create();
+		// Prepared images are independent of the WSI images. Keep one SDR slot
+		// while Android has no surface; recovery installs its actual format and
+		// the bounded flip queue grows the pool when needed. Do not block startup.
+		frames.Initialize(ready ? swapchain.ImageCount() : 1,
+		                  ready ? swapchain.Format() : vk::Format::eR8G8B8A8Unorm);
 	}
 
-	void RecoverSwapchain(Swapchain::Status status) {
+	bool RecoverSwapchain(Swapchain::Status status) {
 		LOGF("Recovering Vulkan swapchain%s\n",
 		     status == Swapchain::Status::SurfaceLost ? " and surface" : "");
-		swapchain.Recreate(status == Swapchain::Status::SurfaceLost);
+		if (!swapchain.Recreate(status == Swapchain::Status::SurfaceLost)) {
+			return false;
+		}
 		frames.SetFormat(swapchain.Format());
+		return true;
 	}
 
 	Image& ResolveSurface(const ImageInfo& info) {
@@ -477,10 +487,14 @@ struct Presenter::Impl {
 	FramePipelineTrace frame_trace;
 };
 
-void Swapchain::Create() {
+bool Swapchain::Create() {
 	auto& graphics = m_window.graphic_ctx;
 	EXIT_IF(graphics.device == nullptr);
 	EXIT_IF(m_window.surface == nullptr);
+	if (!m_window.IsPresentationSurfaceAvailable()) {
+		m_surface_lost = true;
+		return false;
+	}
 
 	// Capture the size before querying surface capabilities. If the window changes
 	// during creation, the next presentation will detect the newer size.
@@ -490,7 +504,10 @@ void Swapchain::Create() {
 	}
 	EXIT_IF(m_window_extent.width == 0);
 	EXIT_IF(m_window_extent.height == 0);
-	m_window.RefreshSurfaceCapabilities();
+	if (!m_window.RefreshSurfaceCapabilities()) {
+		m_surface_lost = true;
+		return false;
+	}
 	const auto& surface = m_window.surface_capabilities;
 	EXIT_NOT_IMPLEMENTED(surface.formats.empty());
 
@@ -564,8 +581,16 @@ void Swapchain::Create() {
 		create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
 	create_info.clipped = VK_TRUE;
-	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
-	                     "vkCreateSwapchainKHR");
+	const auto create_result = graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle);
+#if defined(__ANDROID__)
+	if (create_result == vk::Result::eErrorSurfaceLostKHR ||
+	    create_result == vk::Result::eErrorOutOfDateKHR) {
+		m_handle = nullptr;
+		m_surface_lost = true;
+		return false;
+	}
+#endif
+	RequireVulkanSuccess(create_result, "vkCreateSwapchainKHR");
 	EXIT_IF(m_handle == nullptr);
 
 	m_images = EnumerateVulkan<vk::Image>(
@@ -610,6 +635,7 @@ void Swapchain::Create() {
 	m_submitted = false;
 	m_acquire_suboptimal_reported = false;
 	m_present_suboptimal_reported = false;
+	return true;
 }
 
 Swapchain::~Swapchain() {
@@ -672,20 +698,23 @@ void Swapchain::Destroy() {
 	m_submitted = false;
 }
 
-void Swapchain::Recreate(bool surface_lost) {
+bool Swapchain::Recreate(bool surface_lost) {
+	m_surface_lost |= surface_lost;
 	Destroy();
-	if (surface_lost) {
+	if (m_surface_lost || m_window.surface == nullptr) {
 #if defined(__APPLE__)
-		// Surface recreation goes through SDL_Vulkan_CreateSurface, which touches the
-		// window's view/layer and must run on the main thread on macOS.
+		// Surface recreation touches the window's view/layer on macOS.
 		EXIT_IF(!SDL_RunOnMainThread(
-		    [](void* window) { static_cast<WindowContext*>(window)->RecreateSurface(); }, &m_window,
+		    [](void* window) { (void)static_cast<WindowContext*>(window)->RecreateSurface(); }, &m_window,
 		    true));
 #else
-		m_window.RecreateSurface();
+		if (!m_window.RecreateSurface()) {
+			return false;
+		}
 #endif
+		m_surface_lost = false;
 	}
-	Create();
+	return Create();
 }
 
 bool Swapchain::NeedsResize() const {
@@ -695,7 +724,10 @@ bool Swapchain::NeedsResize() const {
 }
 
 Swapchain::Status Swapchain::AcquireNextImage(CommandScheduler& scheduler) {
-	EXIT_IF(m_handle == nullptr || m_frame_index >= m_image_acquired.size());
+	if (m_handle == nullptr) {
+		return Status::SurfaceLost;
+	}
+	EXIT_IF(m_frame_index >= m_image_acquired.size());
 	EXIT_IF(m_image_index != static_cast<uint32_t>(-1) || m_submitted);
 	EXIT_IF(m_frame_index >= m_acquire_submit_ticks.size());
 	// The previous submit must have consumed this binary acquire semaphore
@@ -1120,6 +1152,16 @@ void Presenter::ClearLayer(int bus) {
 
 void Presenter::Impl::Present(PresentationSource source, std::span<const Layer> submitted_layers) {
 	KYTY_PROFILER_FUNCTION();
+	if (!window.IsPresentationSurfaceAvailable()) {
+		// Retire the old WSI identity even if we never called acquire while
+		// Android had withdrawn its native window. Do not acquire on that
+		// abandoned window after resume and depend on a driver error to recover.
+		swapchain.MarkSurfaceLost();
+		return;
+	}
+	if (swapchain.IsSurfaceLost() && !RecoverSwapchain(Swapchain::Status::SurfaceLost)) {
+		return;
+	}
 	frame_trace.Begin();
 	uint64_t acquire_ticks = 0;
 	uint64_t submit_present_ticks = 0;
@@ -1127,7 +1169,9 @@ void Presenter::Impl::Present(PresentationSource source, std::span<const Layer> 
 	const auto overlay_visual = GetSystemOverlayVisualState();
 	// Some window systems keep presenting an old swapchain after a resize.
 	if (swapchain.NeedsResize()) {
-		RecoverSwapchain(Swapchain::Status::Recreate);
+		if (!RecoverSwapchain(Swapchain::Status::Recreate)) {
+			return;
+		}
 	}
 	const auto outcome = RunPresentationCycle(
 	    [&] {

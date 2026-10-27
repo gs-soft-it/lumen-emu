@@ -114,5 +114,72 @@
       "dependencies": "Original vendored dependency pins and license bytes unchanged.",
       "runtime_qualification": "See local Android candidate receipt; source integration alone does not qualify games."
     }
-  ]
+  ],
+  "selective_updates_20261027": {
+    "reviewed_revision": "db12f0c5fb1617b7ce5eaffba0d6be8d9b042bc1",
+    "date": "2026-10-27",
+    "scope": "Selected shader semantics and compiler work, sampled resource pairs and 64-bit guards, single-store PM4 publication, filesystem sync and libc ABI fixes; not a complete upstream revision update. Existing ARM64/Metal adaptations and cumulative runtime defaults preserved.",
+    "commits": [
+      {
+        "commit": "7eb8abb27964cf020e089dbb6aafc27888384f11",
+        "subject": "shader: drop the duplicate-use scan from Inst::AddUse"
+      },
+      {
+        "commit": "3f9666acbbc3f911ce8b3e7dcf4be07b7587a9c3",
+        "subject": "shader: seal SSA blocks once their predecessors are filled"
+      },
+      {
+        "commit": "91a5ff6cb79035792b6ec397a74d35c562705c3a",
+        "subject": "shader: decode s_dcache_inv as a no-op"
+      },
+      {
+        "commit": "9210264d4761e1e02cc4db1241fd76a970660041",
+        "subject": "shader: saturate V_CVT_PK_U16_U32 and V_CVT_PK_I16_I32"
+      },
+      {
+        "commit": "e864cb20bd4f14fbc7e9c7b0c1f3a70fc56cd9b2",
+        "subject": "shader: clamp V_FRACT_F16/F32/F64 results below one"
+      },
+      {
+        "commit": "919fac13d048097f1823d7ef9333351d8e850541",
+        "subject": "shader: read lane 0 in V_READFIRSTLANE when EXEC is zero instead of an undefined lane"
+      },
+      {
+        "commit": "706aa030ad08ebefd5669f2b866763d10af561ce",
+        "subject": "shader: extract 9-bit NGG primitive vertex indices, leaving the edge flags out"
+      },
+      {
+        "commit": "248357365169243a604d6d89c013e182cd5a19ee",
+        "subject": "shader: mask V_MAD_U64_U32 carry-out bits of lanes outside EXEC"
+      },
+      {
+        "commit": "025d1f7edfa6170607c6948467c7c7b867440636",
+        "subject": "shader: decode the SHARED_LIMIT and PRIVATE_LIMIT inline constants"
+      },
+      {
+        "commit": "7675579e799af2067be4c69c816024d0396d6084",
+        "subject": "kernel: implement POSIX fsync through the shared file API"
+      },
+      {
+        "commit": "8c01d8e849f6f80bae585a838b1f1d6f317c6396",
+        "subject": "libc: fix swapped strcmp/strncmp NIDs and bind strcpy to its own NID instead of strcpy_s's"
+      },
+      {
+        "commit": "e0c5ae090c942cd39731090c6780341400f60a76",
+        "subject": "kernel: send _write to descriptors 0-2 through KernelWrite instead of dropping it"
+      },
+      {
+        "commit": "099de8dea62cbf17c8e06a6c24e72b38475d1566",
+        "subject": "graphics: publish each PM4 WRITE_DATA word exactly once"
+      },
+      {
+        "commit": "33208a545a00c3b4060fefdcfb71803ba22debfc",
+        "subject": "shader: remove artificial sampled image and sampler pair limit"
+      },
+      {
+        "commit": "e9bcc77e0ba8c91a48ff667a2aaa42b785f33979",
+        "subject": "shader: retain resource guards for 64-bit scalar comparisons"
+      }
+    ]
+  }
 }

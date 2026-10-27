@@ -316,6 +316,8 @@ Java_it_gssoft_lumenemu_spike_Ps5RuntimeActivity_nativeGetReadbackSamples(
         text += " payloadBytes=" + std::to_string(sample.payload_bytes);
         text += " stagingBytes=" + std::to_string(sample.staging_bytes);
         text += " nativeWaitNs=" + std::to_string(sample.native_wait_ns);
+        text += " callerGpuThread=" + std::to_string(sample.caller_gpu_thread);
+        text += " requestedDirty=" + std::to_string(sample.requested_dirty);
     }
     return environment->NewStringUTF(text.c_str());
 }

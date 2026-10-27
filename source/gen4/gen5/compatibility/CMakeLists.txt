@@ -12,6 +12,17 @@ if(NOT KYTY_GENERATOR_IS_MULTI_CONFIG AND NOT CMAKE_BUILD_TYPE)
 endif()
 
 project(Kyty)
+option(LUMEN_PS5_DIRECT_FEX "Use the complete Gen5 engine and direct C13 CPU" OFF)
+if(APPLE AND LUMEN_PS5_DIRECT_FEX)
+	option(LUMEN_PS5_NATIVE_METAL "Execute Gen5 graphics through the native Metal backend" ON)
+	if(LUMEN_PS5_NATIVE_METAL)
+		enable_language(OBJCXX)
+		add_compile_definitions(LUMEN_PS5_NATIVE_METAL=1)
+	endif()
+	set(LUMEN_PS5_FEXCORE ON CACHE BOOL "Use native ARM64 FEX" FORCE)
+	set(LUMEN_PS5_FEX_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/LumenFexDirectMac.cmake"
+		CACHE FILEPATH "Native Gen5 direct FEX closure" FORCE)
+endif()
 
 find_program(SCCACHE_PROGRAM sccache)
 find_program(CCACHE_PROGRAM ccache)
@@ -38,7 +49,9 @@ endif()
 set(KYTY_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty")
 set(KYTY_CPUINFO_TARGET kyty_cpuinfo)
 set(KYTY_FMT_INCLUDE_DIR "${KYTY_THIRD_PARTY_DIR}/fmt/include")
-if(LUMEN_PS5_FEX_C13 OR LUMEN_PS5_DIRECT_FEX)
+if(APPLE AND LUMEN_PS5_DIRECT_FEX)
+	set(KYTY_FMT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../3rdparty/fex-gen4/External/fmt/include")
+elseif(LUMEN_PS5_FEX_C13 OR LUMEN_PS5_DIRECT_FEX)
 	# FEX and the engine share fmt::fmt; its headers must match that archive.
 	set(KYTY_FMT_INCLUDE_DIR "${LUMEN_ANDROID_FEXCORE_BUILD_SOURCE_REAL}/External/fmt/include")
 endif()
@@ -410,6 +423,11 @@ set(inc_headers
 
 if(LUMEN_PS5_DIRECT_FEX)
 	list(APPEND inc_headers "${CMAKE_CURRENT_SOURCE_DIR}/../direct_fex")
+endif()
+
+if(APPLE AND LUMEN_PS5_DIRECT_FEX)
+	include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/DirectMacTargets.cmake")
+	return()
 endif()
 
 if (KYTY_CLANG_CL)

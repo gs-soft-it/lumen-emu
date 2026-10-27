@@ -1,5 +1,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#if defined(LUMEN_PS5_NATIVE_METAL)
+#include <SDL3/SDL_metal.h>
+#endif
 
 #include "common/assert.h"
 #include "common/common.h"
@@ -35,6 +38,10 @@
 #include <string>
 #include <vector>
 #include <vulkan/vk_platform.h>
+#if defined(LUMEN_PS5_NATIVE_METAL)
+#include <vulkan/vulkan_metal.h>
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char*);
+#endif
 
 // IWYU pragma: no_include <intrin.h>
 
@@ -93,23 +100,62 @@ static bool HasLayer(const std::vector<vk::LayerProperties>& layers, const char*
 	                   [name](const auto& layer) { return strcmp(layer.layerName, name) == 0; });
 }
 
-static void GetSurfaceCapabilities(vk::PhysicalDevice physical_device, vk::SurfaceKHR surface,
-                                   SurfaceCapabilities& r) {
-	RequireVulkanSuccess(physical_device.getSurfaceCapabilitiesKHR(surface, &r.capabilities),
-	                     "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+// A surface can disappear between an Android lifecycle event and a WSI call.
+// Only that transient condition is recoverable; device/driver failures stay fatal.
+static bool SurfaceQuerySucceeded(vk::Result result, const char* operation,
+                                  bool allow_surface_lost) {
+#if defined(__ANDROID__)
+	if (allow_surface_lost && result == vk::Result::eErrorSurfaceLostKHR) {
+		return false;
+	}
+#endif
+	RequireVulkanSuccess(result, operation);
+	return true;
+}
 
-	r.formats = EnumerateVulkan<vk::SurfaceFormatKHR>( // @suppress("Ambiguous problem")
-	    "vkGetPhysicalDeviceSurfaceFormatsKHR", [&](uint32_t* count, vk::SurfaceFormatKHR* values) {
-		    return physical_device.getSurfaceFormatsKHR(surface, count, values);
-	    });
-	EXIT_NOT_IMPLEMENTED(r.formats.empty());
+template <typename T, typename Query>
+static bool QuerySurfaceList(std::vector<T>& values, const char* operation,
+                             bool allow_surface_lost, Query&& query) {
+	for (;;) {
+		uint32_t count = 0;
+		if (!SurfaceQuerySucceeded(query(&count, nullptr), operation, allow_surface_lost)) {
+			return false;
+		}
+		values.resize(count);
+		if (count == 0) {
+			return true;
+		}
+		const auto result = query(&count, values.data());
+		if (result == vk::Result::eIncomplete) {
+			continue;
+		}
+		if (!SurfaceQuerySucceeded(result, operation, allow_surface_lost)) {
+			return false;
+		}
+		values.resize(count);
+		return true;
+	}
+}
 
-	r.present_modes = EnumerateVulkan<vk::PresentModeKHR>( // @suppress("Ambiguous problem")
-	    "vkGetPhysicalDeviceSurfacePresentModesKHR",
-	    [&](uint32_t* count, vk::PresentModeKHR* values) {
-		    return physical_device.getSurfacePresentModesKHR(surface, count, values);
-	    });
-	EXIT_NOT_IMPLEMENTED(r.present_modes.empty());
+static bool GetSurfaceCapabilities(vk::PhysicalDevice physical_device, vk::SurfaceKHR surface,
+                                   SurfaceCapabilities& r, bool allow_surface_lost = false) {
+	SurfaceCapabilities next;
+	if (!SurfaceQuerySucceeded(physical_device.getSurfaceCapabilitiesKHR(surface, &next.capabilities),
+	                           "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", allow_surface_lost) ||
+	    !QuerySurfaceList(next.formats, "vkGetPhysicalDeviceSurfaceFormatsKHR", allow_surface_lost,
+	                      [&](uint32_t* count, vk::SurfaceFormatKHR* values) {
+		                      return physical_device.getSurfaceFormatsKHR(surface, count, values);
+	                      }) ||
+	    !QuerySurfaceList(next.present_modes, "vkGetPhysicalDeviceSurfacePresentModesKHR", allow_surface_lost,
+	                      [&](uint32_t* count, vk::PresentModeKHR* values) {
+		                      return physical_device.getSurfacePresentModesKHR(surface, count, values);
+	                      })) {
+		return false;
+	}
+	EXIT_NOT_IMPLEMENTED(next.formats.empty());
+	EXIT_NOT_IMPLEMENTED(next.present_modes.empty());
+	r = std::move(next);
+	return true;
 }
 
 static bool CheckFormat(vk::PhysicalDevice device, vk::Format format, bool tile,
@@ -257,7 +303,11 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 #else
 		check_feature(color_write_ext.colorWriteEnable, "colorWriteEnable");
 #endif
+#if !defined(LUMEN_PS5_NATIVE_METAL)
 		check_feature(image_view_min_lod.minLod, "image view minLod");
+#else
+		// Fractional view LOD is admitted at image-view creation when used.
+#endif
 
 		check_feature(depth_clip_control.depthClipControl, "depthClipControl");
 #if defined(__APPLE__)
@@ -296,24 +346,40 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		check_feature(features12.shaderStorageBufferArrayNonUniformIndexing,
 		              "shaderStorageBufferArrayNonUniformIndexing",
 		              required_features12.shaderStorageBufferArrayNonUniformIndexing);
+#if !defined(LUMEN_PS5_NATIVE_METAL)
 		check_feature(features13.robustImageAccess, "robustImageAccess");
 		check_feature(robustness2.nullDescriptor, "nullDescriptor");
+#else
+		// Generated image fetch/store/atomic operations use explicit bounds when unavailable.
+		// Null descriptors are lowered to zero/no-op shader operations when unavailable.
+#endif
 		check_feature(features13.dynamicRendering, "dynamicRendering",
 		              required_features13.dynamicRendering);
 		check_feature(features13.synchronization2, "synchronization2",
 		              required_features13.synchronization2);
+#if !defined(LUMEN_PS5_NATIVE_METAL)
 		check_feature(device_features2.features.sampleRateShading, "sampleRateShading");
+#endif
 		check_feature(device_features2.features.depthBiasClamp, "depthBiasClamp");
 		check_feature(device_features2.features.shaderClipDistance, "shaderClipDistance");
+#if !defined(LUMEN_PS5_NATIVE_METAL)
 		check_feature(device_features2.features.shaderCullDistance, "shaderCullDistance");
 		check_feature(device_features2.features.largePoints, "largePoints");
 		check_feature(device_features2.features.multiViewport, "multiViewport");
 		check_feature(device_features2.features.fillModeNonSolid, "fillModeNonSolid");
+#else
+		// Point-size and non-solid polygon modes are admitted at pipeline creation.
+#endif
+
 		check_feature(device_features2.features.fragmentStoresAndAtomics,
 		              "fragmentStoresAndAtomics");
 
 		check_feature(device_features2.features.samplerAnisotropy, "samplerAnisotropy");
+#if !defined(LUMEN_PS5_NATIVE_METAL)
 		check_feature(device_features2.features.robustBufferAccess, "robustBufferAccess");
+#else
+		// The direct compiler checks SSBO/GDS/LDS ranges and sparse BDA mappings explicitly.
+#endif
 #if defined(__APPLE__)
 		if (device_features2.features.depthBounds != VK_TRUE) {
 			LOGF("depthBounds is not supported\n");
@@ -323,12 +389,16 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 #endif
 		check_feature(device_features2.features.shaderStorageImageWriteWithoutFormat,
 		              "shaderStorageImageWriteWithoutFormat");
-
+#if !defined(LUMEN_PS5_NATIVE_METAL)
 		check_feature(device_features2.features.shaderImageGatherExtended,
 		              "shaderImageGatherExtended");
-
+#endif
 		check_feature(device_features2.features.independentBlend, "independentBlend");
+#if !defined(LUMEN_PS5_NATIVE_METAL)
 		check_feature(device_features2.features.tessellationShader, "tessellationShader");
+#else
+		// Tessellation and rect-list expansion are checked when their pipeline is requested.
+#endif
 
 		if (!skip_device) {
 			auto available_extensions = EnumerateVulkan<vk::ExtensionProperties>(
@@ -444,13 +514,15 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 
 	vk::PhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control {};
 	vk::PhysicalDeviceImageViewMinLodFeaturesEXT  image_view_min_lod {};
-	image_view_min_lod.minLod = VK_TRUE;
-	depth_clip_control.pNext  = &image_view_min_lod;
+	const bool image_view_min_lod_extension =
+	    HasExtension(device_extensions, VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
+	depth_clip_control.pNext = image_view_min_lod_extension ? &image_view_min_lod : nullptr;
 	// MoltenVK lacks VK_EXT_depth_clip_enable and VK_EXT_color_write_enable, so drop those
 	// feature structs from the chain on macOS (the renderer falls back to default depth
 	// clipping and static color-write masks).
 #if !defined(__APPLE__)
-	image_view_min_lod.pNext = &depth_clip_enable;
+	if (image_view_min_lod_extension) image_view_min_lod.pNext = &depth_clip_enable;
+	else depth_clip_control.pNext = &depth_clip_enable;
 #endif
 	depth_clip_control.depthClipControl = VK_TRUE;
 
@@ -510,7 +582,15 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		supported_barycentric.pNext = supported_features2.pNext;
 		supported_features2.pNext   = &supported_barycentric;
 	}
+	vk::PhysicalDeviceImageViewMinLodFeaturesEXT supported_min_lod {};
+	if (image_view_min_lod_extension) {
+		supported_min_lod.pNext = supported_features2.pNext;
+		supported_features2.pNext = &supported_min_lod;
+	}
 	physical_device.getFeatures2(&supported_features2);
+	image_view_min_lod.minLod = supported_min_lod.minLod;
+	graphics.image_view_min_lod_enabled = image_view_min_lod.minLod;
+	graphics.robust_image_access_enabled = supported_features13.robustImageAccess;
 	const bool barycentric_supported =
 	    barycentric_extension && supported_barycentric.fragmentShaderBarycentric == VK_TRUE;
 #if defined(__ANDROID__) && defined(LUMEN_PS5_DIRECT_FEX)
@@ -577,6 +657,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.mesh_subgroup_size_control_enabled = graphics.mesh_shader_enabled &&
 	    supported_features13.subgroupSizeControl == VK_TRUE &&
 	    bool(graphics.required_subgroup_size_stages & vk::ShaderStageFlagBits::eMeshEXT);
+	graphics.fragment_subgroup_size_control_enabled =
+	    supported_features13.subgroupSizeControl == VK_TRUE &&
+	    bool(graphics.required_subgroup_size_stages & vk::ShaderStageFlagBits::eFragment);
 
 	LOGF("Vulkan subgroup: default=%u min=%u max=%u stages=0x%08x size_control=%s wave64=%s\n",
 	     graphics.subgroup_size, graphics.min_subgroup_size, graphics.max_subgroup_size,
@@ -585,6 +668,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	     graphics.SupportsComputeWave64() ? "true" : "false");
 	LOGF("Vulkan mesh subgroup size control: %s\n",
 	     graphics.mesh_subgroup_size_control_enabled ? "enabled" : "unavailable");
+	LOGF("Vulkan fragment subgroup size control: %s\n",
+	     graphics.fragment_subgroup_size_control_enabled ? "enabled" : "unavailable");
 	graphics.provoking_vertex_last_enabled = provoking_extension && provoking_vertex.provokingVertexLast;
 	graphics.attachment_feedback_loop_enabled =
 	    feedback_extensions && feedback_layout.attachmentFeedbackLoopLayout &&
@@ -613,25 +698,31 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 #endif
 	device_features.fragmentStoresAndAtomics = VK_TRUE;
 	device_features.samplerAnisotropy        = VK_TRUE;
-	device_features.robustBufferAccess       = VK_TRUE;
+	device_features.robustBufferAccess       = supported_features2.features.robustBufferAccess;
 #if !defined(__APPLE__)
 	device_features.depthBounds = VK_TRUE; // unsupported by MoltenVK
 	device_features.depthClamp  = VK_TRUE;
 #endif
 	device_features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
-	device_features.shaderImageGatherExtended            = VK_TRUE;
+	device_features.shaderImageGatherExtended            = supported_features2.features.shaderImageGatherExtended;
 	device_features.independentBlend                     = VK_TRUE;
 	device_features.dualSrcBlend                         = VK_TRUE;
-	device_features.tessellationShader                   = VK_TRUE;
-	device_features.sampleRateShading                    = VK_TRUE;
+	device_features.tessellationShader = supported_features2.features.tessellationShader;
+	device_features.sampleRateShading                    = supported_features2.features.sampleRateShading;
 	device_features.depthBiasClamp                       = VK_TRUE;
 	device_features.shaderClipDistance                   = VK_TRUE;
-	device_features.shaderCullDistance                   = VK_TRUE;
-	device_features.largePoints                          = VK_TRUE;
-	device_features.multiViewport                        = VK_TRUE;
-	device_features.fillModeNonSolid                      = VK_TRUE;
+	device_features.shaderCullDistance                   = supported_features2.features.shaderCullDistance;
+	device_features.largePoints = supported_features2.features.largePoints;
+	device_features.multiViewport                        = supported_features2.features.multiViewport;
+	device_features.fillModeNonSolid = supported_features2.features.fillModeNonSolid;
 	device_features.vertexPipelineStoresAndAtomics       = VK_TRUE;
-	graphics.sample_rate_shading_enabled                 = true;
+	graphics.sample_rate_shading_enabled = device_features.sampleRateShading;
+	graphics.shader_cull_distance_enabled = device_features.shaderCullDistance;
+	graphics.shader_image_gather_extended_enabled = device_features.shaderImageGatherExtended;
+	graphics.multi_viewport_enabled = device_features.multiViewport;
+	graphics.large_points_enabled = device_features.largePoints;
+	graphics.fill_mode_non_solid_enabled = device_features.fillModeNonSolid;
+	graphics.tessellation_shader_enabled = device_features.tessellationShader;
 	device_features.shaderInt64 = VK_TRUE;
 	device_features.shaderFloat64 =
 	    supported_features2.features.shaderFloat64 &&
@@ -657,25 +748,47 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 #endif
 	robustness2.robustBufferAccess2 = supported_robustness2.robustBufferAccess2;
 	robustness2.robustImageAccess2  = supported_robustness2.robustImageAccess2;
-	robustness2.nullDescriptor      = VK_TRUE;
+	robustness2.nullDescriptor = HasExtension(device_extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)
+	    ? supported_robustness2.nullDescriptor : VK_FALSE;
+	graphics.null_descriptor_enabled = robustness2.nullDescriptor == VK_TRUE;
+	graphics.null_descriptor_fallback_enabled = !graphics.null_descriptor_enabled;
 
 	auto features13 = WindowContext::RequiredVulkan13Features();
-	features13.pNext = &robustness2;
+	features13.pNext = HasExtension(device_extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)
+	                       ? static_cast<void*>(&robustness2) : robustness2.pNext;
 	features13.robustImageAccess   = supported_features13.robustImageAccess;
 	features13.subgroupSizeControl =
-	    (graphics.compute_subgroup_size_control_enabled || graphics.mesh_subgroup_size_control_enabled)
+	    (graphics.compute_subgroup_size_control_enabled || graphics.mesh_subgroup_size_control_enabled ||
+	     graphics.fragment_subgroup_size_control_enabled)
 	        ? VK_TRUE : VK_FALSE;
 
 	LOGF("Vulkan robustness: robustImageAccess=%s robustImageAccess2=%s\n",
 	     features13.robustImageAccess == VK_TRUE ? "true" : "false",
 	     robustness2.robustImageAccess2 == VK_TRUE ? "true" : "false");
 
+	void* core_feature_chain = &features13;
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	// Native adapter exposes the Vulkan 1.2 contract plus individual extensions.
+	vk::PhysicalDeviceDynamicRenderingFeaturesKHR dynamic_rendering {};
+	dynamic_rendering.dynamicRendering = features13.dynamicRendering;
+	dynamic_rendering.pNext = features13.pNext;
+	vk::PhysicalDeviceSynchronization2FeaturesKHR synchronization2 {};
+	synchronization2.synchronization2 = features13.synchronization2;
+	synchronization2.pNext = &dynamic_rendering;
+	vk::PhysicalDeviceImageRobustnessFeaturesEXT image_robustness {};
+	image_robustness.robustImageAccess = HasExtension(device_extensions, VK_EXT_IMAGE_ROBUSTNESS_EXTENSION_NAME)
+	    ? supported_features13.robustImageAccess : VK_FALSE;
+	image_robustness.pNext = &synchronization2;
+	core_feature_chain = image_robustness.robustImageAccess
+	    ? static_cast<void*>(&image_robustness) : static_cast<void*>(&synchronization2);
+	graphics.robust_image_access_enabled = image_robustness.robustImageAccess;
+#endif
 	vk::DeviceCreateInfo create_info {};
 	vk::PhysicalDeviceMeshShaderFeaturesEXT mesh_features {};
-	mesh_features.pNext                 = &features13;
+	mesh_features.pNext                 = core_feature_chain;
 	mesh_features.meshShader            = graphics.mesh_shader_enabled;
 	feedback_dynamic.pNext =
-	    mesh_extension ? static_cast<void*>(&mesh_features) : static_cast<void*>(&features13);
+	    mesh_extension ? static_cast<void*>(&mesh_features) : core_feature_chain;
 	create_info.pNext = graphics.attachment_feedback_loop_enabled
 	                        ? static_cast<void*>(&feedback_layout)
 	                        : feedback_dynamic.pNext;
@@ -728,12 +841,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 }
 
 static void VulkanGetExtensions(VulkanExtensions& r) {
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	r.required_extensions = {VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_METAL_SURFACE_EXTENSION_NAME};
+#else
 	uint32_t required_extensions_count = 0;
 
 	const char* const* extensions = SDL_Vulkan_GetInstanceExtensions(&required_extensions_count);
 	EXIT_NOT_IMPLEMENTED(extensions == nullptr);
 	EXIT_NOT_IMPLEMENTED(required_extensions_count == 0);
 	r.required_extensions.assign(extensions, extensions + required_extensions_count);
+#endif
 
 	r.available_extensions =
 	    EnumerateVulkan<vk::ExtensionProperties>( // @suppress("Ambiguous problem")
@@ -904,6 +1021,23 @@ static void VulkanCheckInstanceVersion() {
 	}
 }
 
+#if defined(LUMEN_PS5_NATIVE_METAL)
+static void CreateNativeMetalSurface(WindowContext& context) {
+	if (context.metal_view == nullptr) context.metal_view = SDL_Metal_CreateView(context.window);
+	EXIT_IF(context.metal_view == nullptr);
+	VkMetalSurfaceCreateInfoEXT create {};
+	create.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+	create.pLayer = static_cast<const CAMetalLayer*>(SDL_Metal_GetLayer(context.metal_view));
+	auto create_surface = reinterpret_cast<PFN_vkCreateMetalSurfaceEXT>(
+	    vkGetInstanceProcAddr(context.graphic_ctx.instance, "vkCreateMetalSurfaceEXT"));
+	EXIT_IF(create_surface == nullptr);
+	VkSurfaceKHR surface = VK_NULL_HANDLE;
+	RequireVulkanSuccess(static_cast<vk::Result>(create_surface(
+	    context.graphic_ctx.instance, &create, nullptr, &surface)), "vkCreateMetalSurfaceEXT");
+	context.surface = surface;
+}
+#endif
+
 void WindowContext::CreateVulkan() {
 	EXIT_IF(window == nullptr);
 	EXIT_IF(graphic_ctx.instance != nullptr);
@@ -911,8 +1045,12 @@ void WindowContext::CreateVulkan() {
 	EXIT_IF(graphic_ctx.device != nullptr);
 	EXIT_IF(surface != nullptr);
 
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	auto get_instance_proc_addr = &vkGetInstanceProcAddr;
+#else
 	auto get_instance_proc_addr =
 	    reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+#endif
 	if (get_instance_proc_addr == nullptr) {
 		EXIT("Could not load Vulkan: %s\n", SDL_GetError());
 	}
@@ -1005,24 +1143,35 @@ void WindowContext::CreateVulkan() {
 		}
 	}
 
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	CreateNativeMetalSurface(*this);
+#else
 	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
 	if (!SDL_Vulkan_CreateSurface(window, static_cast<vk::Instance::CType>(graphic_ctx.instance),
 	                              nullptr, &native_surface)) {
 		EXIT("Could not create a Vulkan surface");
 	}
 	surface = native_surface;
+#endif
 
 	std::vector<const char*> device_extensions = {
 	    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
-	    VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
-	    VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, "VK_KHR_maintenance1"};
+	    VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+	    "VK_KHR_maintenance1"};
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+	device_extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+#else
+	device_extensions.push_back(VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
+	device_extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+#endif
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(LUMEN_PS5_NATIVE_METAL)
 	// MoltenVK lacks VK_EXT_depth_clip_enable and VK_EXT_color_write_enable; the renderer
 	// falls back to default depth clipping and static color-write masks on macOS. It also
 	// requires VK_KHR_portability_subset per the Vulkan portability spec.
 	device_extensions.push_back("VK_KHR_portability_subset");
-#else
+#elif !defined(__APPLE__)
 	device_extensions.push_back(VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
 	device_extensions.push_back(VK_EXT_COLOR_WRITE_ENABLE_EXTENSION_NAME);
 #endif
@@ -1050,6 +1199,22 @@ void WindowContext::CreateVulkan() {
 	graphic_ctx.max_push_descriptors       = push_descriptor_properties.maxPushDescriptors;
 	graphic_ctx.physical_device.getMemoryProperties(&graphic_ctx.physical_device_memory_properties);
 	const auto& device_properties = graphic_ctx.GetPhysicalDeviceProperties();
+	const auto optional_extensions = EnumerateVulkan<vk::ExtensionProperties>(
+	    "vkEnumerateDeviceExtensionProperties", [&](uint32_t* count, vk::ExtensionProperties* values) {
+		    return graphic_ctx.physical_device.enumerateDeviceExtensionProperties(nullptr, count, values);
+	    });
+	if (HasExtension(optional_extensions, VK_EXT_IMAGE_ROBUSTNESS_EXTENSION_NAME)) {
+		device_extensions.push_back(VK_EXT_IMAGE_ROBUSTNESS_EXTENSION_NAME);
+	}
+	if (HasExtension(optional_extensions, VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME) &&
+	    !HasExtension(device_extensions, VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME)) {
+		device_extensions.push_back(VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
+	}
+	if (HasExtension(optional_extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME) &&
+	    !HasExtension(device_extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)) {
+		device_extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+	}
+
 
 	LOGF("Select device: %s\n", device_properties.deviceName.data());
 
@@ -1112,23 +1277,52 @@ void WindowContext::CreateVulkan() {
 	presenter = std::make_unique<Presenter>(*this);
 }
 
-void WindowContext::RefreshSurfaceCapabilities() {
-	EXIT_IF(graphic_ctx.physical_device == nullptr || surface == nullptr);
-	GetSurfaceCapabilities(graphic_ctx.physical_device, surface, surface_capabilities);
+bool WindowContext::IsPresentationSurfaceAvailable() const {
+#if defined(__ANDROID__)
+	return SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+	                              SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr) != nullptr;
+#else
+	return true;
+#endif
 }
 
-void WindowContext::RecreateSurface() {
+bool WindowContext::RefreshSurfaceCapabilities() {
+	EXIT_IF(graphic_ctx.physical_device == nullptr || surface == nullptr);
+	return GetSurfaceCapabilities(graphic_ctx.physical_device, surface, surface_capabilities, true);
+}
+
+bool WindowContext::RecreateSurface() {
 	EXIT_IF(window == nullptr || graphic_ctx.instance == nullptr);
 	if (surface != nullptr) {
 		graphic_ctx.instance.destroySurfaceKHR(surface, nullptr);
 		surface = nullptr;
 	}
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	CreateNativeMetalSurface(*this);
+#else
+#if defined(__ANDROID__)
+	// SDL clears this property before releasing its ANativeWindow. Keep the
+	// properties locked through creation so surfaceDestroyed cannot release the
+	// native window between our availability check and SDL's Vulkan call.
+	const auto properties = SDL_GetWindowProperties(window);
+	EXIT_IF(!SDL_LockProperties(properties));
+	if (SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr) == nullptr) {
+		SDL_UnlockProperties(properties);
+		return false;
+	}
+#endif
 	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
-	if (!SDL_Vulkan_CreateSurface(window, static_cast<vk::Instance::CType>(graphic_ctx.instance),
-	                              nullptr, &native_surface)) {
+	const bool created = SDL_Vulkan_CreateSurface(
+	    window, static_cast<vk::Instance::CType>(graphic_ctx.instance), nullptr, &native_surface);
+#if defined(__ANDROID__)
+	SDL_UnlockProperties(properties);
+#endif
+	if (!created) {
 		EXIT("Could not recreate the Vulkan surface: %s\n", SDL_GetError());
 	}
 	surface = native_surface;
+#endif
+	return true;
 }
 
 WindowContext::~WindowContext() {
@@ -1157,6 +1351,12 @@ WindowContext::~WindowContext() {
 		graphic_ctx.instance        = nullptr;
 		graphic_ctx.physical_device = nullptr;
 	}
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	if (metal_view != nullptr) {
+		SDL_Metal_DestroyView(metal_view);
+		metal_view = nullptr;
+	}
+#endif
 	if (window != nullptr) {
 		SDL_DestroyWindow(window);
 		window = nullptr;

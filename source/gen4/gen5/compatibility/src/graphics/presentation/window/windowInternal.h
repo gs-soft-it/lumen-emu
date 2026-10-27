@@ -39,8 +39,9 @@ struct WindowContext {
 	[[nodiscard]] static vk::PhysicalDeviceVulkan13Features RequiredVulkan13Features() noexcept;
 	[[nodiscard]] static uint32_t InitialWindowFlags(bool fullscreen) noexcept;
 	void                                                    CreateVulkan();
-	void                                                    RecreateSurface();
-	void                                                    RefreshSurfaceCapabilities();
+	[[nodiscard]] bool                                      RecreateSurface();
+	[[nodiscard]] bool                                      RefreshSurfaceCapabilities();
+	[[nodiscard]] bool                                      IsPresentationSurfaceAvailable() const;
 	void                                                    UpdateIcon();
 	void                                                    UpdateTitle();
 	void                                                    Resize(uint32_t width, uint32_t height);

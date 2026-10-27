@@ -937,6 +937,8 @@ void Translator::DS_PERMUTE(const Decoder::Instruction& inst, bool backward) {
 
 void Translator::EmitMemory(const Decoder::Instruction& inst) {
 	switch (inst.opcode) {
+		// Translated scalar loads have no cache of their own to invalidate.
+		case Decoder::Opcode::S_DCACHE_INV: return;
 		case Decoder::Opcode::IMAGE_BVH_INTERSECT_RAY: {
 			const auto result = ir.Emit(IR::ValueOpcode::BvhIntersect,
 			    {ConstructU32x4(inst.src1, 4), MakeImageAddress(inst, inst.src0), ir.GetExec()},

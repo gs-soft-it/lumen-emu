@@ -19,6 +19,170 @@ static constexpr uint64_t HOST_USER_MAX = 0x3fffffffffull;
 static constexpr uint64_t HOST_USER_MAX = 0xfbffffffffull;
 #endif
 
+// Guest addresses in Darwin's permanent inaccessible reservations cannot be mapped
+// identity. Each such interval owns a separate native arena for the lifetime of
+// this address space. Translation never consults mutable maps or allocates, so
+// the CPU fault path can use it without acquiring an interrupted VM lock.
+static constexpr uint64_t TranslatedPageSize = 0x4000;
+struct GuestTranslationArena {
+	uint64_t guest = 0;
+	uint64_t host = 0;
+	uint64_t size = 0;
+	std::unique_ptr<std::atomic<uint8_t>[]> rights;
+};
+struct GuestTranslationArenas {
+	std::vector<GuestTranslationArena> ranges;
+};
+static_assert(std::atomic<const GuestTranslationArenas*>::is_always_lock_free);
+static_assert(std::atomic<uint8_t>::is_always_lock_free);
+static std::atomic<const GuestTranslationArenas*> g_translation_arenas {nullptr};
+#if defined(KYTY_BACKING_MUTATION_TESTS)
+static void (*g_test_translated_mapping_phase)(uint64_t, uint64_t, bool) = nullptr;
+#endif
+
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX) && defined(__aarch64__)
+// Darwin's public region flags do not expose vm_map_entry::vme_permanent.
+// NONE/NONE (even with VM_MEMORY_GUARD) also describes user guards that can be
+// deallocated and reused. Admit only the OS ABI reservations installed with
+// VM_MAP_KERNEL_FLAGS_FIXED_PERMANENT by vm_map_exec/ml_get_vm_reserved_regions:
+// https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/vm/vm_map.c
+// https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/arm64/machine_routines.c
+// The GPU bounds are public SDK constants. The commpage nesting constants are
+// kernel-private ABI definitions in osfmk/arm/cpu_capabilities.h.
+static constexpr uint64_t DarwinCommpageReservationStart = 0x0000000fc0000000ull;
+static constexpr uint64_t DarwinCommpageReservationEnd = 0x0000001000000000ull;
+// pmap_create_commpages/pmap_insert_commpage map data and randomized text in the
+// last L2 (32 MiB for 16 KiB tasks), underneath the dummy Mach NONE/NONE region.
+// Exclude that entire hardware nesting interval, including presently empty PTEs.
+// https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/arm64/sptm/pmap/pmap.c
+static constexpr uint64_t DarwinCommpageNativeStart = DarwinCommpageReservationEnd - 0x2000000ull;
+
+static bool DarwinPermanentTranslationEnd(uint64_t address, uint64_t size,
+                                           const vm_region_basic_info_data_64_t& basic,
+                                           uint64_t* translation_end) {
+	if (sysconf(_SC_PAGESIZE) != TranslatedPageSize || basic.protection != VM_PROT_NONE ||
+	    basic.max_protection != VM_PROT_NONE) return false;
+	uint64_t end = 0;
+	if (address == DarwinCommpageReservationStart &&
+	    size == DarwinCommpageReservationEnd - DarwinCommpageReservationStart) {
+		end = DarwinCommpageNativeStart;
+	} else if (address == MACH_VM_MIN_GPU_CARVEOUT_ADDRESS &&
+	           size == MACH_VM_MAX_GPU_CARVEOUT_ADDRESS - MACH_VM_MIN_GPU_CARVEOUT_ADDRESS) {
+		end = MACH_VM_MAX_GPU_CARVEOUT_ADDRESS;
+	} else {
+		return false;
+	}
+	// Require the live Mach reservation to still match the known OS layout.
+	// A changed layout fails closed instead of aliasing an unrelated mapping.
+	mach_vm_address_t region = address;
+	mach_vm_size_t bytes = 0;
+	vm_region_extended_info_data_t info {};
+	mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
+	mach_port_t object = MACH_PORT_NULL;
+	const auto status = mach_vm_region(mach_task_self(), &region, &bytes, VM_REGION_EXTENDED_INFO,
+	    reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+	if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+	if (status != KERN_SUCCESS || region != address || bytes != size ||
+	    info.user_tag != VM_MEMORY_GUARD || info.share_mode != SM_EMPTY) return false;
+	*translation_end = end;
+	return true;
+}
+#endif
+
+static const GuestTranslationArena* FindTranslatedGuestRange(uint64_t guest, uint64_t size) noexcept {
+	if (size == 0 || size > UINT64_MAX - guest) return nullptr;
+	const auto* arenas = g_translation_arenas.load(std::memory_order_acquire);
+	if (arenas == nullptr) return nullptr;
+	for (const auto& arena: arenas->ranges) {
+		if (guest >= arena.guest && guest - arena.guest < arena.size &&
+		    size <= arena.size - (guest - arena.guest)) return &arena;
+	}
+	return nullptr;
+}
+
+bool TranslateGuestMemory(uint64_t guest, uint64_t size, uint64_t* host) noexcept {
+	if (host == nullptr || size == 0 || size > UINT64_MAX - guest) return false;
+	const auto* arenas = g_translation_arenas.load(std::memory_order_acquire);
+	if (arenas != nullptr) {
+		for (const auto& arena: arenas->ranges) {
+			if (guest < arena.guest + arena.size && arena.guest < guest + size) {
+				if (guest < arena.guest || size > arena.size - (guest - arena.guest)) return false;
+				*host = arena.host + guest - arena.guest;
+				return true;
+			}
+		}
+	}
+	*host = guest;
+	return true;
+}
+
+bool TranslateHostMemoryFault(uint64_t host, uint64_t* guest) noexcept {
+	if (guest == nullptr) return false;
+	const auto* arenas = g_translation_arenas.load(std::memory_order_acquire);
+	if (arenas == nullptr) return false;
+	for (const auto& arena: arenas->ranges) {
+		if (host >= arena.host && host - arena.host < arena.size) {
+			*guest = arena.guest + host - arena.host;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool IsGuestNonIdentity(uint64_t guest, uint64_t size) noexcept {
+	return FindTranslatedGuestRange(guest, size) != nullptr;
+}
+
+bool QueryTranslatedGuestAccess(uint64_t guest, uint64_t size, bool write) noexcept {
+	const auto* arena = FindTranslatedGuestRange(guest, size);
+	if (arena == nullptr) return false;
+	const uint8_t required = 0x80u | (write ? 2u : 1u);
+	const auto last = (guest - arena->guest + size - 1) / TranslatedPageSize;
+	for (auto page = (guest - arena->guest) / TranslatedPageSize; page <= last; ++page) {
+		if ((arena->rights[page].load(std::memory_order_acquire) & required) != required) return false;
+	}
+	return true;
+}
+
+bool QueryTranslatedHostAccess(uint64_t guest, uint64_t size, bool write) noexcept {
+	const auto* arena = FindTranslatedGuestRange(guest, size);
+	if (arena == nullptr) return false;
+	const uint8_t required = write ? 0x20u : 0x10u;
+	const auto last = (guest - arena->guest + size - 1) / TranslatedPageSize;
+	for (auto page = (guest - arena->guest) / TranslatedPageSize; page <= last; ++page) {
+		if ((arena->rights[page].load(std::memory_order_acquire) & required) != required) return false;
+	}
+	return true;
+}
+
+static void PublishTranslatedRights(uint64_t guest, uint64_t size, uint8_t mask, uint8_t rights) noexcept {
+	const auto* arena = FindTranslatedGuestRange(guest, size);
+	if (arena == nullptr) return;
+	const auto last = (guest - arena->guest + size - 1) / TranslatedPageSize;
+	for (auto page = (guest - arena->guest) / TranslatedPageSize; page <= last; ++page) {
+		auto previous = arena->rights[page].load(std::memory_order_relaxed);
+		while (!arena->rights[page].compare_exchange_weak(previous,
+		    (previous & ~mask) | (rights & mask), std::memory_order_release, std::memory_order_relaxed)) {}
+	}
+}
+
+static void PublishTranslatedGuestRights(uint64_t guest, uint64_t size, uint8_t rights) noexcept {
+	PublishTranslatedRights(guest, size, 0x87u, rights);
+}
+
+static void PublishTranslatedHostRights(uint64_t guest, uint64_t size, VirtualMemory::Mode mode) noexcept {
+	auto rights = static_cast<uint8_t>(mode);
+	if ((rights & 6u) != 0) rights |= 1u; // native write and translated execute imply native read
+	PublishTranslatedRights(guest, size, 0x30u, (rights & 3u) << 4u);
+}
+
+static bool ProtectTranslatedHost(uint64_t guest, uint64_t size, VirtualMemory::Mode mode) {
+	uint64_t host = 0;
+	if (!TranslateGuestMemory(guest, size, &host) || !VirtualMemory::Protect(host, size, mode)) return false;
+	PublishTranslatedHostRights(guest, size, mode);
+	return true;
+}
+
 static bool GuestFreeRangeContains(uint64_t base, uint64_t range_size, uint64_t candidate,
                                    uint64_t size) {
 	if (UINT64_MAX - base < range_size || candidate < base) {
@@ -397,7 +561,9 @@ public:
 #else
 		std::lock_guard lock(m_mutex);
 		void* mapped = MapView(vaddr, size, backing_offset, mode, failure_reason);
-		if (mapped == nullptr || reinterpret_cast<uint64_t>(mapped) != vaddr) {
+		uint64_t host = 0;
+		if (mapped == nullptr || !TranslateGuestMemory(vaddr, size, &host) ||
+		    reinterpret_cast<uint64_t>(mapped) != host) {
 			return false;
 		}
 		RemoveMappingsUnlocked(vaddr, size);
@@ -758,6 +924,10 @@ private:
 	[[nodiscard]] static uint64_t GetMappableTestSize() { return 0x4000; }
 
 	static int GetProtect(VirtualMemory::Mode mode) {
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+		if (VirtualMemory::IsExecute(mode))
+			mode = static_cast<VirtualMemory::Mode>((static_cast<uint32_t>(mode) & ~4u) | 1u);
+#endif
 		switch (mode) {
 			case VirtualMemory::Mode::Read: return PROT_READ;
 			case VirtualMemory::Mode::Write:
@@ -779,20 +949,32 @@ private:
 			callback(vaddr, size);
 		}
 #endif
-		void* ptr = mmap(reinterpret_cast<void*>(vaddr), size, GetProtect(mode),
+		uint64_t host = 0;
+		if (!TranslateGuestMemory(vaddr, size, &host) ||
+		    (host != vaddr && VirtualMemory::IsExecute(mode))) {
+			SetFailure(failure_reason, FailureReason::AddressRangeUnavailable);
+			return nullptr;
+		}
+		void* ptr = mmap(reinterpret_cast<void*>(host), size, GetProtect(mode),
 		                 MAP_SHARED | MAP_FIXED, m_fd, static_cast<off_t>(backing_offset));
 		if (ptr == MAP_FAILED) {
 			SetFailure(failure_reason, FailureReason::FixedMapViewFailed);
 			return nullptr;
 		}
+		PublishTranslatedHostRights(vaddr, size, mode);
 		return ptr;
 	}
 
 	// Replace the file view atomically instead of exposing an unmapped hole in the
 	// process-lifetime guest reservation.
 	static bool UnmapViewPreservePlaceholder(void* vaddr, uint64_t size) {
-		void* ptr = mmap(vaddr, size, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-		return ptr != MAP_FAILED && ptr == vaddr;
+		uint64_t host = 0;
+		if (!TranslateGuestMemory(reinterpret_cast<uint64_t>(vaddr), size, &host)) return false;
+		void* ptr = mmap(reinterpret_cast<void*>(host), size, PROT_NONE,
+		                 MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+		if (ptr == MAP_FAILED || reinterpret_cast<uint64_t>(ptr) != host) return false;
+		PublishTranslatedHostRights(reinterpret_cast<uint64_t>(vaddr), size, VirtualMemory::Mode::NoAccess);
+		return true;
 	}
 
 	int m_fd = -1;
@@ -814,6 +996,7 @@ public:
 		m_granularity = info.dwAllocationGranularity;
 #endif
 		ReserveGuestRegions();
+		EXIT_IF(g_translation_arenas.exchange(&m_translation_arenas, std::memory_order_acq_rel) != nullptr);
 		m_backing = new GuestBackingStore(backing_size);
 		if (!m_backing->IsAvailable()) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -854,9 +1037,12 @@ public:
 		}
 #else
 		for (const auto& [start, size]: m_owned) {
-			munmap(reinterpret_cast<void*>(start), size);
+			uint64_t host = 0;
+			EXIT_IF(!TranslateGuestMemory(start, size, &host));
+			munmap(reinterpret_cast<void*>(host), size);
 		}
 #endif
+		g_translation_arenas.store(nullptr, std::memory_order_release);
 	}
 
 	KYTY_CLASS_NO_COPY(GuestAddressSpace);
@@ -915,6 +1101,24 @@ public:
 		return m_backing->TryReadBacking(vaddr, data, size);
 	}
 
+	// SRT loads are host reads performed for the guest GPU. These are the logical
+	// host mapping permissions (CPU/GPU combined), not the CPU ABI access rights.
+	// Transient GPU watches are deliberately excluded; the caller resolves exact
+	// GPU ownership before copying and must hold no address-space lock while waiting.
+	bool CanReadShaderBacking(uint64_t vaddr, uint64_t size) {
+		std::shared_lock lock(m_mutex);
+		return IsReadableBackingSpanUnlocked(vaddr, size);
+	}
+
+	bool TryReadShaderBacking(uint64_t vaddr, void* data, uint64_t size) {
+		if (data == nullptr) return false;
+		std::shared_lock lock(m_mutex);
+		if (!IsReadableBackingSpanUnlocked(vaddr, size)) return false;
+		// Recheck after the GPU hand-off and retain mapping/protection lifetime
+		// through the complete backing preflight and copy, in the normal lock order.
+		return m_backing->TryReadBacking(vaddr, data, size);
+	}
+
 	template <bool copy_private>
 	bool CopySparseMemory(uint64_t vaddr, void* data, uint64_t size) {
 		if (data == nullptr || !Owns(vaddr, size)) {
@@ -943,7 +1147,9 @@ public:
 				    CopySparseRange(m_mapped, start, destination, bytes,
 				                    [](const auto& region, uint64_t address) {
 					                    EXIT_IF(region.type != MappingType::Private);
-					                    return reinterpret_cast<const void*>(address);
+					                    uint64_t host = 0;
+					                    EXIT_IF(!TranslateGuestMemory(address, 1, &host));
+					                    return reinterpret_cast<const void*>(host);
 				                    },
 				                    zero);
 			    } else {
@@ -976,6 +1182,11 @@ public:
 	bool MapBacking(uint64_t vaddr, uint64_t size, uint64_t backing_offset,
 	                VirtualMemory::Mode               mode,
 	                GuestBackingStore::FailureReason* failure_reason = nullptr) {
+		if (IsGuestNonIdentity(vaddr, size) && VirtualMemory::IsExecute(mode)) return false;
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+		if (size == 0 || !IsPageAligned(vaddr) || !IsPageAligned(size) ||
+		    !IsPageAligned(backing_offset)) return false;
+#endif
 		BackingMutationScope backing_mutation;
 		DirectCodeMutation mutation(vaddr, size);
 		std::lock_guard lock(m_mutex);
@@ -993,26 +1204,44 @@ public:
 		const auto host_mode = VirtualMemory::IsExecute(mode)
 		                           ? static_cast<VirtualMemory::Mode>(static_cast<int>(mode) | PROT_CPU_READ)
 		                           : mode;
+		if (replacing) {
+			IntersectTranslatedRightsUnlocked(vaddr, size, mode);
+#if defined(KYTY_BACKING_MUTATION_TESTS)
+			if (g_test_translated_mapping_phase) g_test_translated_mapping_phase(vaddr, size, false);
+#endif
+		}
 		if (m_backing->MapFixed(vaddr, size, backing_offset, host_mode, failure_reason)) {
-			if (replacing) EXIT_IF(!RemoveMappedUnlocked(vaddr, size, MappingType::Backing));
+			if (replacing) {
+				EXIT_IF(!RemoveMappedUnlocked(vaddr, size, MappingType::Backing, false));
+#if defined(KYTY_BACKING_MUTATION_TESTS)
+				if (g_test_translated_mapping_phase) g_test_translated_mapping_phase(vaddr, size, true);
+#endif
+			}
 			EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Backing, mode));
 			return true;
 		}
-		if (!replacing) {
+		if (replacing) {
+			RestoreTranslatedRightsUnlocked(vaddr, size);
+		} else {
 			AddFreeUnlocked(vaddr, size);
 		}
 		return false;
 	}
 
 	bool UnmapBacking(uint64_t vaddr, uint64_t size) {
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+		if (size == 0 || !IsPageAligned(vaddr) || !IsPageAligned(size)) return false;
+#endif
 		BackingMutationScope backing_mutation;
 		DirectCodeMutation mutation(vaddr, size);
 		std::lock_guard lock(m_mutex);
 		if (!ContainsMappedUnlocked(vaddr, size, MappingType::Backing)) {
 			return false;
 		}
+		PublishTranslatedGuestRights(vaddr, size, 0);
 		bool placeholder_preserved = false;
 		if (!m_backing->Unmap(vaddr, size, &placeholder_preserved)) {
+			RestoreTranslatedRightsUnlocked(vaddr, size);
 			return false;
 		}
 		if (!placeholder_preserved) {
@@ -1031,22 +1260,23 @@ public:
 		std::lock_guard lock(m_mutex);
 		if (search_addr == 0) {
 			auto addr = FindFreeAlignedUnlocked(HOST_SYSTEM_MANAGED_MIN,
-			                                    HOST_SYSTEM_MANAGED_MAX + 1u, size, alignment);
+			                                    HOST_SYSTEM_MANAGED_MAX + 1u, size, alignment, false);
 			return addr != 0 ? addr
 			                 : FindFreeAlignedUnlocked(HOST_USER_MIN, HOST_USER_MAX + 1u, size,
-			                                           alignment);
+			                                           alignment, false);
 		}
-		return FindFreeAlignedUnlocked(search_addr, HOST_USER_MAX + 1u, size, alignment);
+		return FindFreeAlignedUnlocked(search_addr, HOST_USER_MAX + 1u, size, alignment,
+		                               IsGuestNonIdentity(search_addr, 1));
 	}
 
 	uint64_t FindFreeAligned(uint64_t search_start, uint64_t search_end, uint64_t size,
-	                         uint64_t alignment) {
+	                         uint64_t alignment, bool allow_translated = true) {
 		if (size == 0 || alignment == 0) {
 			return 0;
 		}
 		alignment = std::max<uint64_t>(alignment, PageSize());
 		std::lock_guard lock(m_mutex);
-		return FindFreeAlignedUnlocked(search_start, search_end, size, alignment);
+		return FindFreeAlignedUnlocked(search_start, search_end, size, alignment, allow_translated);
 	}
 
 	bool ReserveFixed(uint64_t vaddr, uint64_t size) {
@@ -1070,6 +1300,10 @@ public:
 	}
 
 	bool Commit(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
+		if (IsGuestNonIdentity(vaddr, size) && VirtualMemory::IsExecute(mode)) return false;
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+		if (size == 0 || !IsPageAligned(vaddr) || !IsPageAligned(size)) return false;
+#endif
 		BackingMutationScope backing_mutation;
 		DirectCodeMutation mutation(vaddr, size);
 		std::lock_guard lock(m_mutex);
@@ -1094,7 +1328,7 @@ public:
 		EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Private, mode));
 		return true;
 #else
-		if (VirtualMemory::Protect(vaddr, size, host_mode)) {
+		if (ProtectTranslatedHost(vaddr, size, host_mode)) {
 			EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Private, mode));
 			return true;
 		}
@@ -1113,6 +1347,7 @@ public:
 		if (!ContainsMappedUnlocked(vaddr, size, MappingType::Private)) {
 			return false;
 		}
+		PublishTranslatedGuestRights(vaddr, size, 0);
 		const auto end     = vaddr + size;
 		auto       current = vaddr;
 		std::vector<std::pair<uint64_t, uint64_t>> regions;
@@ -1129,6 +1364,11 @@ public:
 		}
 		// ReleaseCommitted also publishes the aggregate span as one logical free range.
 		EXIT_IF(regions.size() > 1 && !CoalescePlaceholders(vaddr, size));
+#elif defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+		// Metadata can split executable/data permissions below one host page.
+		// The admitted release span is host aligned and completely private; retire
+		// it in one operation instead of issuing unaligned MAP_FIXED replacements.
+		RestorePlaceholder(vaddr, size);
 #else
 		for (const auto& [region_vaddr, region_size]: regions) {
 			RestorePlaceholder(region_vaddr, region_size);
@@ -1174,6 +1414,19 @@ private:
 		VirtualMemory::Mode mode = VirtualMemory::Mode::NoAccess;
 	};
 
+	bool IsReadableBackingSpanUnlocked(uint64_t vaddr, uint64_t size) {
+		if (vaddr == 0 || size == 0 || size > UINT64_MAX - vaddr) return false;
+		const auto end = vaddr + size;
+		for (auto cursor = vaddr; cursor < end;) {
+			const auto entry = FindMappedContainingUnlocked(cursor);
+			if (entry == m_mapped.end() || entry->second.type != MappingType::Backing ||
+			    ((static_cast<int>(entry->second.mode) & PROT_CPU_READ) == 0 &&
+			     !VirtualMemory::IsExecute(entry->second.mode))) return false;
+			cursor = std::min(end, entry->second.vaddr + entry->second.size);
+		}
+		return true;
+	}
+
 	static constexpr uint64_t PageSize() { return 0x4000; }
 
 	static uint64_t AlignUp(uint64_t value, uint64_t alignment) {
@@ -1200,6 +1453,54 @@ private:
 	bool ProtectMappedUnlocked(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode,
 	                           bool semantic = false) {
 		const auto end = vaddr + size;
+		uint64_t translated = 0;
+		if (!TranslateGuestMemory(vaddr, size, &translated)) return false;
+		if (translated != vaddr &&
+		    (VirtualMemory::IsExecute(mode) ||
+		     (semantic && (!IsPageAligned(vaddr) || !IsPageAligned(size))))) return false;
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+		if (semantic) {
+			// Verify the complete span before changing either native protection or
+			// guest metadata. ELF segments may have finer boundaries than a host page.
+			for (auto cursor = vaddr; cursor < end;) {
+				const auto entry = FindMappedContainingUnlocked(cursor);
+				if (entry == m_mapped.end()) return false;
+				cursor = std::min(end, entry->second.vaddr + entry->second.size);
+			}
+			const auto data_permissions = [](VirtualMemory::Mode permissions) {
+				auto bits = static_cast<uint32_t>(permissions);
+				if ((bits & 6u) != 0) bits |= 1u; // native write/guest execute require readable data
+				return bits & 3u;
+			};
+			const auto host_size = static_cast<uint64_t>(getpagesize());
+			const auto representable = [&](uint64_t page) {
+				const auto page_end = page + host_size;
+				const auto requested = data_permissions(mode);
+				for (auto cursor = page; cursor < page_end;) {
+					const auto entry = FindMappedContainingUnlocked(cursor);
+					if (entry == m_mapped.end()) return false;
+					auto limit = std::min(page_end, entry->second.vaddr + entry->second.size);
+					if (cursor < vaddr) limit = std::min(limit, vaddr);
+					else if (cursor < end) limit = std::min(limit, end);
+					if ((cursor < vaddr || cursor >= end) &&
+					    data_permissions(entry->second.mode) != requested) return false;
+					cursor = limit;
+				}
+				return true;
+			};
+			if ((vaddr % host_size != 0 && !representable(AlignDown(vaddr, host_size))) ||
+			    (end % host_size != 0 && !representable(AlignDown(end, host_size)))) return false;
+		}
+#endif
+		if (semantic) {
+			// A reader must remain valid throughout RW->R (and RW->RW). Unlike
+			// identity memory, every translated access faults, so publishing NONE
+			// transiently would turn such valid concurrent accesses into crashes.
+			IntersectTranslatedRightsUnlocked(vaddr, size, mode);
+#if defined(KYTY_BACKING_MUTATION_TESTS)
+			if (g_test_translated_mapping_phase) g_test_translated_mapping_phase(vaddr, size, false);
+#endif
+		}
 		auto       it  = m_mapped.upper_bound(vaddr);
 		if (it != m_mapped.begin()) {
 			--it;
@@ -1208,11 +1509,20 @@ private:
 			const auto& region      = it->second;
 			const auto  range_start = std::max(vaddr, region.vaddr);
 			const auto  range_end   = std::min(end, region.vaddr + region.size);
-			const auto host_mode = semantic && VirtualMemory::IsExecute(mode)
+			auto host_mode = semantic && VirtualMemory::IsExecute(mode)
 			                           ? static_cast<VirtualMemory::Mode>(static_cast<int>(mode) | PROT_CPU_READ)
 			                           : mode;
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+			if (!semantic) {
+				// Watch removal only restores rights allowed by the guest mapping.
+				auto guest_mode = static_cast<uint32_t>(region.mode);
+				if (VirtualMemory::IsExecute(region.mode)) guest_mode |= PROT_CPU_READ;
+				host_mode = static_cast<VirtualMemory::Mode>(static_cast<uint32_t>(mode) & guest_mode);
+			}
+#endif
 			if (range_start < range_end &&
-			    !VirtualMemory::Protect(range_start, range_end - range_start, host_mode)) {
+			    !ProtectTranslatedHost(range_start, range_end - range_start, host_mode)) {
+				if (semantic) RestoreTranslatedRightsUnlocked(vaddr, size);
 				return false;
 			}
 		}
@@ -1224,12 +1534,38 @@ private:
 				if (entry == m_mapped.end()) return false;
 				const auto original = entry->second;
 				const auto limit = std::min(end, original.vaddr + original.size);
-				EXIT_IF(!RemoveMappedUnlocked(current, limit - current, original.type));
+				EXIT_IF(!RemoveMappedUnlocked(current, limit - current, original.type, false));
+#if defined(KYTY_BACKING_MUTATION_TESTS)
+				if (g_test_translated_mapping_phase) g_test_translated_mapping_phase(current, limit - current, true);
+#endif
 				EXIT_IF(!AddMappedUnlocked(current, limit - current, original.type, mode));
 				current = limit;
 			}
 		}
 		return true;
+	}
+
+	void IntersectTranslatedRightsUnlocked(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
+		if (!IsGuestNonIdentity(vaddr, size)) return;
+		for (auto cursor = vaddr; cursor < vaddr + size;) {
+			const auto it = FindMappedContainingUnlocked(cursor);
+			EXIT_IF(it == m_mapped.end());
+			const auto end = std::min(vaddr + size, it->second.vaddr + it->second.size);
+			PublishTranslatedGuestRights(cursor, end - cursor,
+			    0x80u | (static_cast<uint8_t>(it->second.mode) & static_cast<uint8_t>(mode)));
+			cursor = end;
+		}
+	}
+
+	void RestoreTranslatedRightsUnlocked(uint64_t vaddr, uint64_t size) {
+		for (auto cursor = vaddr; cursor < vaddr + size;) {
+			const auto it = FindMappedContainingUnlocked(cursor);
+			if (it == m_mapped.end()) break;
+			const auto end = std::min(vaddr + size, it->second.vaddr + it->second.size);
+			PublishTranslatedGuestRights(cursor, end - cursor,
+			    0x80u | static_cast<uint8_t>(it->second.mode));
+			cursor = end;
+		}
 	}
 
 	bool ConsumeUnlocked(uint64_t vaddr, uint64_t size) {
@@ -1285,14 +1621,17 @@ private:
 				return false;
 			}
 		}
-		return m_mapped.emplace(vaddr, MappedRegion {vaddr, size, type, mode}).second;
+		const bool added = m_mapped.emplace(vaddr, MappedRegion {vaddr, size, type, mode}).second;
+		if (added) PublishTranslatedGuestRights(vaddr, size, 0x80u | static_cast<uint8_t>(mode));
+		return added;
 	}
 
-	bool RemoveMappedUnlocked(uint64_t vaddr, uint64_t size, MappingType type) {
+	bool RemoveMappedUnlocked(uint64_t vaddr, uint64_t size, MappingType type, bool revoke = true) {
 		if (!ContainsMappedUnlocked(vaddr, size, type)) {
 			return false;
 		}
 		const auto end     = vaddr + size;
+		if (revoke) PublishTranslatedGuestRights(vaddr, size, 0);
 		auto       current = vaddr;
 		while (current < end) {
 			auto       it       = FindMappedContainingUnlocked(current);
@@ -1374,8 +1713,65 @@ private:
 			}
 		}
 #else
-#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 		std::vector<std::pair<uint64_t, uint64_t>> occupied;
+#if defined(__APPLE__)
+		std::vector<std::pair<uint64_t, uint64_t>> inaccessible;
+		uint64_t pagezero_end = 0;
+		// PAGEZERO is absent from mach_vm_region's inventory. Exclude its slid
+		// guard explicitly, as well as live host mappings, before reserving gaps.
+		const auto* header = _dyld_get_image_header(0);
+		EXIT_IF(header == nullptr || header->magic != MH_MAGIC_64);
+		auto* commands = reinterpret_cast<const uint8_t*>(header) + sizeof(mach_header_64);
+		size_t remaining = header->sizeofcmds;
+		for (uint32_t index = 0; index < header->ncmds; ++index) {
+			EXIT_IF(remaining < sizeof(load_command));
+			const auto* command = reinterpret_cast<const load_command*>(commands);
+			EXIT_IF(command->cmdsize < sizeof(load_command) || command->cmdsize > remaining);
+			if (command->cmd == LC_SEGMENT_64) {
+				EXIT_IF(command->cmdsize < sizeof(segment_command_64));
+				const auto* segment = reinterpret_cast<const segment_command_64*>(command);
+				if (std::strncmp(segment->segname, SEG_PAGEZERO, sizeof(segment->segname)) == 0) {
+					const auto slide = _dyld_get_image_vmaddr_slide(0);
+					EXIT_IF(slide < 0 || segment->vmsize > UINT64_MAX - segment->vmaddr ||
+					        static_cast<uint64_t>(slide) > UINT64_MAX - segment->vmaddr - segment->vmsize);
+					occupied.emplace_back(segment->vmaddr, segment->vmaddr + segment->vmsize + slide);
+					pagezero_end = std::max(pagezero_end, segment->vmaddr + segment->vmsize + slide);
+				}
+			}
+			commands += command->cmdsize;
+			remaining -= command->cmdsize;
+		}
+		mach_vm_address_t cursor = 0;
+		for (;;) {
+			mach_vm_address_t address = cursor;
+			mach_vm_size_t size = 0;
+			vm_region_basic_info_data_64_t info {};
+			mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+			mach_port_t object = MACH_PORT_NULL;
+			const auto status = mach_vm_region(mach_task_self(), &address, &size,
+			    VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+			if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+			if (status == KERN_INVALID_ADDRESS) break;
+			EXIT_IF(status != KERN_SUCCESS || size == 0 || size > UINT64_MAX - address ||
+			        address + size <= cursor);
+			occupied.emplace_back(address, address + size);
+#if defined(LUMEN_PS5_DIRECT_FEX) && defined(__aarch64__)
+			// Only permanent OS reservations are representable by fault translation.
+			// User guards, readable commpage PTEs and PAGEZERO remain host-owned.
+			uint64_t translation_end = 0;
+			if (DarwinPermanentTranslationEnd(address, size, info, &translation_end)) {
+				for (const auto& [guest_begin, guest_end]: regions) {
+					const auto begin = AlignUp(std::max({uint64_t(address), guest_begin, pagezero_end}), PageSize());
+					const auto end = AlignDown(std::min(translation_end, guest_end), PageSize());
+					if (begin < end) inaccessible.emplace_back(begin, end);
+				}
+			}
+#endif
+			cursor = address + size;
+		}
+		std::sort(occupied.begin(), occupied.end());
+#else
 		FILE*                                      maps = fopen("/proc/self/maps", "r");
 		EXIT_IF(maps == nullptr);
 
@@ -1389,6 +1785,7 @@ private:
 			}
 		}
 		fclose(maps);
+#endif
 
 		auto reserve_range = [this](uint64_t start, uint64_t end) {
 			start = AlignUp(start, PageSize());
@@ -1398,6 +1795,15 @@ private:
 			}
 
 			const auto size = end - start;
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
+			mach_vm_address_t target = start;
+			if (mach_vm_allocate(mach_task_self(), &target, size, VM_FLAGS_FIXED) != KERN_SUCCESS)
+				return; // a new host mapping won this gap; never replace it
+			if (mach_vm_protect(mach_task_self(), target, size, false, VM_PROT_NONE) != KERN_SUCCESS) {
+				mach_vm_deallocate(mach_task_self(), target, size);
+				return;
+			}
+#else
 			int        flags = MAP_PRIVATE | MAP_ANON | MAP_NORESERVE;
 #if defined(KYTY_LINKED_GUEST_ADDRESS_SPACE)
 			flags |= MAP_FIXED;
@@ -1412,6 +1818,7 @@ private:
 				}
 				return;
 			}
+#endif
 
 			AddFreeUnlocked(start, size);
 			m_owned.emplace_back(start, size);
@@ -1442,6 +1849,32 @@ private:
 				reserve_range(current, region_end);
 			}
 		}
+#if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX) && defined(__aarch64__)
+		for (const auto& [guest_begin, guest_end]: inaccessible) {
+			const auto bytes = guest_end - guest_begin;
+			mach_vm_address_t host = HOST_USER_MAX + 1;
+			if (mach_vm_allocate(mach_task_self(), &host, bytes, VM_FLAGS_ANYWHERE) != KERN_SUCCESS)
+				EXIT("guest translation arena allocation failed: guest=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+				     guest_begin, bytes);
+			const bool overlaps_guest = std::any_of(regions.begin(), regions.end(), [&](const auto& range) {
+				return host < range.second && range.first < host + bytes;
+			});
+			if (overlaps_guest || (host & (PageSize() - 1)) != 0 ||
+			    mach_vm_protect(mach_task_self(), host, bytes, false, VM_PROT_NONE) != KERN_SUCCESS) {
+				mach_vm_deallocate(mach_task_self(), host, bytes);
+				EXIT("guest translation arena native reservation is not representable\n");
+			}
+			GuestTranslationArena arena {guest_begin, host, bytes,
+			    std::make_unique<std::atomic<uint8_t>[]>(bytes / TranslatedPageSize)};
+			m_translation_arenas.ranges.push_back(std::move(arena));
+			// Keep identity/translated boundaries distinct even when guest ranges
+			// are adjacent; a single native mapping must never cross an arena.
+			EXIT_IF(!m_free.emplace(guest_begin, bytes).second);
+			m_owned.emplace_back(guest_begin, bytes);
+			LOGF("PS5_GUEST_VA_ARENA guest=0x%016" PRIx64 " host=0x%016" PRIx64
+			     " size=0x%016" PRIx64 " source=darwin-permanent-reservation\n", guest_begin, uint64_t(host), bytes);
+		}
+#endif
 #else
 		for (const auto& [start, end]: regions) {
 			int flags = MAP_PRIVATE | MAP_ANON | MAP_NORESERVE;
@@ -1467,12 +1900,15 @@ private:
 	}
 
 	uint64_t FindFreeAlignedUnlocked(uint64_t search_start, uint64_t search_end, uint64_t size,
-	                                 uint64_t alignment) {
+	                                 uint64_t alignment, bool allow_translated = true) {
 		if (search_start >= search_end || size > search_end - search_start) {
 			return 0;
 		}
 		for (const auto& [base, range_size]: m_free) {
 			const auto candidate = AlignUp(std::max(base, search_start), alignment);
+			uint64_t host = 0;
+			if (!TranslateGuestMemory(candidate, size, &host) ||
+			    (!allow_translated && host != candidate)) continue;
 			if (candidate < search_end && size <= search_end - candidate &&
 			    GuestFreeRangeContains(base, range_size, candidate, size)) {
 				return candidate;
@@ -1552,7 +1988,9 @@ private:
 		auto first = it;
 		while (first != m_free.begin()) {
 			auto prev = std::prev(first);
-			if (prev->first + prev->second != base) {
+			uint64_t host = 0;
+			if (prev->first + prev->second != base ||
+			    !TranslateGuestMemory(prev->first, end - prev->first, &host)) {
 				break;
 			}
 			base  = prev->first;
@@ -1561,6 +1999,8 @@ private:
 
 		auto last = std::next(it);
 		while (last != m_free.end() && end == last->first) {
+			uint64_t host = 0;
+			if (!TranslateGuestMemory(base, last->first + last->second - base, &host)) break;
 			end  = last->first + last->second;
 			last = std::next(last);
 		}
@@ -1582,9 +2022,12 @@ private:
 #if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
 		// The address remains owned for the process lifetime; MAP_FIXED only replaces one of our
 		// mappings and never acquires a new guest address.
-		void* ptr = mmap(reinterpret_cast<void*>(vaddr), size, PROT_NONE,
+		uint64_t host = 0;
+		EXIT_IF(!TranslateGuestMemory(vaddr, size, &host));
+		void* ptr = mmap(reinterpret_cast<void*>(host), size, PROT_NONE,
 		                 MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-		EXIT_IF(ptr == MAP_FAILED || reinterpret_cast<uint64_t>(ptr) != vaddr);
+		EXIT_IF(ptr == MAP_FAILED || reinterpret_cast<uint64_t>(ptr) != host);
+		PublishTranslatedHostRights(vaddr, size, VirtualMemory::Mode::NoAccess);
 #else
 		(void)vaddr;
 		(void)size;
@@ -1595,6 +2038,7 @@ private:
 	std::map<uint64_t, uint64_t>               m_free;
 	std::map<uint64_t, MappedRegion>            m_mapped;
 	std::vector<std::pair<uint64_t, uint64_t>> m_owned;
+	GuestTranslationArenas                    m_translation_arenas;
 	uint64_t                                   m_granularity = 0x10000;
 	GuestBackingStore*                         m_backing     = nullptr;
 };

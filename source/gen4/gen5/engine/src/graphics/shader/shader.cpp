@@ -16,6 +16,7 @@
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "graphics/shader/shaderVertexMetadata.h"
+#include "kernel/memory.h"
 #include "libs/errno.h"
 
 #include <algorithm>
@@ -62,7 +63,9 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 		EXIT("ShaderMapUserData shader=0x%016" PRIx64 " has invalid AGC shader_size=0x%08" PRIx32 "\n",
 		     addr, data.code_size_bytes);
 	}
-	const auto hash = XXH3_64bits(reinterpret_cast<const void*>(addr), data.code_size_bytes);
+	uint64_t host = 0;
+	EXIT_IF(!LibKernel::Memory::TranslateGuestMemory(addr, data.code_size_bytes, &host));
+	const auto hash = XXH3_64bits(reinterpret_cast<const void*>(host), data.code_size_bytes);
 	std::scoped_lock lock(g_shader_map_mutex);
 	(*g_shader_map)[addr] = {data, hash};
 }

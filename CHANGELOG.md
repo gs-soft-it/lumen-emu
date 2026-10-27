@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.2-spike-fexlab — Android version code 3
+
+27 October 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.2-spike-fexlab)
+
+### Changes
+
+- Import the entire prepared library with Android's system folder picker into a private copy, with a space check, progress and cancellation. The source remains unchanged and can be disconnected after import.
+- New imports create separate libraries without merging contents or automatically synchronising source changes. Existing shared-storage selections require an explicit re-import.
+- Remove broad storage permissions. Clarify that content must already be extracted: the app does not open, extract or install PKG files.
+- Include the current common-runtime fixes for shared memory, graphics resources, shader compilation/rendering and Android surface recovery, preserving the adopted defaults and leaving withdrawn experiments disabled.
+- Show the active graphics driver in the included SUCCI benchmark result.
+
+The public core is updated from source revision `d4040176`, retaining its native build adaptations, dependency pins and licence/provenance records. Android application changes are included in the APK; dashboard and application-shell sources remain outside this public repository.
+
+### Android package
+
+- File: `lumenemu-0.1.2-spike-fexlab-v3.apk`
+- Package: `it.gssoft.lumenemu`
+- Version: `0.1.2-spike-fexlab` (version code `3`)
+- Requires Android 15 (API 35) or later and ARM64 (`arm64-v8a`); target API 36.
+- Signature and checksum verified; the signing certificate matches the previous GitHub APK.
+- No `MANAGE_EXTERNAL_STORAGE`, `READ_EXTERNAL_STORAGE` or `WRITE_EXTERNAL_STORAGE` permission.
+
+SHA-256:
+
+```text
+d70d03dff98ce73b3e77a45f6d1802ccbc6e59024ac30b6a457490688e301a9d
+```
+
+### Verification and limits
+
+This is the already-built final APK from 27 October; publication does not rebuild it. Its release records report a successful Release build including `lintVital`, 124 passing JVM tests with 3 skipped, and 11 passing Android instrumentation tests using a fixture document provider. Signature, package identity, native packaging, bundled SUCCI assets and 16 KiB ZIP/ELF alignment were verified. Checksum, signature continuity and ZIP alignment were checked again for this publication.
+
+The separate full lint run reported 53 pre-existing errors in generated SDL Gen4 sources; it is not a passing gate. Instrumentation did not exercise the external system picker/cloud providers, native gameplay or the final benchmark result screen. No new FPS claim or complete device/game compatibility qualification is made for this exact APK. Binary alignment alone does not establish runtime compatibility on every 16 KiB-page device. Existing README compatibility reports remain tied to their original build.
+
 ## 0.1.1-spike-fexlab — Android version code 2
 
 23 October 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.1-spike-fexlab)

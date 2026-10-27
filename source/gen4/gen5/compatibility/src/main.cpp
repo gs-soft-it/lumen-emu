@@ -1,18 +1,23 @@
-#include "common/archive.h"
-#include "common/common.h"
-#include "common/dateTime.h"
-#include "common/debug.h"
-#include "common/file.h"
-#include "common/stringUtils.h"
-#include "common/threads.h"
-#include "common/virtualMemory.h"
-#include "emulator.h"
+// This entry point is shared by the direct and compatibility builds. Resolve
+// engine headers through the selected CMake include root, never this file's
+// compatibility/src directory: RunOptions and ConfigOptions must match Run().
+#include <common/archive.h>
+#include <common/common.h>
+#include <common/dateTime.h>
+#include <common/debug.h>
+#include <common/file.h>
+#include <common/stringUtils.h>
+#include <common/threads.h>
+#include <common/virtualMemory.h>
+#include <emulator.h>
 #if defined(LUMEN_PS5_FEXCORE)
-#include "GuestCpuRuntime.h"
-#include "loader/gameCache.h"
-#include "loader/guestExecution.h"
+#include <GuestCpuRuntime.h>
+#if !defined(LUMEN_PS5_DIRECT_FEX)
+#include <loader/gameCache.h>
 #endif
-#include "kytyGitVersion.h"
+#include <loader/guestExecution.h>
+#endif
+#include <kytyGitVersion.h>
 
 #include <charconv>
 #include <cstdio>
@@ -47,13 +52,27 @@ static std::string GetBuildString() {
 
 static void PrintUsage() {
 	::printf("%s\n", GetBuildString().c_str());
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	::printf("Graphics backend: native Metal.\n");
+#endif
+#if defined(LUMEN_PS5_DIRECT_FEX)
+	::printf("kyty_emulator --game <extracted-root> [options]\n\n");
+	::printf("Runtime data is relative to the working directory; use a separate directory for isolated runs.\n\n");
+#else
 	::printf("kyty_emulator --game <dir|elf|zar> [options]\n\n");
+#endif
 	::printf("Options:\n");
-#if defined(LUMEN_PS5_FEXCORE)
+#if defined(LUMEN_PS5_DIRECT_FEX)
+	::printf("  --cpu-translator fex                Direct FEX is the only CPU provider in this build.\n");
+#elif defined(LUMEN_PS5_FEXCORE)
 	::printf("  --cpu-translator <fex|qemu-tcg>       CPU provider for this session. Current: %s.\n",
 	         Lumen::GuestCpu::ProviderName());
 #endif
+#if defined(LUMEN_PS5_DIRECT_FEX)
+	::printf("  --game <extracted-root>             Extracted game directory containing eboot.bin.\n");
+#else
 	::printf("  --game <dir|elf|zar>                 Game directory, ELF, or ZArchive to load.\n");
+#endif
 	::printf("  --game-patch <json>                  ETAHen cheat file.\n");
 	::printf("  --upstream-import-fallback           Use zero-return fallback for unresolved function imports.\n"
 	         "                                       Explicit function/PLT imports only; default: strict.\n");
@@ -67,16 +86,21 @@ static void PrintUsage() {
 	::printf("  --controller-color <#RRGGBB>        Override the controller lightbar color.\n");
 	::printf(
 	    "  --present-mode <value>               Fifo, Mailbox, or Immediate. Default: Mailbox.\n");
-	::printf(
-	    "  --gpu <index>                        Vulkan physical device index. Default: auto.\n");
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	::printf("  --gpu <index>                        Metal device index. Default: auto.\n");
+#else
+	::printf("  --gpu <index>                        Vulkan physical device index. Default: auto.\n");
+#endif
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
 	::printf("  --vr                                 Enable the virtual VR headset.\n");
 	::printf("  --amd-cpu                            Apply AMD CPU instruction patches.\n");
 	::printf("  --vblank-frequency <num>             Virtual vblank frequency. Default: 60.\n");
 	::printf("  --console-language <0-29>            Console language. Default: 1 (English US).\n");
+#if !defined(LUMEN_PS5_NATIVE_METAL)
 	::printf("  --vulkan-validation <true|false>     Enable Vulkan validation.\n");
 	::printf("  --gpu-assisted-validation <t|f>      Bounds-check shader accesses on the GPU.\n"
 	         "                                       Implies --vulkan-validation; very slow.\n");
+#endif
 	::printf("  --shader-validation <true|false>     Enable shader validation.\n");
 	::printf("  --tessellation                      Draw tessellation patches; skipped by default.\n");
 	::printf("  --shader-optimization-type <value>   None, Size, or Performance.\n");
@@ -96,7 +120,9 @@ static void PrintUsage() {
 	::printf("  --redzone                            Protect the guest SysV red zone.\n");
 #endif
 	::printf("  --keymap <Control=Input>             DualSense mapping; may be repeated.\n");
+#if !defined(LUMEN_PS5_NATIVE_METAL)
 	::printf("  --rd                                 Enable RenderDoc capture.\n");
+#endif
 }
 
 static bool NextArg(int argc, char* argv[], int& index, std::string& out) {
@@ -208,6 +234,10 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		}
 
 		if (arg == "--rd") {
+#if defined(LUMEN_PS5_NATIVE_METAL)
+			::printf("RenderDoc capture is unavailable with the native Metal backend.\n");
+			return false;
+#endif
 			options.config.renderdoc_enabled = true;
 			continue;
 		}
@@ -290,6 +320,18 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			value           = Common::FixFilenameSlash(value);
 			const auto path = Common::PathFromUtf8(value);
 
+#if defined(LUMEN_PS5_DIRECT_FEX)
+			std::error_code error;
+			const auto root = std::filesystem::canonical(path, error);
+			if (error || !std::filesystem::is_directory(root, error) || error ||
+			    !std::filesystem::is_regular_file(root / "eboot.bin", error) || error) {
+				::printf("--game must point to an extracted directory containing eboot.bin: %s\n",
+				         value.c_str());
+				return false;
+			}
+			options.app0_dir = root;
+			options.elf = "/app0/eboot.bin";
+#else
 			if (Common::File::IsDirectoryExisting(path)) {
 				options.app0_dir = path;
 				options.elf      = "/app0/eboot.bin";
@@ -314,6 +356,7 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				         value.c_str());
 				return false;
 			}
+#endif
 		} else if (arg == "--game-patch") {
 			if (!options.game_patch.empty()) {
 				::printf("--game-patch can only be specified once\n");
@@ -385,11 +428,23 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
 				return false;
 			}
+#if defined(LUMEN_PS5_NATIVE_METAL)
+			if (options.config.vulkan_validation_enabled) {
+				::printf("Vulkan validation layers are unavailable with the native Metal backend.\n");
+				return false;
+			}
+#endif
 		} else if (arg == "--gpu-assisted-validation") {
 			if (!ParseBool(value, options.config.gpu_assisted_validation_enabled)) {
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
 				return false;
 			}
+#if defined(LUMEN_PS5_NATIVE_METAL)
+			if (options.config.gpu_assisted_validation_enabled) {
+				::printf("Vulkan GPU-assisted validation is unavailable with the native Metal backend.\n");
+				return false;
+			}
+#endif
 		} else if (arg == "--shader-validation") {
 			if (!ParseBool(value, options.config.shader_validation_enabled)) {
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());

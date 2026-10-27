@@ -511,7 +511,7 @@ void EmitMeshEntryPoint(EmitterState& state) {
 				vertex[component] = state.builder.AllocateId();
 				state.builder.AddFunction(
 				    spv::OpBitFieldUExtract, TypeU32(state), vertex[component], packed,
-				    ConstantU32(state, component * 10u), ConstantU32(state, 10));
+				    ConstantU32(state, component * 10u), ConstantU32(state, 9));
 			}
 			const auto null_bit =
 			    EmitBinaryU32(state, spv::OpBitwiseAnd, packed, ConstantU32(state, 0x80000000u));

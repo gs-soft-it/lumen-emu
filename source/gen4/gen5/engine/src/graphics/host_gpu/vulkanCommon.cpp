@@ -127,7 +127,15 @@ void RequireVulkanSuccess(vk::Result result, const char* operation) {
 }
 
 vk::ShaderModule CompileSPV(std::span<const uint32_t> code, const GraphicContext& graphics) {
-	const auto admission = AdmitSpirvModule(code, graphics.fragment_shader_barycentric_enabled);
+	SpirvOptionalFeatures optional_features {};
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	// Unused optional rasterization features must not prevent device creation.
+	// Admit their actual SPIR-V consumers against the enabled native contract.
+	optional_features.cull_distance = graphics.shader_cull_distance_enabled;
+	optional_features.multi_viewport = graphics.multi_viewport_enabled;
+#endif
+	const auto admission = AdmitSpirvModule(code, graphics.fragment_shader_barycentric_enabled,
+	                                       optional_features);
 	if (admission == SpirvModuleAdmission::Malformed) {
 		EXIT("PS5_SHADER_MODULE_ADMISSION_DENIED reason=malformed-SPIRV words=%zu "
 		     "nativeShaderModule=NOT_CREATED\n", code.size());
@@ -135,6 +143,13 @@ vk::ShaderModule CompileSPV(std::span<const uint32_t> code, const GraphicContext
 	if (admission == SpirvModuleAdmission::FragmentBarycentricUnavailable) {
 		EXIT("PS5_SHADER_MODULE_ADMISSION_DENIED reason=fragmentShaderBarycentric "
 		     "featureEnabled=0 words=%zu nativeShaderModule=NOT_CREATED\n", code.size());
+	}
+	if (admission == SpirvModuleAdmission::CullDistanceUnavailable ||
+	    admission == SpirvModuleAdmission::MultiViewportUnavailable) {
+		EXIT("PS5_SHADER_MODULE_ADMISSION_DENIED reason=%s featureEnabled=0 "
+		     "words=%zu nativeShaderModule=NOT_CREATED\n",
+		     admission == SpirvModuleAdmission::CullDistanceUnavailable
+		         ? "shaderCullDistance" : "multiViewport", code.size());
 	}
 	vk::ShaderModuleCreateInfo create_info {};
 	create_info.codeSize    = code.size_bytes();

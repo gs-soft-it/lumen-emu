@@ -13,6 +13,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "kernel/memory.h"
+#include "kernel/guestIoBuffer.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
@@ -35,6 +36,10 @@ LIB_NAME("libkernel", "libkernel");
 
 constexpr int      DESCRIPTOR_MIN = 3;
 constexpr uint64_t DIR_BLOCK_SIZE = 512;
+
+static int IoError(Memory::GuestIoError error) {
+	return error == Memory::GuestIoError::NoMemory ? KERNEL_ERROR_ENOMEM : KERNEL_ERROR_EFAULT;
+}
 
 static bool PathCaseCacheEnabled() {
 	static const bool enabled = [] {
@@ -684,16 +689,22 @@ int64_t KYTY_SYSV_ABI KernelRead(int d, void* buf, size_t nbytes) {
 	if (nbytes > INT_MAX) {
 		return KERNEL_ERROR_EINVAL;
 	}
+	Memory::GuestIoBuffer io;
+	if (const auto error = io.Prepare(buf, nbytes, true); error != Memory::GuestIoError::None) {
+		return IoError(error);
+	}
 	if (file->directory) {
 		Common::LockGuard lock(file->mutex);
-		const auto        bytes = ReadDirectory(file, buf, nbytes);
+		const auto        bytes = ReadDirectory(file, io.Data(), nbytes);
+		if (bytes >= 0 && !io.Commit(static_cast<uint64_t>(bytes))) return KERNEL_ERROR_EFAULT;
 		LOGF("\tRead %" PRIu64 " directory bytes from: %s\n", bytes,
 		     Common::PathToString(file->real_name).c_str());
 		return static_cast<int64_t>(bytes);
 	}
 
 	if (file->special == SpecialFile::Random) {
-		FillRandomBuffer(buf, nbytes);
+		FillRandomBuffer(io.Data(), nbytes);
+		if (!io.Commit(nbytes)) return KERNEL_ERROR_EFAULT;
 
 		LOGF("\tRead %" PRIu64 " random bytes from: %s\n", static_cast<uint64_t>(nbytes),
 		     Common::PathToString(file->real_name).c_str());
@@ -710,10 +721,11 @@ int64_t KYTY_SYSV_ABI KernelRead(int d, void* buf, size_t nbytes) {
 	Memory::InvalidateMemory(reinterpret_cast<uint64_t>(buf),
 	                         std::min<uint64_t>(nbytes, remaining));
 	uint32_t bytes_read = 0;
-	file->f.Read(buf, static_cast<uint32_t>(nbytes), &bytes_read);
+	file->f.Read(io.Data(), static_cast<uint32_t>(nbytes), &bytes_read);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::GuestFileReadBytes, bytes_read);
 
 	file->mutex.Unlock();
+	if (!io.Commit(bytes_read)) return KERNEL_ERROR_EFAULT;
 
 	if (is_invalid) {
 		LOGF("\tfile is invalid\n");
@@ -731,10 +743,15 @@ int64_t KYTY_SYSV_ABI KernelWrite(int d, const void* buf, size_t nbytes) {
 	if (buf == nullptr) {
 		return KERNEL_ERROR_EFAULT;
 	}
+	if (nbytes > UINT_MAX) return KERNEL_ERROR_EINVAL;
+	Memory::GuestIoBuffer io;
+	if (const auto error = io.Prepare(buf, nbytes, false); error != Memory::GuestIoError::None) {
+		return IoError(error);
+	}
 
 	if (d == 1 || d == 2) {
 		auto*      out      = (d == 1 ? stdout : stderr);
-		const auto written  = std::fwrite(buf, 1, nbytes, out);
+		const auto written  = std::fwrite(io.Data(), 1, nbytes, out);
 		const auto flush_ok = std::fflush(out) == 0;
 
 		if (written != nbytes || !flush_ok) {
@@ -773,7 +790,7 @@ int64_t KYTY_SYSV_ABI KernelWrite(int d, const void* buf, size_t nbytes) {
 	if (file->append) {
 		file->f.Seek(file->f.Size());
 	}
-	file->f.Write(buf, static_cast<uint32_t>(nbytes), &bytes_written);
+	file->f.Write(io.Data(), static_cast<uint32_t>(nbytes), &bytes_written);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::GuestFileWriteBytes, bytes_written);
 	if (file->sync_writes) {
 		file->f.Flush();
@@ -816,10 +833,15 @@ int64_t KYTY_SYSV_ABI KernelPread(int d, void* buf, size_t nbytes, int64_t offse
 
 	EXIT_IF(!file->opened);
 
-	EXIT_NOT_IMPLEMENTED(nbytes > UINT_MAX);
+	if (nbytes > UINT_MAX) return KERNEL_ERROR_EINVAL;
+	Memory::GuestIoBuffer io;
+	if (const auto error = io.Prepare(buf, nbytes, true); error != Memory::GuestIoError::None) {
+		return IoError(error);
+	}
 
 	if (file->special == SpecialFile::Random) {
-		FillRandomBuffer(buf, nbytes);
+		FillRandomBuffer(io.Data(), nbytes);
+		if (!io.Commit(nbytes)) return KERNEL_ERROR_EFAULT;
 
 		LOGF("\tRead %" PRIu64 " random bytes (pos = %" PRId64 ") from: %s\n",
 		     static_cast<uint64_t>(nbytes), offset, Common::PathToString(file->real_name).c_str());
@@ -838,11 +860,12 @@ int64_t KYTY_SYSV_ABI KernelPread(int d, void* buf, size_t nbytes, int64_t offse
 	                         std::min<uint64_t>(nbytes, remaining));
 	uint32_t bytes_read = 0;
 	file->f.Seek(offset);
-	file->f.Read(buf, static_cast<uint32_t>(nbytes), &bytes_read);
+	file->f.Read(io.Data(), static_cast<uint32_t>(nbytes), &bytes_read);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::GuestFileReadBytes, bytes_read);
 	file->f.Seek(pos);
 
 	file->mutex.Unlock();
+	if (!io.Commit(bytes_read)) return KERNEL_ERROR_EFAULT;
 
 	if (is_invalid) {
 		LOGF("\tfile is invalid\n");
@@ -855,7 +878,7 @@ int64_t KYTY_SYSV_ABI KernelPread(int d, void* buf, size_t nbytes, int64_t offse
 	return bytes_read;
 }
 
-static int ValidateIovecs(const KernelIovec* iov, int iovcnt, int64_t offset,
+static int ValidateIovecs(const KernelIovec* iov, int iovcnt, int64_t offset, bool output,
                           std::vector<KernelIovec>* buffers, size_t* total) {
 	constexpr int MaxIov = 1024;
 	if (iovcnt < 0 || iovcnt > MaxIov || offset < 0) {
@@ -866,7 +889,11 @@ static int ValidateIovecs(const KernelIovec* iov, int iovcnt, int64_t offset,
 	}
 
 	if (iovcnt != 0) {
-		buffers->assign(iov, iov + iovcnt);
+		Memory::GuestIoBuffer descriptors;
+		if (const auto error = descriptors.Prepare(iov, sizeof(KernelIovec) * iovcnt, false);
+		    error != Memory::GuestIoError::None) return IoError(error);
+		const auto* host_iov = static_cast<const KernelIovec*>(descriptors.Data());
+		buffers->assign(host_iov, host_iov + iovcnt);
 	}
 	*total = 0;
 	for (const auto& buffer: *buffers) {
@@ -876,6 +903,8 @@ static int ValidateIovecs(const KernelIovec* iov, int iovcnt, int64_t offset,
 		if (buffer.iov_base == nullptr && buffer.iov_len != 0) {
 			return KERNEL_ERROR_EFAULT;
 		}
+		if (const auto error = Memory::GuestIoBuffer::Validate(buffer.iov_base, buffer.iov_len, output);
+		    error != Memory::GuestIoError::None) return IoError(error);
 		*total += buffer.iov_len;
 	}
 	return OK;
@@ -886,7 +915,7 @@ int64_t KYTY_SYSV_ABI KernelPreadv(int d, const KernelIovec* iov, int iovcnt, in
 
 	std::vector<KernelIovec> buffers;
 	size_t                   total = 0;
-	const int                error = ValidateIovecs(iov, iovcnt, offset, &buffers, &total);
+	const int                error = ValidateIovecs(iov, iovcnt, offset, true, &buffers, &total);
 	if (error != OK) {
 		return error;
 	}
@@ -922,6 +951,11 @@ int64_t KYTY_SYSV_ABI KernelPreadv(int d, const KernelIovec* iov, int iovcnt, in
 	if (file->f.IsInvalid()) {
 		return KERNEL_ERROR_EIO;
 	}
+	std::vector<Memory::GuestIoBuffer> io(buffers.size());
+	for (size_t index = 0; index < buffers.size(); ++index) {
+		const auto error = io[index].Prepare(buffers[index].iov_base, buffers[index].iov_len, true);
+		if (error != Memory::GuestIoError::None) return IoError(error);
+	}
 
 	const auto position  = file->f.Tell();
 	const auto file_size = file->f.Size();
@@ -930,7 +964,8 @@ int64_t KYTY_SYSV_ABI KernelPreadv(int d, const KernelIovec* iov, int iovcnt, in
 	}
 	auto    remaining  = static_cast<uint64_t>(offset) < file_size ? file_size - offset : 0;
 	int64_t bytes_read = 0;
-	for (const auto& buffer: buffers) {
+	for (size_t index = 0; index < buffers.size(); ++index) {
+		const auto& buffer = buffers[index];
 		if (remaining == 0) {
 			break;
 		}
@@ -940,7 +975,11 @@ int64_t KYTY_SYSV_ABI KernelPreadv(int d, const KernelIovec* iov, int iovcnt, in
 		const auto count = static_cast<uint32_t>(std::min<uint64_t>(buffer.iov_len, remaining));
 		Memory::InvalidateMemory(reinterpret_cast<uint64_t>(buffer.iov_base), count);
 		uint32_t bytes = 0;
-		file->f.Read(buffer.iov_base, count, &bytes);
+		file->f.Read(io[index].Data(), count, &bytes);
+		if (!io[index].Commit(bytes)) {
+			file->f.Seek(position);
+			return KERNEL_ERROR_EFAULT;
+		}
 		Common::DebugCounters::Add(Common::DebugCounters::Counter::GuestFileReadBytes, bytes);
 		bytes_read += bytes;
 		remaining -= bytes;
@@ -982,7 +1021,11 @@ int64_t KYTY_SYSV_ABI KernelPwrite(int d, const void* buf, size_t nbytes, int64_
 
 	EXIT_IF(!file->opened);
 
-	EXIT_NOT_IMPLEMENTED(nbytes > UINT_MAX);
+	if (nbytes > UINT_MAX) return KERNEL_ERROR_EINVAL;
+	Memory::GuestIoBuffer io;
+	if (const auto error = io.Prepare(buf, nbytes, false); error != Memory::GuestIoError::None) {
+		return IoError(error);
+	}
 
 	file->mutex.Lock();
 
@@ -990,7 +1033,7 @@ int64_t KYTY_SYSV_ABI KernelPwrite(int d, const void* buf, size_t nbytes, int64_
 	auto     pos           = file->f.Tell();
 	uint32_t bytes_written = 0;
 	file->f.Seek(file->append ? file->f.Size() : static_cast<uint64_t>(offset));
-	file->f.Write(buf, static_cast<uint32_t>(nbytes), &bytes_written);
+	file->f.Write(io.Data(), static_cast<uint32_t>(nbytes), &bytes_written);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::GuestFileWriteBytes, bytes_written);
 	if (file->sync_writes) {
 		file->f.Flush();
@@ -1013,7 +1056,7 @@ int64_t KYTY_SYSV_ABI KernelPwrite(int d, const void* buf, size_t nbytes, int64_
 static int64_t Writev(int d, const KernelIovec* iov, int iovcnt, std::optional<int64_t> offset) {
 	std::vector<KernelIovec> buffers;
 	size_t                   total = 0;
-	const int error = ValidateIovecs(iov, iovcnt, offset.value_or(0), &buffers, &total);
+	const int error = ValidateIovecs(iov, iovcnt, offset.value_or(0), false, &buffers, &total);
 	if (error != OK) {
 		return error;
 	}
@@ -1041,6 +1084,11 @@ static int64_t Writev(int d, const KernelIovec* iov, int iovcnt, std::optional<i
 	if (file->f.IsInvalid()) {
 		return KERNEL_ERROR_EIO;
 	}
+	std::vector<Memory::GuestIoBuffer> io(buffers.size());
+	for (size_t index = 0; index < buffers.size(); ++index) {
+		const auto error = io[index].Prepare(buffers[index].iov_base, buffers[index].iov_len, false);
+		if (error != Memory::GuestIoError::None) return IoError(error);
+	}
 
 	const auto position = file->f.Tell();
 	auto       target   = position;
@@ -1057,12 +1105,13 @@ static int64_t Writev(int d, const KernelIovec* iov, int iovcnt, std::optional<i
 	}
 
 	int64_t bytes_written = 0;
-	for (const auto& buffer: buffers) {
+	for (size_t index = 0; index < buffers.size(); ++index) {
+		const auto& buffer = buffers[index];
 		if (buffer.iov_len == 0) {
 			continue;
 		}
 		uint32_t bytes = 0;
-		file->f.Write(buffer.iov_base, static_cast<uint32_t>(buffer.iov_len), &bytes);
+		file->f.Write(io[index].Data(), static_cast<uint32_t>(buffer.iov_len), &bytes);
 		Common::DebugCounters::Add(Common::DebugCounters::Counter::GuestFileWriteBytes, bytes);
 		bytes_written += bytes;
 		if (bytes < buffer.iov_len) {
@@ -1364,6 +1413,27 @@ int KYTY_SYSV_ABI KernelFtruncate(int d, int64_t length) {
 	LOGF("\tFtruncate (size = %" PRId64 ") file: %s\n", length,
 	     Common::PathToString(file->real_name).c_str());
 
+	return OK;
+}
+
+int KYTY_SYSV_ABI KernelFsync(int d) {
+	PRINT_NAME();
+
+	if (d < DESCRIPTOR_MIN) {
+		return KERNEL_ERROR_EBADF;
+	}
+
+	auto* file = g_files->GetFile(d);
+	if (file == nullptr || !file->opened) {
+		return KERNEL_ERROR_EBADF;
+	}
+
+	Common::LockGuard lock(file->mutex);
+	if (file->f.IsInvalid() || !file->f.Flush()) {
+		return KERNEL_ERROR_EIO;
+	}
+
+	LOGF("\tFsync: %s\n", Common::PathToString(file->real_name).c_str());
 	return OK;
 }
 

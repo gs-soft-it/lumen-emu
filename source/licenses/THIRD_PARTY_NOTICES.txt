@@ -141,3 +141,37 @@ shared by Android Gen4 and direct Gen5. The e17fdf9 FEX pin above covers
 the retained legacy/facade paths. The manifest
 records the exact notice bytes. Host adapters are modified source, not an
 unmodified upstream binary release.
+
+Metal software tessellator
+--------------------------
+The Metal tessellation/cull-distance fallback includes a modified MSL port of
+Mesa 26.1.0 src/poly/cl/tessellator.h and the associated parameter wrappers.
+The algorithm is the Microsoft D3D11 Fixed Function Tessellator Reference
+(May 7, 2012). Original source SHA-256:
+dc643777f906c66a6dac79d7f738179076501121a575598a1e7225ab3b694005.
+Source: https://gitlab.freedesktop.org/mesa/mesa/-/tree/mesa-26.1.0/src/poly
+The local adaptation uses Metal address spaces and bounded GPU allocations;
+it is not an unmodified Mesa component. Original algorithm and wrappers use
+MIT terms. Copyright (c) Microsoft Corporation.
+Wrapper definitions: Copyright 2024 Valve Corporation.
+Complete retained MIT terms:
+
+Copyright (c) Microsoft Corporation
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.

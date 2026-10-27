@@ -10,6 +10,7 @@
 // and dynamic module invalidation, which its narrow harness API does not expose.
 #include "../../src/core/fex/fex_guest_engine_direct.cpp"
 #include <Interface/Context/Context.h>
+#include <type_traits>
 
 namespace Lumen::Ps5::DirectFex {
 bool HandleHostSignal(int signal, siginfo_t* info, void* context) noexcept {
@@ -19,7 +20,16 @@ namespace {
 using Engine = Core::Fex::GuestEngine;
 using NativeThread = FEXCore::Core::InternalThreadState;
 constexpr std::uint64_t ProbeOperation = 0xfffffffffffffff0ULL;
-constexpr std::size_t PageSize = 4096;
+constexpr std::size_t GuestPageSize = 4096;
+#if defined(__APPLE__)
+constexpr std::size_t RequiredHostPageSize = 16384;
+// These are x86 instruction bytes for the decoder, never native ARM64 code.
+// Keep them outside MAP_JIT and seal them read-only before publication.
+constexpr int GuestCodeProtection = PROT_READ;
+#else
+constexpr std::size_t RequiredHostPageSize = 4096;
+constexpr int GuestCodeProtection = PROT_READ | PROT_EXEC;
+#endif
 
 struct Root {
     LumenAndroidFexCoreGuestStateV1* state {};
@@ -30,12 +40,19 @@ struct Root {
     Root* parent {};
     std::uint32_t failure {};
 };
-thread_local Root* activeRoot {};
-thread_local bool probing {};
-thread_local unsigned mutationDepth {};
-thread_local Core::GuestCpu::HleCallFrame* activeHleFrame {};
-thread_local std::optional<HleContext> pendingHleContext;
-thread_local const HostTargetRecord* activeHostTarget {};
+struct ThreadState {
+    Root* activeRoot {};
+    bool probing {};
+    unsigned mutationDepth {};
+    Core::GuestCpu::HleCallFrame* activeHleFrame {};
+    std::optional<HleContext> pendingHleContext;
+    const HostTargetRecord* activeHostTarget {};
+};
+// Keep dynamic TLS compatible with a runtime loaded after native threads exist,
+// but resolve its address only once when a bridge operation uses several fields.
+// The optional stays disengaged and needs no TLS constructor or exit callback.
+static_assert(std::is_trivially_destructible_v<ThreadState>);
+constinit thread_local ThreadState threadState;
 
 class Bridge final : public Core::Fex::GuestBridge {
 public:
@@ -163,11 +180,11 @@ std::optional<Core::GuestExecutionRange> Bridge::QueryExecutableRange(std::uintp
         std::lock_guard lock(runtime.veneersMutex);
         for (const auto& [target, veneer] : runtime.veneers) {
             (void)target;
-            if (Contains(veneer.address, PageSize, address))
-                return Core::GuestExecutionRange {veneer.address, PageSize, true, false};
+            if (Contains(veneer.address, GuestPageSize, address))
+                return Core::GuestExecutionRange {veneer.address, GuestPageSize, true, false};
         }
     }
-    for (auto* root = activeRoot; root != nullptr; root = root->parent) {
+    for (auto* root = threadState.activeRoot; root != nullptr; root = root->parent) {
         std::uint64_t base {}, size {};
         std::uint32_t writable {};
         if (root->query(root->opaque, address, &base, &size, &writable) == 1 &&
@@ -178,12 +195,13 @@ std::optional<Core::GuestExecutionRange> Bridge::QueryExecutableRange(std::uintp
 }
 
 Core::Fex::EngineResult<bool> Bridge::Invoke(Core::GuestCpu::HleCallFrame& frame) {
-    if (probing && frame.operation == ProbeOperation) {
+    auto& tls = threadState;
+    if (tls.probing && frame.operation == ProbeOperation) {
         frame.gpr[0] = 42;
         Data().status.hostBridgeExecuted = 1;
         return true;
     }
-    auto* root = activeRoot;
+    auto* root = tls.activeRoot;
     if (root == nullptr) return Core::Fex::EngineFailure {Core::Fex::EngineStage::Bridge, EPERM};
     auto& runtime = Data();
     const auto* indexedTarget = runtime.indexedHostCalls
@@ -210,28 +228,29 @@ Core::Fex::EngineResult<bool> Bridge::Invoke(Core::GuestCpu::HleCallFrame& frame
     LumenAndroidFexCoreSimdViewV2 simd {
         sizeof(simd), 16, 16, 16, reinterpret_cast<std::uint8_t*>(frame.xmm.data())};
     struct FrameScope {
+        ThreadState& tls;
         Core::GuestCpu::HleCallFrame* previous;
         std::optional<HleContext> previousPending;
         const HostTargetRecord* previousTarget;
-        FrameScope(Core::GuestCpu::HleCallFrame& current, const HostTargetRecord* target)
-            : previous(activeHleFrame), previousPending(std::move(pendingHleContext)),
-              previousTarget(activeHostTarget) {
-            activeHleFrame = &current;
-            pendingHleContext.reset();
-            activeHostTarget = target;
+        FrameScope(ThreadState& state, Core::GuestCpu::HleCallFrame& current, const HostTargetRecord* target)
+            : tls(state), previous(tls.activeHleFrame), previousPending(std::move(tls.pendingHleContext)),
+              previousTarget(tls.activeHostTarget) {
+            tls.activeHleFrame = &current;
+            tls.pendingHleContext.reset();
+            tls.activeHostTarget = target;
         }
         ~FrameScope() {
-            activeHleFrame = previous;
-            pendingHleContext = std::move(previousPending);
-            activeHostTarget = previousTarget;
+            tls.activeHleFrame = previous;
+            tls.pendingHleContext = std::move(previousPending);
+            tls.activeHostTarget = previousTarget;
         }
-    } frameScope(frame, indexedTarget);
+    } frameScope(tls, frame, indexedTarget);
     const auto disposition = root->host2 != nullptr
         ? root->host2(root->opaque, target, frame.gpr.data(), &simd, &next)
         : root->host1(root->opaque, target, frame.gpr.data(), &next);
-    if (pendingHleContext && (disposition == LUMEN_ANDROID_FEXCORE_HOST_CALL_CONTINUE_V1 ||
+    if (tls.pendingHleContext && (disposition == LUMEN_ANDROID_FEXCORE_HOST_CALL_CONTINUE_V1 ||
                               disposition == LUMEN_ANDROID_FEXCORE_HOST_CALL_RETURN_GUEST_V1)) {
-        const auto& saved = *pendingHleContext;
+        const auto& saved = *tls.pendingHleContext;
         if (saved.reset_simd && frame.reset_simd) frame.reset_simd(frame.reset_simd_context);
         std::copy(std::begin(saved.gprs), std::end(saved.gprs), frame.gpr.begin());
         std::memcpy(frame.xmm.data(), saved.xmm, sizeof(saved.xmm));
@@ -278,7 +297,7 @@ void Initialize() {
         return;
     }
     runtime.status.hostPageSize = static_cast<std::uint32_t>(sysconf(_SC_PAGESIZE));
-    if (runtime.status.hostPageSize != PageSize) {
+    if (runtime.status.hostPageSize != RequiredHostPageSize) {
         runtime.status.code = LUMEN_ANDROID_FEXCORE_RUNTIME_WRONG_PAGE_SIZE_V1;
         return;
     }
@@ -300,19 +319,19 @@ void Initialize() {
     runtime.status.hostBridgeReady = 1;
     // Same direct syscall boundary as Gen4; this original fixture proves it
     // without publishing capabilities for facade safepoints or PS5 exceptions.
-    Core::Fex::Mapping code(PageSize, PROT_READ | PROT_WRITE);
-    Core::Fex::Mapping stack(PageSize, PROT_READ | PROT_WRITE);
+    Core::Fex::Mapping code(RequiredHostPageSize, PROT_READ | PROT_WRITE);
+    Core::Fex::Mapping stack(RequiredHostPageSize, PROT_READ | PROT_WRITE);
     if (!code.IsValid() || !stack.IsValid()) return;
     std::array<std::uint8_t, 13> bytes {0x48, 0xb8};
     std::memcpy(bytes.data() + 2, &ProbeOperation, 8);
     bytes[10] = 0x0f; bytes[11] = 0x05; bytes[12] = 0xf4;
     std::memcpy(code.Get(), bytes.data(), bytes.size());
-    if (std::holds_alternative<Core::Fex::EngineFailure>(code.Protect(PROT_READ | PROT_EXEC))) return;
+    if (std::holds_alternative<Core::Fex::EngineFailure>(code.Protect(GuestCodeProtection))) return;
     Core::GuestExecutionRequest request;
     request.Rip = reinterpret_cast<std::uintptr_t>(code.Get());
-    request.Rsp = reinterpret_cast<std::uintptr_t>(stack.Get()) + PageSize - 8;
-    request.MappedRanges = {{request.Rip, PageSize, true, false},
-        {reinterpret_cast<std::uintptr_t>(stack.Get()), PageSize, false, true}};
+    request.Rsp = reinterpret_cast<std::uintptr_t>(stack.Get()) + GuestPageSize - 8;
+    request.MappedRanges = {{request.Rip, GuestPageSize, true, false},
+        {reinterpret_cast<std::uintptr_t>(stack.Get()), GuestPageSize, false, true}};
     auto made = runtime.engine->CreateThread(request);
     if (const auto* failure = std::get_if<Core::Fex::EngineFailure>(&made)) {
         runtime.status.code = FailureCode(*failure);
@@ -320,9 +339,10 @@ void Initialize() {
     }
     auto* thread = std::get<Engine::Thread*>(made);
     runtime.context = static_cast<FEXCore::Context::Context*>(thread->Native->CTX);
-    probing = true;
+    auto& tls = threadState;
+    tls.probing = true;
     auto result = runtime.engine->Run(*thread);
-    probing = false;
+    tls.probing = false;
     const auto* executed = std::get_if<Core::GuestExecutionState>(&result);
     const bool passed = executed != nullptr && executed->Gpr[0] == 42 && runtime.status.hostBridgeExecuted;
     {
@@ -330,8 +350,8 @@ void Initialize() {
         // translated blocks between threads, so a subsequent mmap at this
         // address must not execute the probe's cached syscall.
         std::scoped_lock lock(runtime.context->GetCodeInvalidationMutex());
-        runtime.context->InvalidateCodeBuffersCodeRange(request.Rip, PageSize);
-        runtime.context->InvalidateThreadCachedCodeRange(thread->Native, request.Rip, PageSize);
+        runtime.context->InvalidateCodeBuffersCodeRange(request.Rip, GuestPageSize);
+        runtime.context->InvalidateThreadCachedCodeRange(thread->Native, request.Rip, GuestPageSize);
     }
     runtime.engine->DestroyThread(thread);
     if (!passed) {
@@ -385,14 +405,19 @@ std::uint32_t Run(LumenAndroidFexCoreGuestStateV1* state,
     LumenAndroidFexCoreHostCallV1 host1, LumenAndroidFexCoreHostCallV2 host2,
     LumenAndroidFexCoreExecutableQueryV1 query, void* opaque,
     const Core::GuestExecutionRange* ownedStack = nullptr) {
+    auto& tls = threadState;
     if (state == nullptr || state->structSize != sizeof(*state) || state->abiVersion != 1 ||
-        state->rip == 0 || query == nullptr || (host1 == nullptr && host2 == nullptr) || mutationDepth != 0)
+        state->rip == 0 || query == nullptr || (host1 == nullptr && host2 == nullptr) || tls.mutationDepth != 0)
         return LUMEN_ANDROID_FEXCORE_RUNTIME_INVALID_ARGUMENT_V1;
     if (const auto code = Probe(); code != 0) return code;
     auto& runtime = Data();
-    Root root {state, host1, host2, query, opaque, activeRoot};
-    struct RestoreRoot { Root* previous; ~RestoreRoot() { activeRoot = previous; } } restore {activeRoot};
-    activeRoot = &root;
+    Root root {state, host1, host2, query, opaque, tls.activeRoot};
+    struct RestoreRoot {
+        ThreadState& tls;
+        Root* previous;
+        ~RestoreRoot() { tls.activeRoot = previous; }
+    } restore {tls, tls.activeRoot};
+    tls.activeRoot = &root;
     const auto executable = runtime.bridge.QueryExecutableRange(state->rip);
     if (!executable || executable->Writable) return LUMEN_ANDROID_FEXCORE_RUNTIME_EXECUTABLE_RANGE_DENIED_V1;
     if (root.parent != nullptr) {
@@ -413,11 +438,16 @@ std::uint32_t Run(LumenAndroidFexCoreGuestStateV1* state,
         Core::Fex::BridgeSyscallHandler::InvocationScope scope {
             *Core::Fex::ActiveFexExecution.Syscalls, invocation, native};
         struct NestedGuestScope {
-            Core::GuestCpu::HleCallFrame* parent = activeHleFrame;
-            const HostTargetRecord* parentTarget = activeHostTarget;
-            NestedGuestScope() { activeHleFrame = nullptr; activeHostTarget = nullptr; }
-            ~NestedGuestScope() { activeHleFrame = parent; activeHostTarget = parentTarget; }
-        } nested_guest;
+            ThreadState& tls;
+            Core::GuestCpu::HleCallFrame* parent;
+            const HostTargetRecord* parentTarget;
+            explicit NestedGuestScope(ThreadState& state)
+                : tls(state), parent(tls.activeHleFrame), parentTarget(tls.activeHostTarget) {
+                tls.activeHleFrame = nullptr;
+                tls.activeHostTarget = nullptr;
+            }
+            ~NestedGuestScope() { tls.activeHleFrame = parent; tls.activeHostTarget = parentTarget; }
+        } nested_guest {tls};
         context->HandleCallback(native, state->rip);
         CopyResult(*state, frame);
         CopyArchitecturalState(frame, saved);
@@ -438,10 +468,10 @@ std::uint32_t Run(LumenAndroidFexCoreGuestStateV1* state,
             !Contains(stack.Begin, stack.Size, request.Rsp))
             return LUMEN_ANDROID_FEXCORE_RUNTIME_INVALID_ARGUMENT_V1;
         const auto end = stack.Begin + stack.Size;
-        if (end > UINT64_MAX - (PageSize - 1))
+        if (end > UINT64_MAX - (GuestPageSize - 1))
             return LUMEN_ANDROID_FEXCORE_RUNTIME_INVALID_ARGUMENT_V1;
-        const auto pageBegin = stack.Begin & ~std::uint64_t {PageSize - 1};
-        const auto pageEnd = (end + PageSize - 1) & ~std::uint64_t {PageSize - 1};
+        const auto pageBegin = stack.Begin & ~std::uint64_t {GuestPageSize - 1};
+        const auto pageEnd = (end + GuestPageSize - 1) & ~std::uint64_t {GuestPageSize - 1};
         // Validate only pages belonging to the actual guest stack. Capturing a
         // coalesced host VMA here also includes unrelated stacks whose guards
         // another guest thread can protect before CreateThread revalidates it.
@@ -483,10 +513,11 @@ std::uint32_t Run(LumenAndroidFexCoreGuestStateV1* state,
     Core::Fex::EngineResult<Core::GuestExecutionState> result;
     pthread_cleanup_push([](void* opaque) {
         auto* cleanup = static_cast<NativeExitCleanup*>(opaque);
-        activeRoot = nullptr;
-        activeHleFrame = nullptr;
-        activeHostTarget = nullptr;
-        pendingHleContext.reset();
+        auto& tls = threadState;
+        tls.activeRoot = nullptr;
+        tls.activeHleFrame = nullptr;
+        tls.activeHostTarget = nullptr;
+        tls.pendingHleContext.reset();
         Core::Fex::ActiveFexExecution = {};
         std::lock_guard lock(cleanup->runtime->threadsMutex);
         cleanup->runtime->threads.erase(cleanup->thread);
@@ -509,7 +540,7 @@ std::uint32_t Run(LumenAndroidFexCoreGuestStateV1* state,
 } // namespace
 
 bool CaptureHleContext(HleContext* output) noexcept {
-    const auto* frame = activeHleFrame;
+    const auto* frame = threadState.activeHleFrame;
     if (output == nullptr || frame == nullptr || frame->gpr[4] == 0 ||
         frame->gpr[4] > UINT64_MAX - 8 || frame->callret_sp > UINT64_MAX - 16) return false;
     output->reset_simd = false;
@@ -526,9 +557,10 @@ bool CaptureHleContext(HleContext* output) noexcept {
 }
 
 bool SwitchHleContext(const HleContext& context) noexcept {
-    if (activeHleFrame == nullptr || context.rip == 0 || context.gprs[4] == 0 ||
+    auto& tls = threadState;
+    if (tls.activeHleFrame == nullptr || context.rip == 0 || context.gprs[4] == 0 ||
         !Data().bridge.QueryExecutableRange(context.rip)) return false;
-    pendingHleContext = context;
+    tls.pendingHleContext = context;
     return true;
 }
 
@@ -550,10 +582,10 @@ const char* Receipt() noexcept {
         std::snprintf(Data().receipt.data(), Data().receipt.size(),
             "LUMEN_PS5_DIRECT_FEX_RUNTIME_V1 ready=%u pin=f2b679f6 engine=gen4-direct "
             "maxInst=%llu maxInstOptIn=%u multiBlock=%u tso=%u halfBarrierTso=%u vectorTso=%u "
-            "veneerCache=%u hostPages=4096 diskCache=0 facade=0 mutationSafepoint=0 "
+            "veneerCache=%u hostPages=%u diskCache=0 facade=0 mutationSafepoint=0 "
             "guestExceptions=unqualified hle=syscall-ps5-abi fallback=0 "
             "performanceValid=%u fastSignalCheck=%u srtArm64=%u hleIndexedDispatch=%u asyncPipelineCache=%u "
-            "barycentricFallbackRequested=%u filesystemCaseCache=%u releaseMemBatch=%u uniformMetadata=%u",
+            "barycentricFallbackRequested=%u filesystemCaseCache=%u releaseMemBatch=%u uniformMetadata=%u vmAccessQuery=%u srtExactReadback=%u",
             code == 0 ? 1U : 0U,
             code == 0 ? static_cast<unsigned long long>(FEXCore::Config::Get_MAXINST()()) : 0ULL,
             Data().maxInstOptIn,
@@ -562,6 +594,7 @@ const char* Receipt() noexcept {
             code == 0 ? static_cast<unsigned>(FEXCore::Config::Get_HALFBARRIERTSOENABLED()()) : 0U,
             code == 0 ? static_cast<unsigned>(FEXCore::Config::Get_VECTORTSOENABLED()()) : 0U,
             Data().veneerCacheEnabled ? 1U : 0U,
+            Data().status.hostPageSize,
             DirectPerformance::Get().valid ? 1U : 0U,
             DirectPerformance::Get().fast_signal_check ? 1U : 0U,
             DirectPerformance::Get().srt_arm64 ? 1U : 0U,
@@ -570,7 +603,9 @@ const char* Receipt() noexcept {
             DirectPerformance::Get().barycentric_fallback ? 1U : 0U,
             DirectPerformance::Get().filesystem_case_cache ? 1U : 0U,
             DirectPerformance::Get().release_mem_batch ? 1U : 0U,
-            DirectPerformance::Get().uniform_metadata ? 1U : 0U);
+            DirectPerformance::Get().uniform_metadata ? 1U : 0U,
+            DirectPerformance::Get().vm_access_query ? 1U : 0U,
+            DirectPerformance::Get().srt_exact_readback ? 1U : 0U);
     });
     return Data().receipt.data();
 }
@@ -580,9 +615,9 @@ bool QueryOwnedExecutable(std::uint64_t address, std::uint64_t* base, std::uint6
     auto& runtime = Data();
     std::lock_guard lock(runtime.veneersMutex);
     for (const auto& [target, veneer] : runtime.veneers) {
-        if (Contains(veneer.address, PageSize, address)) {
+        if (Contains(veneer.address, GuestPageSize, address)) {
             *base = veneer.address;
-            *size = PageSize;
+            *size = GuestPageSize;
             return true;
         }
     }
@@ -598,7 +633,8 @@ bool RegisterHostTarget(std::uint64_t target, const void* binding) noexcept {
             return existing->second.Bind(binding);
         const auto operation = runtime.indexedHostCalls ? runtime.nextOperation : target;
         if (runtime.indexedHostCalls && operation >= HostCallTable::Capacity) return false;
-        void* page = mmap(nullptr, PageSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void* page = mmap(nullptr, RequiredHostPageSize, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (page == MAP_FAILED) return false;
         // Gen4 syscall veneer plus a private RAX slot for PS5 variadic calls
         // and a dynamic continuation for the existing PS5 HLE dispositions.
@@ -607,18 +643,21 @@ bool RegisterHostTarget(std::uint64_t target, const void* binding) noexcept {
             0x0f,0x05, 0x41,0xff,0xe3, 0xc3};
         std::memcpy(bytes.data() + 6, &operation, 8);
         std::memcpy(page, bytes.data(), bytes.size());
-        if (mprotect(page, PageSize, PROT_READ | PROT_EXEC) != 0) { munmap(page, PageSize); return false; }
+        if (mprotect(page, RequiredHostPageSize, GuestCodeProtection) != 0) {
+            munmap(page, RequiredHostPageSize);
+            return false;
+        }
         try {
             auto [entry, inserted] = runtime.veneers.try_emplace(target, target,
                 reinterpret_cast<std::uint64_t>(page), binding);
             if (!inserted || (runtime.indexedHostCalls &&
                 !runtime.indexedHostCalls->Publish(operation, &entry->second))) {
                 if (inserted) runtime.veneers.erase(entry);
-                munmap(page, PageSize);
+                munmap(page, RequiredHostPageSize);
                 return false;
             }
         } catch (...) {
-            munmap(page, PageSize);
+            munmap(page, RequiredHostPageSize);
             return false;
         }
         if (runtime.indexedHostCalls) ++runtime.nextOperation;
@@ -627,8 +666,9 @@ bool RegisterHostTarget(std::uint64_t target, const void* binding) noexcept {
 }
 
 const void* ActiveHostTargetBinding(std::uint64_t target) noexcept {
-    return activeHostTarget && activeHostTarget->target == target
-        ? activeHostTarget->binding.load(std::memory_order_acquire) : nullptr;
+    const auto* activeTarget = threadState.activeHostTarget;
+    return activeTarget && activeTarget->target == target
+        ? activeTarget->binding.load(std::memory_order_acquire) : nullptr;
 }
 
 std::uint64_t ResolveHostTarget(std::uint64_t target) noexcept {
@@ -686,28 +726,31 @@ bool QueryGuestRipFromHostPc(std::uint64_t host_pc, std::uint64_t* guest_rip) no
     *guest_rip = execution.Context->RestoreRIPFromHostPC(execution.Thread, host_pc);
     return true;
 }
-bool IsActive() noexcept { return activeRoot != nullptr; }
+bool IsActive() noexcept { return threadState.activeRoot != nullptr; }
 bool CanCancelFromSignal() noexcept {
-    return activeRoot != nullptr && activeHleFrame == nullptr && mutationDepth == 0;
+    const auto& tls = threadState;
+    return tls.activeRoot != nullptr && tls.activeHleFrame == nullptr && tls.mutationDepth == 0;
 }
 
 bool BeginCodeMutation() noexcept {
-    if (mutationDepth != 0) { ++mutationDepth; return true; }
+    auto& tls = threadState;
+    if (tls.mutationDepth != 0) { ++tls.mutationDepth; return true; }
     if (Probe() != 0) return false;
     Data().threadsMutex.lock();
     Data().context->GetCodeInvalidationMutex().lock();
-    mutationDepth = 1;
+    tls.mutationDepth = 1;
     return true;
 }
 
 bool EndCodeMutation(std::uint64_t begin, std::uint64_t size, bool committed) noexcept {
-    if (mutationDepth == 0 || (committed && (size == 0 || begin > UINT64_MAX - size))) return false;
+    auto& tls = threadState;
+    if (tls.mutationDepth == 0 || (committed && (size == 0 || begin > UINT64_MAX - size))) return false;
     if (committed) {
         Data().context->InvalidateCodeBuffersCodeRange(begin, size);
         for (auto* thread : Data().threads)
             Data().context->InvalidateThreadCachedCodeRange(thread->Native, begin, size);
     }
-    if (--mutationDepth == 0) {
+    if (--tls.mutationDepth == 0) {
         Data().context->GetCodeInvalidationMutex().unlock();
         Data().threadsMutex.unlock();
     }

@@ -154,7 +154,9 @@ enum class ReadbackOrigin : uint64_t {
     GuestReadFault,
     GuestWriteFault,
     ColorMetadata,
-    Invalidation
+    Invalidation,
+    GuestMemoryRead,
+    GuestMemoryWrite
 };
 
 inline const char* ReadbackOriginName(ReadbackOrigin origin) noexcept {
@@ -163,6 +165,8 @@ inline const char* ReadbackOriginName(ReadbackOrigin origin) noexcept {
     case ReadbackOrigin::GuestWriteFault: return "guestWriteFault";
     case ReadbackOrigin::ColorMetadata: return "colorMetadata";
     case ReadbackOrigin::Invalidation: return "invalidation";
+    case ReadbackOrigin::GuestMemoryRead: return "guestMemoryRead";
+    case ReadbackOrigin::GuestMemoryWrite: return "guestMemoryWrite";
     default: return "other";
     }
 }
@@ -173,6 +177,15 @@ inline thread_local ReadbackOrigin readback_origin = ReadbackOrigin::Other;
 
 inline ReadbackOrigin CurrentReadbackOrigin() noexcept {
     return Enabled() ? Detail::readback_origin : ReadbackOrigin::Other;
+}
+
+inline ReadbackOrigin ReadbackOriginForFault(bool write) noexcept {
+    const auto current = CurrentReadbackOrigin();
+    // Attribute only the matching side of the API's copy. Its other pointer
+    // can also fault and must retain ordinary fault attribution.
+    const auto api_origin = write ? ReadbackOrigin::GuestMemoryWrite : ReadbackOrigin::GuestMemoryRead;
+    return current == api_origin ? current
+                                : write ? ReadbackOrigin::GuestWriteFault : ReadbackOrigin::GuestReadFault;
 }
 
 class ScopedReadbackOrigin final {
@@ -209,6 +222,8 @@ struct ReadbackSample {
     // counter. Excludes submission, priority callbacks and CPU publication.
     uint64_t native_wait_ns = 0;
     ReadbackOrigin origin = ReadbackOrigin::Other;
+    bool caller_gpu_thread = false;
+    bool requested_dirty = false;
 };
 
 struct ReadbackSnapshot {
@@ -221,7 +236,7 @@ struct ReadbackSnapshot {
 namespace Detail {
 struct AtomicReadbackSample {
     std::atomic<uint64_t> stamp {};
-    std::array<std::atomic<uint64_t>, 9> values {};
+    std::array<std::atomic<uint64_t>, 11> values {};
 };
 inline std::array<AtomicReadbackSample, ReadbackCapacity> readbacks {};
 inline std::atomic<uint64_t> readbacks_completed {};
@@ -237,10 +252,11 @@ inline void RecordReadback(ReadbackSample sample) noexcept {
     const auto steady_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count());
     auto& slot = Detail::readbacks[(sequence - 1) % ReadbackCapacity];
-    const std::array<uint64_t, 9> values {
+    const std::array<uint64_t, 11> values {
         steady_ns, sample.request_address, sample.request_size,
         sample.buffer_address, sample.buffer_size, sample.payload_bytes,
-        sample.staging_bytes, sample.native_wait_ns, static_cast<uint64_t>(sample.origin)
+        sample.staging_bytes, sample.native_wait_ns, static_cast<uint64_t>(sample.origin),
+        static_cast<uint64_t>(sample.caller_gpu_thread), static_cast<uint64_t>(sample.requested_dirty)
     };
     slot.stamp.store(sequence * 2 - 1);
     for (std::size_t i = 0; i < values.size(); ++i) slot.values[i].store(values[i]);
@@ -261,12 +277,13 @@ inline ReadbackSnapshot ReadReadbacks() noexcept {
         const auto& slot = Detail::readbacks[(sequence - 1) % ReadbackCapacity];
         const auto stamp = slot.stamp.load();
         if (stamp != sequence * 2) continue;
-        std::array<uint64_t, 9> values {};
+        std::array<uint64_t, 11> values {};
         for (std::size_t i = 0; i < values.size(); ++i) values[i] = slot.values[i].load();
         if (slot.stamp.load() != stamp) continue;
         result.samples[result.count++] = {
             sequence, values[0], values[1], values[2], values[3], values[4],
-            values[5], values[6], values[7], static_cast<ReadbackOrigin>(values[8])
+            values[5], values[6], values[7], static_cast<ReadbackOrigin>(values[8]),
+            values[9] != 0, values[10] != 0
         };
     }
     return result;

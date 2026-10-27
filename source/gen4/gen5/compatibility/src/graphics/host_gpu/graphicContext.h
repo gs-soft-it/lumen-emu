@@ -32,6 +32,7 @@ struct GraphicContext {
 	bool                               external_memory_host_enabled          = false;
 	uint64_t                           min_imported_host_pointer_alignment   = 0;
 	bool                               compute_subgroup_size_control_enabled = false;
+	bool                               fragment_subgroup_size_control_enabled = false;
 	bool                               sample_rate_shading_enabled           = false;
 	bool                               image_view_min_lod_enabled            = false;
 	bool                               shader_buffer_int64_atomics_enabled   = false;
@@ -96,6 +97,14 @@ struct GraphicContext {
 		return subgroup_size == 64u || compute_subgroup_size_control_enabled;
 	}
 
+	[[nodiscard]] uint32_t SelectFragmentSubgroupSize(uint32_t guest_wave) const noexcept {
+		if (guest_wave == 32u && fragment_subgroup_size_control_enabled &&
+		    guest_wave >= min_subgroup_size && guest_wave <= max_subgroup_size) {
+			return guest_wave;
+		}
+		return subgroup_size;
+	}
+
 	[[nodiscard]] vk::DeviceSize StorageMinAlignment() const {
 		const auto alignment = physical_device_properties.limits.minStorageBufferOffsetAlignment;
 		return alignment != 0 ? alignment : 1;
@@ -104,6 +113,7 @@ struct GraphicContext {
 	[[nodiscard]] bool CreateAllocator();
 	void               DestroyAllocator();
 	void               LogMemoryBudget() const;
+	void               RefreshMemoryBudget(uint32_t frame_index) const;
 	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
 	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
 	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;

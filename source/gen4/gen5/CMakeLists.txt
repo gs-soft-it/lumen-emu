@@ -19,6 +19,13 @@ if(NOT LUMEN_PS5_FEXCORE)
   return()
 endif()
 
+if(APPLE AND LUMEN_PS5_DIRECT_FEX)
+  # Standalone callers select the same source-owned direct engine as the
+  # root's isolated build. Never silently substitute the facade provider.
+  add_subdirectory(compatibility full-engine)
+  return()
+endif()
+
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   set(MACOS TRUE)
   set(LUMEN_MACOS_FEXCORE_RUNTIME ON)

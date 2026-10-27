@@ -6,11 +6,11 @@
 
 <p align="center"><strong>Console worlds. New horizons.</strong></p>
 
-Experimental **PS4 and PS5 emulation for Android**, with **macOS (Apple Silicon) and iOS versions in development**, by **GS-Soft**. This page presents the full Lumen Emu application, including its dashboard, alongside the public emulator-core sources.
+Experimental **PS4 and PS5 emulation for Android**, with a **macOS (Apple Silicon) version in development**, by **GS-Soft**. This page presents the full Lumen Emu application, including its dashboard, alongside the public emulator-core sources.
 
 <p align="center">
   <a href="https://lumen-emu.com"><strong>Official website</strong></a> ·
-  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.1-spike-fexlab/lumenemu-0.1.1-spike-fexlab-v2.apk"><strong>Download Android APK</strong></a> ·
+  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.2-spike-fexlab/lumenemu-0.1.2-spike-fexlab-v3.apk"><strong>Download Android APK</strong></a> ·
   <a href="https://lumen-emu.com/support/"><strong>Support development</strong></a> ·
   <a href="#compatibility"><strong>Compatibility list</strong></a> ·
   <a href="#prepare-the-source"><strong>Build the cores</strong></a>
@@ -24,15 +24,15 @@ Lumen Emu brings PS4 and PS5 software into one Android library. Its dashboard pr
 
 | Feature | Application experience |
 | --- | --- |
-| Dashboard and library | Browse prepared PS4 and PS5 content in one Android interface. |
+| Dashboard and library | Import and browse prepared PS4 and PS5 content in one Android interface. |
 | Touch controls | Shared controls with one virtual joystick, an opaque menu and a centred 16:9 game surface. |
 | Physical controllers | Compatible Bluetooth and USB-C gamepads; DualSense and Xbox Series X\|S controllers have been tested by the developer. |
 | Graphics drivers | A custom Turnip Mojo/Bionic path for compatible Snapdragon/Adreno devices, with a selectable system Vulkan driver. Non-Snapdragon or unidentified chipsets automatically use the system driver. |
-| Included benchmark | SUCCI, a homebrew demo benchmark, helps assess the phone's performance. |
+| Included benchmark | SUCCI, a homebrew demo benchmark, helps assess the phone's performance and shows the active graphics driver in its result. |
 
 Development currently focuses on Snapdragon smartphones because available test hardware is limited. The system-driver path is reported to be slower; performance depends on the device, driver, game and emulator build. A custom-driver loading failure stops startup rather than silently selecting another driver.
 
-**Mac (Apple Silicon) and iOS application versions are coming soon.** No Mac or iOS application binary is offered by this repository. Its iOS source build currently exposes CPU/VM components, as described in the build instructions below.
+**The macOS (Apple Silicon) application remains in development.** No Mac or iOS application binary is offered by this repository. iOS is outside the active development and release plan; its retained legacy source build exposes CPU/VM components, as described below.
 
 ### App preview
 
@@ -65,13 +65,17 @@ The Android package includes **SUCCI** to test the phone's performance. Its indi
 
 ### Content and hardware
 
-The application reads **already-extracted ROMs**; it does not open, extract or install PKG files. Prepare content you are legally authorised to use before selecting its folder. No commercial games, firmware, BIOS files or keys are provided. See the [content requirements and responsible-use information](https://lumen-emu.com/legal/).
+The application reads **already-extracted ROMs**; it does not open, extract or install PKG files. Prepare content you are legally authorised to use before selecting its library folder. No commercial games, firmware, BIOS files or keys are provided. See the [content requirements and responsible-use information](https://lumen-emu.com/legal/).
+
+From version **0.1.2**, select the complete prepared library with Android's system folder picker. After checking its estimated size and available space, the app copies it into private storage. Allow enough free space for this copy. The original folder remains unchanged and can be disconnected after import. A new import creates a separate library, without merging or automatically synchronising later changes from the source. Existing shared-storage selections require an explicit re-import; the app no longer requests access to all files on the device.
 
 Use a suitably powerful device with adequate cooling, and stop if it becomes excessively hot or shows a temperature warning. Android gaming consoles have not yet been tested. See the [hardware guidance](https://lumen-emu.com/legal/#hardware-safety).
 
 ## Compatibility
 
-**8 reported games · 4 playable · 2 almost playable · 2 boots only**
+**Historical reports: 8 games · 4 playable · 2 almost playable · 2 boots only**
+
+The table below preserves the previously published tests of version 0.1.0. It is not a new compatibility claim for version 0.1.2.
 
 [Open the full compatibility list and report form](https://lumen-emu.com/compatibility/).
 
@@ -106,7 +110,7 @@ A contribution does not guarantee a requested feature, game or device compatibil
 
 ## Public source scope
 
-The emulator-core sources are public at [gs-soft-it/lumen-emu](https://github.com/gs-soft-it/lumen-emu), starting from a snapshot exported on 23 October 2026 without the original project's Git history. **Documenting and showing the full application above does not include its dashboard or application-shell sources in this repository.**
+The emulator-core sources are public at [gs-soft-it/lumen-emu](https://github.com/gs-soft-it/lumen-emu), starting from a snapshot exported on 23 October 2026 without the original project's Git history, and updated on **27 October 2026** from source revision `d4040176`. **Documenting and showing the full application above does not include its dashboard or application-shell sources in this repository.**
 
 Included: emulator engines, CPU translation and virtual memory, rendering, native host bridges, build scripts, dependency locks, local patches, tests and licence records. Runtime input, IME and in-game guest dialogs remain part of the core.
 
@@ -125,17 +129,23 @@ The Lumen dashboard, game-library UI, Android Java/resources/Gradle application,
 
 ## Android download
 
-**Latest update — 0.1.1-spike-fexlab (version code 2):** fixes a PS5 startup failure on Adreno 730 devices by enabling Vulkan `shaderBufferInt64Atomics` only when supported, checks shader requirements before use and improves fatal-error diagnostics. See the [changelog](CHANGELOG.md) for details and the limits of the reported device tests.
+**Latest update — 0.1.2-spike-fexlab (version code 3):** imports the prepared library through Android's folder picker into private storage, removes broad storage permissions, includes current memory/shader/rendering and Android surface-recovery fixes, and identifies the active graphics driver in the benchmark result. See the [changelog](CHANGELOG.md) for package verification and testing limits.
 
-**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.1-spike-fexlab/lumenemu-0.1.1-spike-fexlab-v2.apk)** ([experimental release 0.1.1-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.1-spike-fexlab)). Requires Android 15/API 35 or newer and an ARM64 device (`arm64-v8a`). This project-provided APK is the only application binary offered here. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
+**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.2-spike-fexlab/lumenemu-0.1.2-spike-fexlab-v3.apk)** ([experimental release 0.1.2-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.2-spike-fexlab)). Requires Android 15/API 35 or newer and an ARM64 device (`arm64-v8a`). This project-provided APK is the only application binary offered here. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
+
+The APK has the same signing certificate as the previous GitHub download. Its SHA-256 is:
+
+```text
+d70d03dff98ce73b3e77a45f6d1802ccbc6e59024ac30b6a457490688e301a9d
+```
 
 ## Prepare the source
 
 Use Git, Python 3, CMake 3.25 or newer, Ninja and a suitable native/cross C/C++ toolchain. The Gen4 engine uses C++23; the macOS dependency workflow calls for Python 3.12 or newer. Apple targets require Xcode and its platform SDKs. Android requires an NDK supporting API 35.
 
 ```sh
-git clone https://github.com/gs-soft-it/lumen-emu.git
-cd lumen-emu
+git clone https://github.com/gs-soft-it/lumen-emu.git lumen-core
+cd lumen-core
 python3 tools/prepare_source_dependencies.py
 python3 tools/prepare_source_dependencies.py --check
 ```
@@ -192,7 +202,7 @@ cmake --build build/android-arm64 \
 
 The PS4 library is staged at `build/android-arm64/gen4-stage/arm64-v8a/liblumen_android_gen4.so`; the PS5 target produces `liblumen_android_ps5.so` in its CMake output tree. Additional JNI glue is available as `lumen_android_spike`. These libraries alone are not an Android application. Optional AdrenoTools support needs the separately prepared, verified source closure described by [prepare-ps5-adrenotools.py](android/scripts/prepare-ps5-adrenotools.py).
 
-### iOS ARM64: CPU/VM components only
+### iOS ARM64: retained legacy CPU/VM components only
 
 The retained iOS entry point builds standalone CPU and virtual-memory components. It does **not** build a complete PS4/PS5 iOS emulator or an IPA. `LUMEN_WITH_IOS_RUNTIME=ON` is explicitly rejected because the required application shell is excluded; the PS5 FEX embedding supports macOS/Android ARM64 only.
 
@@ -225,7 +235,7 @@ The example uses POSIX line continuation; in PowerShell put the configure comman
 
 ## Validation and limitations
 
-The export record reports CMake parsing, the native Metal build graph, source-manifest paths and dependency-bootstrap checks. It explicitly records that a full compilation and game execution were **not** performed for the export. Platform support, runtime correctness and individual game compatibility need separate validation on the target hardware.
+The initial export recorded CMake parsing, the native Metal build graph, source-manifest paths and dependency-bootstrap checks. The 27 October update preserves the core-only adaptations and records its source-selection and integrity checks in [SOURCE_SNAPSHOT.json](SOURCE_SNAPSHOT.json). A full clean compilation and game execution were **not** repeated for this public source export. The separately built Android package has its own checks and limitations in the [changelog](CHANGELOG.md). Platform support, runtime correctness and individual game compatibility need separate validation on the target hardware.
 
 [CONTENTS.sha256](CONTENTS.sha256) records exported file bytes. Check it with `sha256sum -c CONTENTS.sha256` where available, or `shasum -a 256 -c CONTENTS.sha256` on macOS. This is an integrity check, not a build test; line-ending conversion or local edits can change hashes. The separately downloaded sources are checked by the dependency bootstrap.
 

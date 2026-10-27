@@ -2,13 +2,14 @@
   "schema_version": 1,
   "repository": "https://github.com/KytyPS5/KytyPS5.git",
   "revision": "fe3857a1715551e4f554b2ec29cc1ca3286287a1",
-  "scope": "Complete PS5 runtime core, renderer, memory and services for Android direct FEX; desktop launcher and updater excluded.",
+  "scope": "Complete PS5 runtime core, renderer, memory and services for Android and native macOS direct FEX with a shared static Metal backend; desktop dashboard and updater excluded.",
   "license": "GPL-2.0-only",
   "cpu_engine": {
     "source": "source/gen4/src/core/fex/fex_guest_engine_direct.cpp",
     "upstream_modified": false,
-    "sha256": "01e6c77f943d285d50760fc9ab519b50585aa941a8d6e043ba6936d587ab313e",
-    "fex_revision": "f2b679f6028ce1c38875233aecfcf5d3f8ebecec"
+    "sha256": "6474e06688b3cedfc0a3306791ff47e04c56d9aad678bd7d553060c9ad39cb7b",
+    "fex_revision": "f2b679f6028ce1c38875233aecfcf5d3f8ebecec",
+    "darwin_host_adaptation": "Mach VM inventory preserves current permissions across concurrent adjacent-region coalescing; no FEX vendor modification."
   },
   "host_adaptations": [
     "Android ARM64 signal context, guarded native crash diagnostics and original GPU fault handling",
@@ -23,13 +24,36 @@
     "Mesh barycentric coordinates and raw corners use shared vertex staging and per-primitive data within device limits; compact center interpolation uses viewport/FragCoord reconstruction, while centroid, sample and dual-mode coordinates retain homogeneous varyings",
     "Build, localization and correctness fixtures",
     "Default-enabled bounded case-insensitive directory indexes avoid repeated full scans for negative path probes; exact-case lookup, metadata validation and namespace invalidation are preserved, with an explicit zero rollback",
-    "Optional on-demand render timing separates native queue submission, queue locking and renderer/completion waits without enabling per-frame logs or changing synchronization",
+    "Optional on-demand render timing separates native queue submission, queue locking and renderer/completion waits without enabling per-frame logs or changing synchronization; matching ReadGuestMemory/WriteGuestMemory faults have distinct diagnostic origins from other watched accesses",
     "Default-enabled bounded RELEASE_MEM submission batching preserves packet-order callbacks and flushes at waits, host work, flips, indirect execution and command-stream boundaries",
     "Native video plane publication executes atomically on the renderer owner after retiring prior GPU ownership, while texture edge tracking preserves CPU invalidation baselines",
     "Default-enabled proven uniform GPU metadata avoids synchronous color metadata downloads while preserving ordered GPU writes, alias and backing generation checks, conservative invalidation and explicit zero rollback",
     "Audio sample-clock recovery discards lateness beyond one block, preserving sub-block jitter and fractional cadence without repeatedly consuming a stale guest ring after burst device backpressure",
     "Android direct-FEX native builds outside Debug omit Tracy profiler instrumentation; disabled lifecycle functions and macros retain no Tracy references or argument evaluation, while Debug, desktop and legacy defaults remain unchanged",
-    "Device-qualified optional buffer 64-bit atomics with guest shader requirement checks, including shared-memory storage-buffer lowering; Android fatal errors remain visible in logcat when ordinary diagnostics are disabled"
+    "Device-qualified optional buffer 64-bit atomics with guest shader requirement checks, including shared-memory storage-buffer lowering; Android fatal errors remain visible in logcat when ordinary diagnostics are disabled",
+    "Native macOS ARM64 direct FEX: 16 KiB host protection aggregation, ARM fault context, non-overwriting Mach reservations and guest data/JIT separation",
+    "Native macOS Metal uses the shared Gen4 static adapter and pinned SPIRV-Cross MSL, with a Vulkan 1.2 internal interface plus supported extensions and owned SDL Metal surfaces; no external Vulkan loader is used",
+    "Capability-qualified null image descriptors specialize shader reads and queries to typed zero and discard writes and atomics; variant identities, indirect descriptor selection and cache-owned placeholder lifetime preserve isolation",
+    "Metal capability admission occurs at the consuming shader, pipeline or view, with explicit buffer and optional image bounds; required non-Metal Vulkan and Android feature gates are preserved",
+    "Native Metal correctness fixtures cover compute and graphics readback, viewport state, production presentation and surface recreation, null descriptor isolation and host-page-aware memory transfers",
+    "Darwin image faults preserve the exact touched byte separately from host-page watch coverage; existing edge baselines cover the opened 16 KiB host edges while disjoint GPU-authoritative images and watched interiors are retained",
+    "Native Metal primitive-stage fixtures exercise triangle and quad tessellation, fractional and asymmetric factors, production Gen5 rect-list expansion, per-primitive multi-component cull distances, indexed and instanced draws, and guarded GPU readback with resource reuse.",
+    "AGC startup retains the fixed logical driver/table addresses through separate watched native aliases; initialization is repeatable, CPU instrumentation and GPU/BDA readback use the same backing, and failed address admission still rolls back direct memory and GPU/virtual metadata.",
+    "Darwin direct ARM64 address translation is limited to verified permanent OS commpage and GPU-carveout reservations with current and maximum protection NONE; the final 32 MiB commpage nesting interval, ordinary user guards, PAGEZERO and unrelated host mappings remain excluded.",
+    "Immutable 16 KiB-aligned host arenas retain logical guest addresses in VM metadata, shader identities and BDA keys. Atomic semantic-rights admission and inverse fault translation preserve original permissions and GPU watches for FEX-generated and native ARM64 accesses; supported scalar/SIMD, LSE/CAS and DC ZVA instructions are decoded, while unknown opcodes, unaligned atomics and LL/SC exclusives fail closed. Nonidentity guest executable mappings remain rejected.",
+    "Native file and socket I/O stages nonidentity guest buffers through checked user-space reads and writes, including bounded vector and output publication, so kernel copyin/copyout cannot bypass watched-alias GPU coherence; identity I/O remains unchanged.",
+    "The unresolved-object loader sentinel accepts a relocated allocation when its preferred hint is occupied, preserves the occupied mapping, and remains NoAccess across the full native page; relocations consistently use the actual returned address.",
+    "Translated semantic protection changes publish the intersection of old and new access rights while native permissions and metadata are updated, preserving valid concurrent readers during RW-to-R or RW-to-RW transitions; watch removal remains bounded by guest permissions.",
+    "Naturally aligned scalar transfers of 1, 2, 4 and 8 bytes use native relaxed atomic loads/stores, including individual GPR pair elements and SIMD transfers up to 8 bytes, with the original ordering fences; unaligned byte-copy behavior is retained.",
+    "Apple direct FEX startup preloads only the declared static DT_NEEDED dependency closure before relocation, tracks dependency references, initializes dependencies once before consumers, and finalizes in reverse successful initialization order. Existing loadstart/stopunload paths share this state; original Android and other non-Apple-direct paths are preserved.",
+    "Allocation-free complete-span CPU permission queries are enabled for every direct host and title with independent exact-0 rollback; they preserve the VM transaction lock, watched guest view, full preflight and mapping lifetime while guest-copy entry points avoid a redundant recursive lock",
+    "Experimental exact ordinary SRT reads are disabled by default on every direct host and title after observed startup regressions. Explicit LUMEN_PS5_SRT_EXACT_READBACK=1 enables synchronization of intersecting GPU-dirty bytes and complete readable shared-backing copies after mapping-lifetime rechecks; private or ineligible memory retains watched reads. The same selector enables a separate checked ARM64 walker entry with scalar callback ABI, memoized nested pointers and bounded W^X publication. The default or explicit zero retains the raw entry and existing portable callback behavior; failed checked allocation or eligibility retains the appropriate fallback.",
+    "Pure IR value and instruction observers are inline to remove repeated cross-unit calls without changing resolution, operand storage or validation.",
+    "Existing region and page tracking locks use read-only contended polling before retrying the acquire exchange; owner checks, release publication and native protection transactions are unchanged.",
+    "Native SRT refresh is restricted to a fresh evaluation session; later evaluations preserve the complete portable memo including root pointers and unknown values. A failed native refresh makes that session terminal, while a fresh session can retry.",
+    "Device-qualified fragment subgroup size32 preserves guest wave32 EXEC and VCC mask indexing; guest wave64 and unsupported fragment size control retain the native subgroup policy.",
+    "Unified-memory renderer budgets reserve capacity for guest and host memory, refresh Vulkan budget estimates at collection boundaries, and cap dynamic cache collection thresholds; original texture retention ages are preserved and collection waits for the complete minimum age.",
+    "Android presentation defers surface recreation while the native window is absent, protects SDL native-window lifetime during recreation, and recovers transient surface loss without reusing an already submitted presentation frame."
   ],
   "performance_opt_ins": {
     "default": true,
@@ -40,8 +64,13 @@
       "LUMEN_PS5_ASYNC_PIPELINE_CACHE",
       "LUMEN_PS5_FILESYSTEM_CASE_CACHE",
       "LUMEN_PS5_RELEASE_MEM_BATCH",
-      "LUMEN_PS5_UNIFORM_METADATA"
-    ]
+      "LUMEN_PS5_UNIFORM_METADATA",
+      "LUMEN_PS5_VM_ACCESS_QUERY",
+      "LUMEN_PS5_SRT_EXACT_READBACK"
+    ],
+    "default_overrides": {
+      "LUMEN_PS5_SRT_EXACT_READBACK": false
+    }
   },
   "excluded_legacy_policies": [
     "GPU buffer snapshot reuse",
@@ -55,12 +84,12 @@
   "files": [
     {
       "path": "NOTICE.txt",
-      "sha256": "4037a7bf91ddc8184c2743430f9bd8d6289fa6e040a9607b7b3c4709b1fa061a",
+      "sha256": "f8c3a8b4c0c3fcb2513d10940cf5ebc90c873911bf85a1f47db09457da87fdd4",
       "origin": "integration"
     },
     {
       "path": "Tests.cmake",
-      "sha256": "36189731e2851858b1ba98034bf92666c605a4104e0b236b6259e85b1d1ab0d8",
+      "sha256": "b5e4154e65dc25c81a5b369edd63046dbb1c5db13abd70bbcf8e40c7db01213c",
       "origin": "integration"
     },
     {
@@ -316,6 +345,16 @@
       "origin": "unchanged"
     },
     {
+      "path": "src/common/arm64MemoryAccess.cpp",
+      "sha256": "f6ebc67cb344fba996d4ac483be745778879c6a4ee7d6527acd3e38af2d4ac31",
+      "origin": "integration"
+    },
+    {
+      "path": "src/common/arm64MemoryAccess.h",
+      "sha256": "8ebabf2c9a006ae1b1055391b41a6afc0061b1dbcfc329e3c51e7157d10636b6",
+      "origin": "integration"
+    },
+    {
       "path": "src/common/assert.cpp",
       "sha256": "d1dbf4801aef07b8494d389a796a97832f75130bc6a493ccb7c91f7ec2b28616",
       "upstream_sha256": "d1dbf4801aef07b8494d389a796a97832f75130bc6a493ccb7c91f7ec2b28616",
@@ -407,15 +446,15 @@
     },
     {
       "path": "src/common/hostException.cpp",
-      "sha256": "dcf06aefc9dc962ca9a1bb88b6beac64b7e1b85d6de6059405d51e967fe549cc",
+      "sha256": "9bc008321c6bb23c512cd71567681851e88aaab21de338742bf5568790a52de9",
       "upstream_sha256": "63deb008f53c6775f547a524d49dcb77e01675a9e4bb32570e8dc6a83313a3a8",
       "origin": "host-adapted"
     },
     {
       "path": "src/common/hostException.h",
-      "sha256": "b37dd78e55c6d9e029992a7c5ae68fb574d0b874bc159a303a24d90b1cb54444",
+      "sha256": "704d1c60d51751cfa6c3713ddc663e9eafa7a391336ec6739ed5a0f6a6ce4c1d",
       "upstream_sha256": "b37dd78e55c6d9e029992a7c5ae68fb574d0b874bc159a303a24d90b1cb54444",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/common/hostStats.cpp",
@@ -460,6 +499,11 @@
       "origin": "unchanged"
     },
     {
+      "path": "src/common/memoryBudget.h",
+      "sha256": "473bbb5a1274a1fdb56fbfefb55b21f033e09d09bf475b66b7e78c46167d58bc",
+      "origin": "integration"
+    },
+    {
       "path": "src/common/pathCaseCache.h",
       "sha256": "395c77641d914224e7a0b0010ee5f532adcacdc41e9e1ee008040df3b9727623",
       "origin": "integration"
@@ -484,13 +528,13 @@
     },
     {
       "path": "src/common/platform/sysLinuxFileIO.cpp",
-      "sha256": "09735d6398195c33f03477e0dcfc817e0b588fcfb9d72e582995650146d33302",
+      "sha256": "05a97df7309e36a50474ac833a9972a08976ee09c468f98729baeb73f66abd0f",
       "upstream_sha256": "09735d6398195c33f03477e0dcfc817e0b588fcfb9d72e582995650146d33302",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/common/platform/sysLinuxVirtual.cpp",
-      "sha256": "c3cda37608b9a368c8819439c4ab05598887975761231b1cd9ec4071e971c6ef",
+      "sha256": "ebc496d84a7e095752fee7997d1a5f37fcabfe185561240efca13eb389344449",
       "upstream_sha256": "060b607d27ef5b71877b2e6afe1c066a823c8c8bf15bbccd2437a0dd3cfb6e71",
       "origin": "host-adapted"
     },
@@ -532,7 +576,7 @@
     },
     {
       "path": "src/common/renderTiming.h",
-      "sha256": "4049fe291527e3fd75eb556df04615d5bb388185ed678fdfe6849f0ccf3fe2bb",
+      "sha256": "20ebc449258b27fb37210fedbeb918ff0092767478e0d739edd711ddde891667",
       "origin": "integration"
     },
     {
@@ -714,7 +758,7 @@
     },
     {
       "path": "src/graphics/guest_gpu/graphicsRun.cpp",
-      "sha256": "34ff3b436e6f7a3715fef1b82c757f7e7f5342768cf0adb03023dfe7518177dd",
+      "sha256": "8c23e043709de5b5f369222071f13027ea4da77828d743baeb90d004be686cf1",
       "upstream_sha256": "60547455b3f66ac95cbdf35f373e10259e7916382d14a4ebca4298dd6fe3b14b",
       "origin": "host-adapted"
     },
@@ -756,7 +800,7 @@
     },
     {
       "path": "src/graphics/host_gpu/graphicContext.h",
-      "sha256": "1aa6a0e58e4fb9c7e89ab05cf53e9266eb9cb050d0881ac49d3f7a30b19fcf54",
+      "sha256": "f278d7ab8eb8eb785551457bb445d365f513094b401a2e09c69c13a0aebe2b1c",
       "upstream_sha256": "e259fc4b6c21028e436ab02068a63ec80f3d1cb13db67812c9381b14ef7d0a1e",
       "origin": "host-adapted"
     },
@@ -786,15 +830,15 @@
     },
     {
       "path": "src/graphics/host_gpu/pageManager.cpp",
-      "sha256": "db9c967fa6afdb23680179cf0bbe4dc8b54867291feab812a7ed345350feaaeb",
+      "sha256": "7bb7e72fdfafbd0c604e112a8b92e3eb46a78b842fc03ae352c18a3f5b2a4289",
       "upstream_sha256": "db9c967fa6afdb23680179cf0bbe4dc8b54867291feab812a7ed345350feaaeb",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/pageManager.h",
-      "sha256": "63f344d7703b5bbcaa44b12d8e6baea288fbcf5163357758924fb35bb8c062aa",
+      "sha256": "c80ef35f69c9f600321147211767507e83928a418b3bb41f8857f61aa0d609aa",
       "upstream_sha256": "63f344d7703b5bbcaa44b12d8e6baea288fbcf5163357758924fb35bb8c062aa",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/rangeSet.h",
@@ -810,19 +854,19 @@
     },
     {
       "path": "src/graphics/host_gpu/regionManager.h",
-      "sha256": "1ce735dac978fc36ca274843d57cd4469f9ddffb9b9293e59a1941152a71c4f3",
+      "sha256": "6c118b959578c24ff728ce158194abce18359444d2415e33066d7088bfeb04cf",
       "upstream_sha256": "1ce735dac978fc36ca274843d57cd4469f9ddffb9b9293e59a1941152a71c4f3",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/cache/bufferCache.cpp",
-      "sha256": "625fd6acc2914a039c1436447f3ee2ac663cdc6f70bdd0698d3d4702f437e8fb",
+      "sha256": "0a32a3a15eaf64f1e8e729ad1e70cc254e396703798acc9e7a1ee31bb9e5ee5a",
       "upstream_sha256": "d30a789c1519e9bae5dc124551fa8be35df04cdf3b46d11faf98509a94537675",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/cache/bufferCache.h",
-      "sha256": "c81d6c0b875534d5273c03e1c6a9ef11b47badfff188bfbbfe1e14a07be20d36",
+      "sha256": "30018763ac6534595e37b2e4de60c82bb3ce32274ef596856ec94f2719c4a43c",
       "upstream_sha256": "de29d28368969a7ff7f4dc47a2f28b65b57155eda551296ced3dd9b7c178820c",
       "origin": "host-adapted"
     },
@@ -870,15 +914,15 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/cache/textureCache.cpp",
-      "sha256": "387c0de66bf84e9d6aae08a9a745af99dd889445bc40b1cd4b41c7a697314669",
+      "sha256": "dbddf647ce0a3c3f19b6b3fa18981be64bff519d4187a0d3b0754a4e5963b0e0",
       "upstream_sha256": "4c98feb1e9cea58aa2c879e00b121177590a0e10cd9517d00df80877a8630283",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/cache/textureCache.h",
-      "sha256": "f8521b60e45c26d83f0817cb5f83caa42ea1d43c304f6690ea687157feabe13d",
+      "sha256": "212232724ff66837bea842fc4af78eaca601eb493f1fa88ec9899a1c557a561d",
       "upstream_sha256": "f8521b60e45c26d83f0817cb5f83caa42ea1d43c304f6690ea687157feabe13d",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/colorRenderTarget.cpp",
@@ -924,15 +968,25 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/depthRenderTarget.cpp",
-      "sha256": "b0e72a64d47a1a88deb6b71446c3dff01adc058ab31fece2f8ec5251f1d0d651",
+      "sha256": "d18430ad0ff3db28a1a2b1005a4a0db190c0f2bfb6624ec2073e9edc01573016",
       "upstream_sha256": "b0e72a64d47a1a88deb6b71446c3dff01adc058ab31fece2f8ec5251f1d0d651",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/depthRenderTarget.h",
-      "sha256": "a31e27c0bd940718d1bd3b295ebf20b699f09ec23059f8c3cef8a89aaaf89bdf",
+      "sha256": "f6bfe1e4f24504136b3153aaab27e96907dcd2ab6ea28fff3d3a46ba76074293",
       "upstream_sha256": "a31e27c0bd940718d1bd3b295ebf20b699f09ec23059f8c3cef8a89aaaf89bdf",
-      "origin": "unchanged"
+      "origin": "host-adapted"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/drawCapture.cpp",
+      "sha256": "c23e06fd130af0977dbe32ce926b4c347a146c72e1669e526bb9fd7f80033680",
+      "origin": "integration"
+    },
+    {
+      "path": "src/graphics/host_gpu/renderer/drawCapture.h",
+      "sha256": "fcfb5752638a2d0c95a1e16b90e6de55d934f3c7034a523e80fe9ffc0124c532",
+      "origin": "integration"
     },
     {
       "path": "src/graphics/host_gpu/renderer/dynamicState.cpp",
@@ -960,15 +1014,15 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/image/image.cpp",
-      "sha256": "63a000f3676a3f188d530ffb671dd5a5e728548c8e32b9189091bb3f012bf231",
+      "sha256": "f1ca1970893ba39996938d68f0eedd846f8aa03e2439b19475dcac421bee66a6",
       "upstream_sha256": "63a000f3676a3f188d530ffb671dd5a5e728548c8e32b9189091bb3f012bf231",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/image/image.h",
-      "sha256": "edc2278269805e745e65814931bc0cac2c8dd4343be0040c3111752f36cbfa94",
+      "sha256": "7350cbecef4c915e56d8a3f97064e9145d3dc05c2c956b683f10f19d8f36aae0",
       "upstream_sha256": "edc2278269805e745e65814931bc0cac2c8dd4343be0040c3111752f36cbfa94",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/image/imageInfo.cpp",
@@ -984,9 +1038,9 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/image/imageView.cpp",
-      "sha256": "b18166c162900108d41aefc4a8e260beb5140fc5591d9572768bb47ce3c69047",
+      "sha256": "49ca72ec1929aa9bef709ac26acb97caa22fb7ca987c2cbebf2c6370f145cf6c",
       "upstream_sha256": "b18166c162900108d41aefc4a8e260beb5140fc5591d9572768bb47ce3c69047",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/image/imageView.h",
@@ -1056,9 +1110,9 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/pipeline/descriptors.cpp",
-      "sha256": "6217d05dfd3f504725d1fdd6b03659445044303a68d87e1d892f210c36dbc207",
+      "sha256": "cd7254b700b9d3b9213ec574b0605eacf0244e94c69c6b87f5ca78f4e8e8ee69",
       "upstream_sha256": "6217d05dfd3f504725d1fdd6b03659445044303a68d87e1d892f210c36dbc207",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/pipeline/descriptors.h",
@@ -1073,7 +1127,7 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp",
-      "sha256": "91bcae37ed0de95cec1f2df587b21fe033e2f1754771599b5e23d63bf2a69610",
+      "sha256": "dce8af20cb021d2be1728b9cfa931bb071e2d71c4f5d958ac52f7ec3aae9cbd6",
       "upstream_sha256": "5e99991c9062cdfff935bfb900a1b9ffe0c4fcf5402e3401d252c6c57aa35115",
       "origin": "host-adapted"
     },
@@ -1097,7 +1151,7 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/pipeline/shaders.cpp",
-      "sha256": "32068c0dde1e889c56329e54b760bde13637fae5a0c96232e619fba6ac41ddae",
+      "sha256": "2f04836fa056c124cc81967e57e3ae90ffaa0494c9d9f1dcfc16616387388c4c",
       "upstream_sha256": "f584e16eff6911067ab584422c1a1bd4aa710e8cf41999d85b36876c8c0af322",
       "origin": "host-adapted"
     },
@@ -1109,13 +1163,13 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/renderCompute.cpp",
-      "sha256": "24692c8ed8e31f1577368200f6344f0c0428cf09d216f6c52fb46206c6c4c126",
+      "sha256": "9f8aaa02ee88d93d252d24c13f3bd8ba1e64ade0add4089109b102f974c2a99d",
       "upstream_sha256": "428c1a3ed9e8c814c10ea9ee2836c935cc3c915c0a3d6c98ce8d557690e08966",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/renderContext.cpp",
-      "sha256": "8883bf3c1fb76fc7d19e7e04ac7496ead219ae77f138a75fa5947b87b52ee418",
+      "sha256": "8b03b0763555b046d1b4e155df3b046c5ff542cce661d37be26785adf68559f2",
       "upstream_sha256": "c29055ad27d09e7b329ac02991b29255ca91b83e9a74e9a77ce8e7df70ca7f8b",
       "origin": "host-adapted"
     },
@@ -1127,7 +1181,7 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/renderDraw.cpp",
-      "sha256": "56595dfd0b1cd8d1abe31f65d9e3f667312e692f6c3320f6591786efbfcf3990",
+      "sha256": "f91f0a430ba7e08a40b19164f29419b54447500efbcd0c1a6640eda8ebb417ad",
       "upstream_sha256": "9111c3eb5ff4314bc5b4228a186dc367e00d6a5e78a30a32e303b7144cdd979d",
       "origin": "host-adapted"
     },
@@ -1145,9 +1199,9 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/sync.cpp",
-      "sha256": "eb26d56fa25007852fd9e228724531f94d3898ab460cc47bcfbf75737a6fd89b",
+      "sha256": "284205a2a07609a7a6124578df7be6ac20549a6ddaa529b6451604445b24b190",
       "upstream_sha256": "eb26d56fa25007852fd9e228724531f94d3898ab460cc47bcfbf75737a6fd89b",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/sync.h",
@@ -1295,18 +1349,18 @@
     },
     {
       "path": "src/graphics/host_gpu/spirvModuleAdmission.h",
-      "sha256": "8ea4466b6cab4081927f7103e0cdc492448b8dc2800efeb40454e838634836d2",
+      "sha256": "d24c0a9af7f74e6d89c4da75615dcc3e5cd9ce58b23cc9a70d7af9bc623cdc7f",
       "origin": "host-adapter"
     },
     {
       "path": "src/graphics/host_gpu/vma.cpp",
-      "sha256": "ae5c7aaf3a84d0c9509a1ab39d8ddb6ed4bb6c6071283f0d35356d5a08abd7e2",
+      "sha256": "96f1b4b0402dc5280d1f0d93be0cefa4277ae56f62810f0c1670ad484e780d67",
       "upstream_sha256": "ae5c7aaf3a84d0c9509a1ab39d8ddb6ed4bb6c6071283f0d35356d5a08abd7e2",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/vulkanCommon.cpp",
-      "sha256": "f03164caa10c9462c319a95344ae6592bd74598fd77437c3290ea7be3607d6dc",
+      "sha256": "21362382849b548590158336a447866fbd9d01f5ebb55910b1a382a3c398e762",
       "upstream_sha256": "94d7f641e8b393b4620dbde8f1b1df1e8555fc6bcab4c941af80ecfb7124ef70",
       "origin": "host-adapted"
     },
@@ -1402,27 +1456,27 @@
     },
     {
       "path": "src/graphics/presentation/window/swapchain.cpp",
-      "sha256": "f90b72e4ebd2b9e69dd3b6f675b11682d434e1ceb5f86b4d1557a651d9c3feff",
+      "sha256": "b9143d47285034a053f157f6d8c7fef5beb747c343613617da732ce1ced7cbce",
       "upstream_sha256": "dd1fbd1bd36d6a77af5228bf883189db5ea3b8900333989ef118b728b6234cb4",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/presentation/window/vulkanWindow.cpp",
-      "sha256": "1fbf2df04725fb07c5095a38f1a17ef657535edb6f53cb3d6b0c6bc5d7ff22d4",
+      "sha256": "c10ccd6e74e3e1df6bf015f4680151d224da73dc05b3d164d569e4471cf007a7",
       "upstream_sha256": "52aeec5ff66d3ca2d5f083b55983ab2e911fec4839c56dd16d05c0ef2f5e265c",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/presentation/window/window.cpp",
-      "sha256": "6a8764049c38252712b6ab0ef1058e54f620913fb49518b38585a0adfe5edd50",
+      "sha256": "057f83926e4cbc55d418a665ee81986dadfa758624bd88a0c941009bd83ad2ed",
       "upstream_sha256": "d3be22a4f93efdeec17b21ae1398445a02eb8efabdd30e3e8e7c12d906fb9043",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/presentation/window/windowInternal.h",
-      "sha256": "a4d2e9935fae5bffd094a3bf2a62016b29bf833be2e4aa54d7ae219776f7bd5b",
+      "sha256": "aef7177c13e3891598cbddb87c23f37eaae776d82934036ed04232b69cd3c729",
       "upstream_sha256": "a4d2e9935fae5bffd094a3bf2a62016b29bf833be2e4aa54d7ae219776f7bd5b",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/primitiveAssembly.h",
@@ -1507,9 +1561,9 @@
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterAnalysis.cpp",
-      "sha256": "9e91460a779ae03e80adf54f0409e0e43fda8ac08971c1c106ff602070629876",
+      "sha256": "a6c9ea6b269e06df60b803587aca0669d64ab7c910024dcc9eb18c7c4f3b33b6",
       "upstream_sha256": "9e91460a779ae03e80adf54f0409e0e43fda8ac08971c1c106ff602070629876",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterBvh.cpp",
@@ -1531,19 +1585,19 @@
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterImage.cpp",
-      "sha256": "36d3c7129c869388c42f272dda3854e61611c12a3d562c10e646daaf5075bb3d",
+      "sha256": "8c25e08bd547176eacd85b4daf1b1b7cc9c46a5d1f610d95eafabb1f82b0636e",
       "upstream_sha256": "36d3c7129c869388c42f272dda3854e61611c12a3d562c10e646daaf5075bb3d",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h",
-      "sha256": "4e28c754d8be1e003d5b0e4dd138333565fe3ba7e2cdab7a745a9af97e55256f",
+      "sha256": "dcd116438d175ddc96dd3775d2615a9a8b0ded2e11f17765d1807c9e980d4b11",
       "upstream_sha256": "4e28c754d8be1e003d5b0e4dd138333565fe3ba7e2cdab7a745a9af97e55256f",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h",
-      "sha256": "62aadda93d4cfdcdeb3093cb6cb67cb6f2fb805261d70c62ae62282834ae403c",
+      "sha256": "5e54603299a981f7ab9270e76d4969df1b6921224b05d28c9e92a8c93386840a",
       "upstream_sha256": "fa28500594e325b41be9060a3a7e35baa27696e526de2442b32fb3ed621bcf58",
       "origin": "host-adapted"
     },
@@ -1561,7 +1615,7 @@
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterMesh.cpp",
-      "sha256": "6aa2bbe08795f68bfe240770a7420b29789f23164b18cef959b5258952b51439",
+      "sha256": "c6faa8afa704d7ea1cb02b274e8d7294e4e384d51a5f7d0e059e4392e17136bb",
       "upstream_sha256": "5f501ce3b5f9a4bfa43bc831a6375eea9e591812c10fa11e1ba6dbb34acb5013",
       "origin": "host-adapted"
     },
@@ -1573,9 +1627,9 @@
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterProgram.cpp",
-      "sha256": "ed747ccf6ec001b597ba13a02cef6aa2e3b461aaa57077751c197d42eee8d77e",
+      "sha256": "1705c3db7638dfedc462ae292c46f84453142794728c96f63289d56edc0ff999",
       "upstream_sha256": "ed747ccf6ec001b597ba13a02cef6aa2e3b461aaa57077751c197d42eee8d77e",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterTessellation.cpp",
@@ -1621,9 +1675,9 @@
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/decode/MemoryOps.cpp",
-      "sha256": "d874d5cfd9501e08d6b305aa52647263a2f3d53dbabe6021b80913d3df966320",
+      "sha256": "7f3b2231248a743f43fec0758fb092f03d41c97eb6c228b97f14ce61aa545c26",
       "upstream_sha256": "d874d5cfd9501e08d6b305aa52647263a2f3d53dbabe6021b80913d3df966320",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/decode/MemoryOps.h",
@@ -1651,15 +1705,15 @@
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/decode/ShaderDecoder.cpp",
-      "sha256": "9c744aaa429d23f245a9e9d85065bcd1813f322391fb3ba778499dd6da2d506f",
+      "sha256": "b1ab47b9e5420e7379c62354d0c25081041b8cd82aad774358c2b1f17308875a",
       "upstream_sha256": "9c744aaa429d23f245a9e9d85065bcd1813f322391fb3ba778499dd6da2d506f",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/decode/ShaderDecoder.h",
-      "sha256": "9d01adf5c433bbbec20b04f2d3b4b7f33642804e712723835aacf4eb67817d8a",
+      "sha256": "595de4b50b8e7ec601749dc816d122e330237856278b677719bdc25c807e0c9f",
       "upstream_sha256": "9d01adf5c433bbbec20b04f2d3b4b7f33642804e712723835aacf4eb67817d8a",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/decode/VectorAluOps.cpp",
@@ -1693,9 +1747,9 @@
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Convert.cpp",
-      "sha256": "db96a8b2e03df36d52271ebd765ddaeffd217623e401cb762e487bf8d80813a4",
+      "sha256": "7a4bee28dde36c698f9fa48f7010e23d15108eb1126452edc3f1207441b6fe7e",
       "upstream_sha256": "db96a8b2e03df36d52271ebd765ddaeffd217623e401cb762e487bf8d80813a4",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Dispatch.cpp",
@@ -1705,21 +1759,21 @@
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Float.cpp",
-      "sha256": "85c5b3b5b05cda811f33e80fafb532593d833c661952e7754377140c3e3720c3",
+      "sha256": "1bd45b0ab9009fb7f18333a0af4087ec112d39d5a75c2b4f543543c110951fed",
       "upstream_sha256": "85c5b3b5b05cda811f33e80fafb532593d833c661952e7754377140c3e3720c3",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Integer.cpp",
-      "sha256": "59fe53db445ada725d754b1b2963de5a953310d7fa037bad215ef6cda5231f17",
+      "sha256": "e362427e476648685f940a30ae1bf6e8474e4fad0441d5866c2e96014fd898f2",
       "upstream_sha256": "59fe53db445ada725d754b1b2963de5a953310d7fa037bad215ef6cda5231f17",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Memory.cpp",
-      "sha256": "c4adabf6b4bb6a614f2ba256352cf611c9b5e3d8868e8c1c199a53413ea140bc",
+      "sha256": "bef4d149a8cd8506fa01c0a7c361be5932dfa90ca2fa6ffaebd8e128c7446999",
       "upstream_sha256": "c4adabf6b4bb6a614f2ba256352cf611c9b5e3d8868e8c1c199a53413ea140bc",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Scalar.cpp",
@@ -1729,9 +1783,9 @@
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Translate.cpp",
-      "sha256": "b9fdd9e81b72482fc30be293494a97cc5d82ac297e4f91d03aa0530d4f1ae183",
+      "sha256": "31b57009b3fe7b890949da9e771c8b9f8f354a261b6c6f12cb0e0e18e72de93d",
       "upstream_sha256": "b9fdd9e81b72482fc30be293494a97cc5d82ac297e4f91d03aa0530d4f1ae183",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Translate.h",
@@ -1741,15 +1795,15 @@
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Translator.h",
-      "sha256": "99a8e47be96af48828f89b9754f1771bf38bc3a37d135cbeeb986202a7049b37",
+      "sha256": "b3b2261b03236d1ebaa9c8d797327a40970e0f1b7df7fe982ae1145e1ef895ae",
       "upstream_sha256": "99a8e47be96af48828f89b9754f1771bf38bc3a37d135cbeeb986202a7049b37",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Vector.cpp",
-      "sha256": "0e81b283b1d82b10c45e854adbe27ebff61b7165180605e88779938f8a2b6421",
+      "sha256": "daeb3d2990e08641a9bf0feac4a7c19c9ad0c80945c836974f9bbf24dd8e6798",
       "upstream_sha256": "0e81b283b1d82b10c45e854adbe27ebff61b7165180605e88779938f8a2b6421",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/Block.cpp",
@@ -1795,7 +1849,7 @@
     },
     {
       "path": "src/graphics/shader/recompiler/ir/ShaderIR.h",
-      "sha256": "85b965e57600d995986c361d822a889a95dd1e84e73800eaa5d325b990540b26",
+      "sha256": "876599097350836f64c0ad09c0ff93140e68a98aa11e3fccd2b5825a22d5e19d",
       "upstream_sha256": "a2299e07418c2d01b4029b0fc7821adfb6e55781f4213bea6e8aef0508ce5c86",
       "origin": "host-adapted"
     },
@@ -1813,15 +1867,15 @@
     },
     {
       "path": "src/graphics/shader/recompiler/ir/Value.cpp",
-      "sha256": "a972e4160e7e639d91cca43dda0570d19b806e8491714549655b8857bc947ff1",
+      "sha256": "ccc33f7528a068c298f94fe909ed3bcee75005fff9fe1eaa8613fa2d30d99a2f",
       "upstream_sha256": "a972e4160e7e639d91cca43dda0570d19b806e8491714549655b8857bc947ff1",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/Value.h",
-      "sha256": "8a471d9e1c0b678897781405a404aaeb64d0f46ab61030ec493eead8eb998d48",
+      "sha256": "eb6e6dfe211dee4e83c21f2ea8345d6b079a2b88dea2b8f4883db4f79e074e3a",
       "upstream_sha256": "8a471d9e1c0b678897781405a404aaeb64d0f46ab61030ec493eead8eb998d48",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/opcodes/ValueOpcodes.cpp",
@@ -1837,13 +1891,13 @@
     },
     {
       "path": "src/graphics/shader/recompiler/ir/opcodes/ValueOpcodes.inc",
-      "sha256": "4e013c532c2e87aad7abe063190dffe96eb40aedc7c4e7b7ef5b682e8866dbf8",
+      "sha256": "936be4bfe7a9484885cdf0a7ef84f964d40fb60561fb52ccdb74553826d41018",
       "upstream_sha256": "4e013c532c2e87aad7abe063190dffe96eb40aedc7c4e7b7ef5b682e8866dbf8",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/Arm64SrtCode.h",
-      "sha256": "b0293207bcf02288a8d9a3fd1e11123382def62d9373c938e9c9ae9d3ee4c313",
+      "sha256": "7434ff5fa8ee6e6b146073fe4f5c4d767e2e32afe7fdcbd978ff002638d12cb1",
       "origin": "host-adapter"
     },
     {
@@ -1884,19 +1938,19 @@
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/ResourceMaterialization.cpp",
-      "sha256": "7f74fb3706d83a7079c1af192b1d6af6e603ba2cc2ba6481810089457adc6aee",
+      "sha256": "ca5a22f624292a1c618718d526d8c0b82408d7683ccc63d0336fca43bf5170bb",
       "upstream_sha256": "7f74fb3706d83a7079c1af192b1d6af6e603ba2cc2ba6481810089457adc6aee",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/ResourceMaterialization.h",
-      "sha256": "49a9265c646a4f76b490e6ba1f54efeb9bf1fbf42d2211a97f9030bbdfdf5ab5",
+      "sha256": "c6ea07360901e2e08a1c99d263ef56900fa68a323342ca97f7c4cdeb554c4362",
       "upstream_sha256": "49a9265c646a4f76b490e6ba1f54efeb9bf1fbf42d2211a97f9030bbdfdf5ab5",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/ResourceTracking.cpp",
-      "sha256": "d89fc8c7dd0f62bfd6efde84dde2258bd54bfa70505433a04ca1f10700d58025",
+      "sha256": "8ed9d0624c0b05996ce64d9f9c484ce61ede84b4637201272d0188c8edfb415c",
       "upstream_sha256": "f5a2f42ff6b07df39ec2e077de9fc56f18578bee27ffc45fd1b7fc7b09cd618f",
       "origin": "host-adapted"
     },
@@ -1920,21 +1974,21 @@
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/SrtWalker.cpp",
-      "sha256": "3658814ee9bd1ad3e23522dba660f221a265d151cdb5cd607ba4f2f23ed21cf4",
+      "sha256": "5158ca9006c784cf85bcc85ac97546077d648ca3ca71fbd6e69b019eaf02c12b",
       "upstream_sha256": "4f6e7d99ffadaf2d22e59efd3858918a3f654c0ac0ab978f3836d2dffd1b22a2",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/SrtWalker.h",
-      "sha256": "95da134e5b1dc4bcd6c917dc56140e0834214f467021fe0380d227da2512caf0",
+      "sha256": "81ac709dc8b5eb3112ba00e06103419e5be6618b3936dac94ac7b8fbcadf122a",
       "upstream_sha256": "95da134e5b1dc4bcd6c917dc56140e0834214f467021fe0380d227da2512caf0",
-      "origin": "unchanged"
+      "origin": "host-adapted"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/SsaRewrite.cpp",
-      "sha256": "455da1f1fd654aed146f01254edde64ff215746727cb4c84aefba9478d657b3d",
+      "sha256": "2e00471267868fadcd5194a728f97b6826411ed02c906516b9756b13f1eb2a2f",
       "upstream_sha256": "455da1f1fd654aed146f01254edde64ff215746727cb4c84aefba9478d657b3d",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/SsaRewrite.h",
@@ -1956,7 +2010,7 @@
     },
     {
       "path": "src/graphics/shader/shader.cpp",
-      "sha256": "a5d7035f5536fd1efff63013a3680e7306d2dd5d352b80854efe32f8c805bad6",
+      "sha256": "2f0442216c22e1bbc1495a546eda826bf0429e8fb838cbffa0c4ce5447d38f04",
       "upstream_sha256": "7e543fe181d99137c895ecc80d09a9f1be474b6a0bd1c6309dfa762f9e241ac3",
       "origin": "host-adapted"
     },
@@ -2033,15 +2087,20 @@
     },
     {
       "path": "src/kernel/fileSystem.cpp",
-      "sha256": "391bb264ea8b7d492744677f60a9302001bb6175ab6b0b2f71911519bd802584",
+      "sha256": "e5315525690644da6c4b103c4d3ac576bbd30a9bf08c543800aa1f594e57f5bf",
       "upstream_sha256": "a96fac79fb5b71331f0289a3ea4af27cfdd76909a74487b6308c5c9d5a31b29d",
       "origin": "modified"
     },
     {
       "path": "src/kernel/fileSystem.h",
-      "sha256": "1da796cd683d95f25246bf36b4145aa0c156e743b964ea46a62b087a6b2e4777",
+      "sha256": "5abee0661748b82fd9bf82e9bca1a6489ac2fc73e3e0d16ff14c1e01aa87113d",
       "upstream_sha256": "1da796cd683d95f25246bf36b4145aa0c156e743b964ea46a62b087a6b2e4777",
-      "origin": "unchanged"
+      "origin": "modified"
+    },
+    {
+      "path": "src/kernel/guestIoBuffer.h",
+      "sha256": "06b5a5f88d7b2557f8d9d67b1a4cf77d9bce5cd9b41bc63f078f3601de9185c4",
+      "origin": "integration"
     },
     {
       "path": "src/kernel/macosGuestAddressSpace.cpp",
@@ -2051,19 +2110,19 @@
     },
     {
       "path": "src/kernel/memory.cpp",
-      "sha256": "80a822e5e76384c756a749d4b1df23a607edf4606caa315e8cbc08909fb7efcd",
+      "sha256": "99ea07abfc899d7c2e1bd433df5c772fc65641ac7df9497a38b66fae85b09a66",
       "upstream_sha256": "93232c868951052370463eb39fa1a0b291865e8d68b1b9e534f9222bab6410fd",
       "origin": "host-adapted"
     },
     {
       "path": "src/kernel/memory.h",
-      "sha256": "198eeada42c526f3be9570360112c2f428eda950114a8565381c3a931ac76bb0",
+      "sha256": "cce9029851129c396d7b084b43dd1cab660617d77df5988e8fc24aabc5ea433c",
       "upstream_sha256": "3bbff2981b75cad8c899187d841cf2011ec98235faa8b2b0d6f20005773edbc4",
       "origin": "host-adapted"
     },
     {
       "path": "src/kernel/memoryAddressSpace.inc",
-      "sha256": "031e3e5d9923a132d1026016b105904f24c0c927b09650efbf39e156436f9194",
+      "sha256": "7eb19024de688db4156c637ed27e3a121afb2e4f5b179d26d076d869699c442f",
       "upstream_sha256": "baa9bd40c8eff8d9299b22b541af59d8f2da12279870f9a47bc3ff3c05f2cc7c",
       "origin": "host-adapted"
     },
@@ -2129,7 +2188,7 @@
     },
     {
       "path": "src/libs/agc.cpp",
-      "sha256": "836a3ee983707f5f86a7cf3bb04fb1c7e7485c9bb02dfdc169a83ff42dcc987b",
+      "sha256": "f5af3ca5b71833c0cf4c963a83ebc7f6900b6315fdfc055dcd7dfde792a338f8",
       "upstream_sha256": "769f9decae2728333d62c055d3ce93691e2f034d3dbb17ce8e03bda53334d505",
       "origin": "host-adapted"
     },
@@ -2373,7 +2432,7 @@
     },
     {
       "path": "src/libs/libC.cpp",
-      "sha256": "afeb2f77fa49462747a75a54473097d1cc8294b04dc390b4e8bf04f6c9814e3c",
+      "sha256": "b1aa9ebe54638a69e01ea0697e9d500e1c675f67aa6ee84ea23e9d03292d3d64",
       "upstream_sha256": "4f90a59ca30efbf952be27b2b7777d532f052db672f4db06e1567a3d0d58a057",
       "origin": "host-adapted"
     },
@@ -2433,7 +2492,7 @@
     },
     {
       "path": "src/libs/libKernel.cpp",
-      "sha256": "5f96d34e0c1efabb974fa0cc9ed9579d2236b2db3118083486f2346395211692",
+      "sha256": "021337f9e28545d0d2499637d06cc7e114c37221594ceae62e3f9d1c05455fd7",
       "upstream_sha256": "87f06a2a4907d727932a600d32644cb69902a2cb4f2823f434b88d0c089d8d98",
       "origin": "host-adapted"
     },
@@ -2595,7 +2654,7 @@
     },
     {
       "path": "src/libs/network.cpp",
-      "sha256": "965b73cf71fe0bcd69c66e3cb4d55324810abc361fb3e9b7deaf2e19ce4d697e",
+      "sha256": "9976a87d37d7438d9d3f69d094a984948704dc1aad585999989e7b70cf0006ee",
       "upstream_sha256": "8f68a3cdb4af9bb8392edd2b2c16efec62f3f5158b38ac28305ee2e814f0f686",
       "origin": "host-adapted"
     },
@@ -2765,13 +2824,13 @@
     },
     {
       "path": "src/loader/runtimeLinker.cpp",
-      "sha256": "49fa0926697d57294658cde6a2cece55f9b6b967e8b31a8b73e613ba2591ada1",
+      "sha256": "328d6d899057644cc3f2d0e6772fc8332bd9d283caa08e1f2173b605c2d7318c",
       "upstream_sha256": "16b8ade02bd06826550e235fd46a5075d3504028a1288ff0ba2168690c9699b3",
       "origin": "host-adapted"
     },
     {
       "path": "src/loader/runtimeLinker.h",
-      "sha256": "57b27193a3cbc8082641abc954bda06f179c1b02e9556bc9210ee12e9d820879",
+      "sha256": "3bafccbb82a61c5d603d6d7140bd446a99fd0e7a8fe412847d4690dcbb730c67",
       "upstream_sha256": "b9a379df76b8beac4a3888c6b7034eb68cfada2d4b6d5c0fa2548212517d1718",
       "origin": "host-adapted"
     },
@@ -2830,6 +2889,11 @@
       "origin": "unchanged"
     },
     {
+      "path": "tests/AndroidSurfaceLifecycleTests.cpp",
+      "sha256": "30fa872966b7422b241e6e3c41c39f215c4448b0244a986dc0dadc2ce7daf8c6",
+      "origin": "integration"
+    },
+    {
       "path": "tests/ArchiveFileTests.cpp",
       "sha256": "fc373d3580514c6339075a6983ce2fb623d0e194fb90d70abf557e6a3dfa89b9",
       "upstream_sha256": "fc373d3580514c6339075a6983ce2fb623d0e194fb90d70abf557e6a3dfa89b9",
@@ -2840,6 +2904,11 @@
       "sha256": "70c8a48ae4ddd7e51ee17937d8496a73e18dfbe44913f277a0d1c8da00b73937",
       "upstream_sha256": "70c8a48ae4ddd7e51ee17937d8496a73e18dfbe44913f277a0d1c8da00b73937",
       "origin": "unchanged"
+    },
+    {
+      "path": "tests/Arm64MemoryAccessTests.cpp",
+      "sha256": "3420e6417c579bd88cbda91dc05aae1e3e70d3aa65399296d8ce51e9bff6b4e7",
+      "origin": "integration"
     },
     {
       "path": "tests/AudioOut2PortTests.cpp",
@@ -2889,22 +2958,47 @@
     },
     {
       "path": "tests/DirectFiberTests.cpp",
-      "sha256": "f29aee7f22d2bab6498edd6ccb14a7fd7c6d2f00c263118ddaa6b5a5b5191991",
+      "sha256": "cdc1a50ac9c22e950f6888c94d8772ee578fdc1e7cac963005402a4083a8bc61",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/DirectFilesystemTests.cpp",
+      "sha256": "3d3c73389a15f110eeca442fe77a373cec6381e32d0d759878e240f122ec03bd",
       "origin": "integration"
     },
     {
       "path": "tests/DirectGuestAddressSpaceTests.cpp",
-      "sha256": "752dba0b9dde48809c9bfc027e4c33aa3083688fe0981adcd072be8b89e5146f",
+      "sha256": "8c354303040f69a315efa5109f06af0ceb84bb6c7b8a15cadc689c807024ef99",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/DirectGuestIoTests.cpp",
+      "sha256": "f5174dbecfa5559d7ed5b950bafb3a7453c2549b4e36feb8a314a89110bb79b6",
       "origin": "integration"
     },
     {
       "path": "tests/DirectHostFaultTests.cpp",
-      "sha256": "52ee350ac0612374bc21bc368fbf76f8e0adea79676d007dc434e20a94d412d8",
+      "sha256": "9efc09e28a2574ba79411c1162bc3ae3e6d9321de95dcc3e9ae8f36d4ed12d8f",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/DirectLoaderDependencyTests.inc",
+      "sha256": "8c6328718965cdfcf930b74791d150d9f96ca6180e67d5670457d288f3dab9b9",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/DirectLoaderSentinelTests.inc",
+      "sha256": "7a7638d3311cb688136215e5ee3f3928a08810951d1aef14e5fa28d566103e01",
       "origin": "integration"
     },
     {
       "path": "tests/DirectMeshGpuTests.inc",
       "sha256": "35979d029ba6e8c159a40c54eb13e7d9905db975921cfbc3c187027e3554c85d",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/DirectMetalWindowTests.cpp",
+      "sha256": "2abcccdf6ca1f53904dd178965a9cc914f802ac62699c421b4842a10ee18c95d",
       "origin": "integration"
     },
     {
@@ -2914,12 +3008,12 @@
     },
     {
       "path": "tests/DirectServicesTests.cpp",
-      "sha256": "8fa5db1bc7249c0a8fee175e84ef8437fdac2302474cab15137d69a5cc7a790b",
+      "sha256": "84de94384f31e1726b6e01174dd7e960898af273eb5fcb97f5424a20eac46468",
       "origin": "integration"
     },
     {
       "path": "tests/DirectSrtArm64Tests.cpp",
-      "sha256": "1bf4f35419746cdfd93ece5f6abaffb739d6a1ea65909edb55c7b7c1788fec72",
+      "sha256": "4353e303b2b00e69499063152e8421093d368ab58ecd645da6b602d038943c71",
       "origin": "integration"
     },
     {
@@ -2959,9 +3053,9 @@
     },
     {
       "path": "tests/KernelFileSystemTests.cpp",
-      "sha256": "3abcf059446657c5e2dadb67c01915ee8fa15da7c1f7c251ea5c5714dc56aab4",
+      "sha256": "bd4657706d5f9aad270f80856b2ba4bcb38ea1a5441bf0af835537169874043a",
       "upstream_sha256": "3abcf059446657c5e2dadb67c01915ee8fa15da7c1f7c251ea5c5714dc56aab4",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "tests/LruCacheTests.cpp",
@@ -2970,10 +3064,35 @@
       "origin": "unchanged"
     },
     {
+      "path": "tests/MemoryBudgetTests.cpp",
+      "sha256": "5c3ecbb44000b6e7b147c4a9dfc9c8bbc4c8009e99ea0249d0c7cb3a255758e4",
+      "origin": "integration"
+    },
+    {
       "path": "tests/MemoryTrackerTests.cpp",
-      "sha256": "a02fcd2cc8b5736192ac12276e2285ff04c7114dad4c1a36a54a9d1307b3ae63",
+      "sha256": "9a470b54621407ab777be88544e624cbedbbbfaafab0677c1ab8dcfcb599b025",
       "upstream_sha256": "912ce65e6383028b9946f20be91b615aa75a8f466991e0e37521bd3025ff2225",
       "origin": "host-adapted"
+    },
+    {
+      "path": "tests/NativeMetalContractTests.inc",
+      "sha256": "f661bdbb9da365eba752436cfef35808a3bbf971a11c4d6910e34e664b227948",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/NativeMetalPrimitiveShaders.inc",
+      "sha256": "fc25f6e2558ac7937c613ba2ec54bca93dac744a666fa9fefeca89dcfe3a14ad",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/NativeMetalPrimitiveTests.inc",
+      "sha256": "55199d117078738b226505c5ca870410b450f9f4c77bad3376c640be9ac801dd",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/NativeMetalVertexSubgroupTests.inc",
+      "sha256": "ac27cb84f2d3b3f99db4f885a40752d40509aecca97b120d07685af4aa45f300",
+      "origin": "integration"
     },
     {
       "path": "tests/Ngs2SamplerTests.cpp",
@@ -2989,7 +3108,7 @@
     },
     {
       "path": "tests/PageManagerTests.cpp",
-      "sha256": "d17bff8ce190c9d5a48f3c53d6779e92df42059f595e9f8fe9a3d0082340043c",
+      "sha256": "96abe48a580cb10a1fc29571c476ac79dc7d8ef7b1a15745f1093d802510ef58",
       "upstream_sha256": "3cfed44adfcc69b1a2ae40404b0e8ea9c55a4b11aae78151dd75497ac3a273e9",
       "origin": "host-adapted"
     },
@@ -3006,7 +3125,7 @@
     },
     {
       "path": "tests/RenderTimingTests.cpp",
-      "sha256": "efa6a3164100bc4bf70d7f51d09963647fc60dcf1e91fbecf055e5f908ca6f0a",
+      "sha256": "6a5c2f5e02019fbffd12eb96af687ebe5db83366647109bd56fcd2ecfdfc30fe",
       "origin": "integration"
     },
     {
@@ -3017,7 +3136,7 @@
     },
     {
       "path": "tests/ResourceTrackingTests.cpp",
-      "sha256": "2e48f15f5346787198d88aadb0c54a9190cec68a671104a5e05e98b0b0499b87",
+      "sha256": "1fdb620682f1c5adc9f43d7a6a0b02a75439dd509c094545e813a325a587c6c9",
       "upstream_sha256": "2092c441455910b73a9616971a211f26b9947f83709921b6cea945c38b5c00ca",
       "origin": "host-adapted"
     },
@@ -3035,9 +3154,9 @@
     },
     {
       "path": "tests/ScalarProvenanceTests.cpp",
-      "sha256": "272729142dda68ab484f4ab09e273a941436364379c21b1dc320edebd71a2f6d",
+      "sha256": "98b054063c78b926d73f00f20af2b9503d9323509f33edcbd6c3d6f2261d8d82",
       "upstream_sha256": "272729142dda68ab484f4ab09e273a941436364379c21b1dc320edebd71a2f6d",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "tests/ShaderRayTracingGpuTests.inc",
@@ -3053,7 +3172,7 @@
     },
     {
       "path": "tests/ShaderRecompilerComputeTests.cpp",
-      "sha256": "5a3f3240e24a3a21f53460cd7793fb8b60da022a9c6ccd0fdaea3c6c4cbac0ff",
+      "sha256": "b4914562efb7206e1e225e7d0ad2ff5f00087531e86b7e634e73354a688eb137",
       "upstream_sha256": "b811b1966ca00f70cdce49763a4026716a9292bebe19c32f6b473a93c34c8acd",
       "origin": "host-adapted"
     },
@@ -3104,10 +3223,40 @@
       "origin": "unchanged"
     },
     {
+      "path": "tests/native_metal_shaders/generate.py",
+      "sha256": "8a2f4beae801b6427fc2694f7b97ea96715e088b5a0fc4d12000ccfa10d732be",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/native_metal_shaders/primitive.frag",
+      "sha256": "a5a0353531e7d7553d3f43bad97480660800d27e175996ff80bd7a1e9658cc37",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/native_metal_shaders/primitive.tesc",
+      "sha256": "bc8e47848af3c252ce15bc97cc6ad455de92a05cddc70fee8cc2a0417452a57c",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/native_metal_shaders/primitive.tese",
+      "sha256": "c1b5964fadbb7dea4f6fc3d553890ed738d402b6c00eed7f1d8a09c25ea471a3",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/native_metal_shaders/primitive.vert",
+      "sha256": "6db2b1fd08f5d9369d28b4463571f0e317bc704d4bbf1636564de98fe7508a07",
+      "origin": "integration"
+    },
+    {
+      "path": "tests/native_metal_shaders/vertex_subgroup.vert",
+      "sha256": "2c732c9a9da2c70b8e90d26460622d06cea202490f6c682f88b556c30a2e5ab2",
+      "origin": "integration"
+    },
+    {
       "path": "tests/shaderCfgTests.cpp",
-      "sha256": "2b7c7747d56f36f6821808bd2f32c5309ae56b217e619a90abf40ea0836679c0",
+      "sha256": "7d276cae952580cdf62770860456b848774e85dc4b024ff4b0b7aa1c1bd5a592",
       "upstream_sha256": "2b7c7747d56f36f6821808bd2f32c5309ae56b217e619a90abf40ea0836679c0",
-      "origin": "unchanged"
+      "origin": "modified"
     }
   ],
   "barycentric_fallback": {
@@ -3121,5 +3270,74 @@
       "explicit_override_precedence": true,
       "scope": "all titles; device and shader admission remains conditional"
     }
-  }
+  },
+  "selective_updates": [
+    {
+      "reviewed_revision": "db12f0c5fb1617b7ce5eaffba0d6be8d9b042bc1",
+      "date": "2026-10-27",
+      "scope": "Selected shader semantics and compiler work, sampled resource pairs and 64-bit guards, single-store PM4 publication, filesystem sync and libc ABI fixes; not a complete upstream revision update. Existing ARM64/Metal adaptations and cumulative runtime defaults preserved.",
+      "commits": [
+        {
+          "commit": "7eb8abb27964cf020e089dbb6aafc27888384f11",
+          "subject": "shader: drop the duplicate-use scan from Inst::AddUse"
+        },
+        {
+          "commit": "3f9666acbbc3f911ce8b3e7dcf4be07b7587a9c3",
+          "subject": "shader: seal SSA blocks once their predecessors are filled"
+        },
+        {
+          "commit": "91a5ff6cb79035792b6ec397a74d35c562705c3a",
+          "subject": "shader: decode s_dcache_inv as a no-op"
+        },
+        {
+          "commit": "9210264d4761e1e02cc4db1241fd76a970660041",
+          "subject": "shader: saturate V_CVT_PK_U16_U32 and V_CVT_PK_I16_I32"
+        },
+        {
+          "commit": "e864cb20bd4f14fbc7e9c7b0c1f3a70fc56cd9b2",
+          "subject": "shader: clamp V_FRACT_F16/F32/F64 results below one"
+        },
+        {
+          "commit": "919fac13d048097f1823d7ef9333351d8e850541",
+          "subject": "shader: read lane 0 in V_READFIRSTLANE when EXEC is zero instead of an undefined lane"
+        },
+        {
+          "commit": "706aa030ad08ebefd5669f2b866763d10af561ce",
+          "subject": "shader: extract 9-bit NGG primitive vertex indices, leaving the edge flags out"
+        },
+        {
+          "commit": "248357365169243a604d6d89c013e182cd5a19ee",
+          "subject": "shader: mask V_MAD_U64_U32 carry-out bits of lanes outside EXEC"
+        },
+        {
+          "commit": "025d1f7edfa6170607c6948467c7c7b867440636",
+          "subject": "shader: decode the SHARED_LIMIT and PRIVATE_LIMIT inline constants"
+        },
+        {
+          "commit": "7675579e799af2067be4c69c816024d0396d6084",
+          "subject": "kernel: implement POSIX fsync through the shared file API"
+        },
+        {
+          "commit": "8c01d8e849f6f80bae585a838b1f1d6f317c6396",
+          "subject": "libc: fix swapped strcmp/strncmp NIDs and bind strcpy to its own NID instead of strcpy_s's"
+        },
+        {
+          "commit": "e0c5ae090c942cd39731090c6780341400f60a76",
+          "subject": "kernel: send _write to descriptors 0-2 through KernelWrite instead of dropping it"
+        },
+        {
+          "commit": "099de8dea62cbf17c8e06a6c24e72b38475d1566",
+          "subject": "graphics: publish each PM4 WRITE_DATA word exactly once"
+        },
+        {
+          "commit": "33208a545a00c3b4060fefdcfb71803ba22debfc",
+          "subject": "shader: remove artificial sampled image and sampler pair limit"
+        },
+        {
+          "commit": "e9bcc77e0ba8c91a48ff667a2aaa42b785f33979",
+          "subject": "shader: retain resource guards for 64-bit scalar comparisons"
+        }
+      ]
+    }
+  ]
 }

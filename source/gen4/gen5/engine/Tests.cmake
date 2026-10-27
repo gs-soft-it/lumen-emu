@@ -1,12 +1,21 @@
 # Original correctness fixtures for the direct engine. Run without benchmark
-# options on an ARM64 Android host; these targets are not part of the APK.
+# options on native ARM64 Android/macOS; these targets are not part of the APK.
+if(NOT LUMEN_PS5_DIRECT_ENGINE_TARGET)
+    set(LUMEN_PS5_DIRECT_ENGINE_TARGET lumen_android_ps5)
+endif()
+set(direct_test_link_options)
+set(direct_test_hide_options)
+if(ANDROID)
+    set(direct_test_link_options "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
+    set(direct_test_hide_options "-Wl,--exclude-libs,liblinkernsbypass.a")
+endif()
 function(ps5_direct_test name)
     add_executable(${name} EXCLUDE_FROM_ALL ${ARGN})
     target_include_directories(${name} PRIVATE ${inc_headers})
     target_link_libraries(${name} PRIVATE common lumen_ps5_fex_embedding)
     target_compile_options(${name} PRIVATE -fexceptions)
     target_link_options(${name} PRIVATE
-        "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
+        ${direct_test_link_options})
 endfunction()
 
 ps5_direct_test(lumen_ps5_direct_audio_timing_test
@@ -20,6 +29,11 @@ target_compile_features(lumen_ps5_direct_performance_options_test PRIVATE cxx_st
 add_executable(lumen_ps5_release_mem_batch_test EXCLUDE_FROM_ALL
     "${CMAKE_CURRENT_SOURCE_DIR}/../tests/ReleaseMemBatchTest.cpp")
 target_compile_features(lumen_ps5_release_mem_batch_test PRIVATE cxx_std_20)
+
+add_executable(lumen_ps5_memory_budget_test EXCLUDE_FROM_ALL
+    "${KYTY_TESTS_DIR}/MemoryBudgetTests.cpp")
+target_compile_features(lumen_ps5_memory_budget_test PRIVATE cxx_std_20)
+target_link_options(lumen_ps5_memory_budget_test PRIVATE ${direct_test_link_options})
 
 add_executable(lumen_ps5_render_timing_test EXCLUDE_FROM_ALL
     "${KYTY_TESTS_DIR}/RenderTimingTests.cpp")
@@ -51,7 +65,7 @@ target_compile_options(lumen_ps5_direct_avplayer_file_test PRIVATE
 target_link_libraries(lumen_ps5_direct_avplayer_file_test PRIVATE
     common FFmpeg::ffmpeg ZArchive::zarchive Threads::Threads)
 target_link_options(lumen_ps5_direct_avplayer_file_test PRIVATE
-    "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
+    ${direct_test_link_options})
 
 add_executable(lumen_ps5_path_case_cache_test EXCLUDE_FROM_ALL
     "${KYTY_TESTS_DIR}/PathCaseCacheTests.cpp")
@@ -87,10 +101,10 @@ target_include_directories(lumen_ps5_direct_srt_arm64_test PRIVATE ${inc_headers
     "${PROJECT_BINARY_DIR}")
 target_compile_options(lumen_ps5_direct_srt_arm64_test PRIVATE -fexceptions)
 target_link_libraries(lumen_ps5_direct_srt_arm64_test PRIVATE
-    lumen_android_ps5 ${kyty_emulator_link_libraries})
+    ${LUMEN_PS5_DIRECT_ENGINE_TARGET} ${kyty_emulator_link_libraries})
 target_link_options(lumen_ps5_direct_srt_arm64_test PRIVATE
-    "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384"
-    "-Wl,--exclude-libs,liblinkernsbypass.a")
+    ${direct_test_link_options}
+    ${direct_test_hide_options})
 
 add_executable(lumen_ps5_direct_resource_tracking_test EXCLUDE_FROM_ALL
     "${KYTY_TESTS_DIR}/ResourceTrackingTests.cpp")
@@ -102,10 +116,27 @@ foreach(resource_test IN ITEMS lumen_ps5_direct_resource_tracking_test
         "${PROJECT_BINARY_DIR}")
     target_compile_options(${resource_test} PRIVATE -fexceptions)
     target_link_libraries(${resource_test} PRIVATE
-        lumen_android_ps5 ${kyty_emulator_link_libraries})
+        ${LUMEN_PS5_DIRECT_ENGINE_TARGET} ${kyty_emulator_link_libraries})
     target_link_options(${resource_test} PRIVATE
-        "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384"
-        "-Wl,--exclude-libs,liblinkernsbypass.a")
+        ${direct_test_link_options}
+        ${direct_test_hide_options})
+endforeach()
+
+# Focused upstream regression fixtures use the same production engine as the APK.
+foreach(fixture IN ITEMS "shader_cfg;shaderCfgTests.cpp"
+                         "scalar_provenance;ScalarProvenanceTests.cpp"
+                         "filesystem;DirectFilesystemTests.cpp")
+    list(GET fixture 0 fixture_name)
+    list(GET fixture 1 fixture_source)
+    set(fixture_target "lumen_ps5_direct_${fixture_name}_test")
+    add_executable(${fixture_target} EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/${fixture_source}")
+    target_include_directories(${fixture_target} PRIVATE ${inc_headers}
+        "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_LIST_DIR}/../direct_fex")
+    target_compile_options(${fixture_target} PRIVATE -fexceptions)
+    target_link_libraries(${fixture_target} PRIVATE
+        ${LUMEN_PS5_DIRECT_ENGINE_TARGET} ${kyty_emulator_link_libraries})
+    target_link_options(${fixture_target} PRIVATE
+        ${direct_test_link_options} ${direct_test_hide_options})
 endforeach()
 
 add_executable(lumen_ps5_direct_barycentric_fallback_test EXCLUDE_FROM_ALL
@@ -114,10 +145,10 @@ target_include_directories(lumen_ps5_direct_barycentric_fallback_test PRIVATE
     ${inc_headers} "${PROJECT_BINARY_DIR}")
 target_compile_options(lumen_ps5_direct_barycentric_fallback_test PRIVATE -fexceptions)
 target_link_libraries(lumen_ps5_direct_barycentric_fallback_test PRIVATE
-    lumen_android_ps5 ${kyty_emulator_link_libraries})
+    ${LUMEN_PS5_DIRECT_ENGINE_TARGET} ${kyty_emulator_link_libraries})
 target_link_options(lumen_ps5_direct_barycentric_fallback_test PRIVATE
-    "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384"
-    "-Wl,--exclude-libs,liblinkernsbypass.a")
+    ${direct_test_link_options}
+    ${direct_test_hide_options})
 
 ps5_direct_test(lumen_ps5_direct_page_manager_test
     "${KYTY_TESTS_DIR}/PageManagerTests.cpp"
@@ -166,14 +197,25 @@ add_executable(lumen_ps5_direct_renderer_test EXCLUDE_FROM_ALL
 target_include_directories(lumen_ps5_direct_renderer_test PRIVATE
     ${inc_headers} "${PROJECT_BINARY_DIR}")
 target_link_libraries(lumen_ps5_direct_renderer_test PRIVATE
-    lumen_android_ps5 ${kyty_emulator_link_libraries})
+    ${LUMEN_PS5_DIRECT_ENGINE_TARGET} ${kyty_emulator_link_libraries})
 if(TARGET adrenotools)
     target_link_libraries(lumen_ps5_direct_renderer_test PRIVATE adrenotools)
 endif()
 target_compile_options(lumen_ps5_direct_renderer_test PRIVATE -fexceptions)
 target_link_options(lumen_ps5_direct_renderer_test PRIVATE
-    "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384"
-    "-Wl,--exclude-libs,liblinkernsbypass.a")
+    ${direct_test_link_options}
+    ${direct_test_hide_options})
+
+if(ANDROID)
+    add_executable(lumen_ps5_direct_surface_lifecycle_test EXCLUDE_FROM_ALL
+        "${KYTY_TESTS_DIR}/AndroidSurfaceLifecycleTests.cpp")
+    target_include_directories(lumen_ps5_direct_surface_lifecycle_test PRIVATE ${inc_headers})
+    target_link_libraries(lumen_ps5_direct_surface_lifecycle_test PRIVATE
+        ${LUMEN_PS5_DIRECT_ENGINE_TARGET} ${kyty_emulator_link_libraries})
+    target_compile_options(lumen_ps5_direct_surface_lifecycle_test PRIVATE -fexceptions)
+    target_link_options(lumen_ps5_direct_surface_lifecycle_test PRIVATE
+        ${direct_test_link_options} ${direct_test_hide_options})
+endif()
 
 add_executable(lumen_ps5_direct_services_test EXCLUDE_FROM_ALL
     "${KYTY_TESTS_DIR}/DirectServicesTests.cpp")
@@ -182,16 +224,16 @@ target_include_directories(lumen_ps5_direct_services_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../direct_fex"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../../android/app/src/main/cpp")
 target_link_libraries(lumen_ps5_direct_services_test PRIVATE
-    lumen_android_ps5 ${kyty_emulator_link_libraries})
+    ${LUMEN_PS5_DIRECT_ENGINE_TARGET} ${kyty_emulator_link_libraries})
 target_compile_options(lumen_ps5_direct_services_test PRIVATE -fexceptions)
 target_link_options(lumen_ps5_direct_services_test PRIVATE
-    "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
+    ${direct_test_link_options})
 
 add_executable(lumen_ps5_direct_ngs2_test EXCLUDE_FROM_ALL
     "${KYTY_TESTS_DIR}/DirectNgs2Tests.cpp")
 target_include_directories(lumen_ps5_direct_ngs2_test PRIVATE ${inc_headers})
 target_link_libraries(lumen_ps5_direct_ngs2_test PRIVATE
-    lumen_android_ps5 ${kyty_emulator_link_libraries})
+    ${LUMEN_PS5_DIRECT_ENGINE_TARGET} ${kyty_emulator_link_libraries})
 target_compile_options(lumen_ps5_direct_ngs2_test PRIVATE -fexceptions)
 target_link_options(lumen_ps5_direct_ngs2_test PRIVATE
-    "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
+    ${direct_test_link_options})

@@ -30,6 +30,8 @@ struct ResourceSpecialization {
 		uint32_t                      indirect_mapping_offset    = 0;
 		uint32_t                      indirect_search_iterations = 0;
 		bool                          cube                       = false;
+		bool                          null_descriptor            = false;
+		bool                          explicit_image_bounds      = false;
 		bool                          fmask                      = false;
 		bool                          operator==(const Image&) const = default;
 	};

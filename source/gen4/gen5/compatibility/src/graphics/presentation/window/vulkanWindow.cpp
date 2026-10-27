@@ -89,23 +89,62 @@ static bool HasLayer(const std::vector<vk::LayerProperties>& layers, const char*
 	                   [name](const auto& layer) { return strcmp(layer.layerName, name) == 0; });
 }
 
-static void GetSurfaceCapabilities(vk::PhysicalDevice physical_device, vk::SurfaceKHR surface,
-                                   SurfaceCapabilities& r) {
-	RequireVulkanSuccess(physical_device.getSurfaceCapabilitiesKHR(surface, &r.capabilities),
-	                     "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+// A surface can disappear between an Android lifecycle event and a WSI call.
+// Only that transient condition is recoverable; device/driver failures stay fatal.
+static bool SurfaceQuerySucceeded(vk::Result result, const char* operation,
+                                  bool allow_surface_lost) {
+#if defined(__ANDROID__)
+	if (allow_surface_lost && result == vk::Result::eErrorSurfaceLostKHR) {
+		return false;
+	}
+#endif
+	RequireVulkanSuccess(result, operation);
+	return true;
+}
 
-	r.formats = EnumerateVulkan<vk::SurfaceFormatKHR>( // @suppress("Ambiguous problem")
-	    "vkGetPhysicalDeviceSurfaceFormatsKHR", [&](uint32_t* count, vk::SurfaceFormatKHR* values) {
-		    return physical_device.getSurfaceFormatsKHR(surface, count, values);
-	    });
-	EXIT_NOT_IMPLEMENTED(r.formats.empty());
+template <typename T, typename Query>
+static bool QuerySurfaceList(std::vector<T>& values, const char* operation,
+                             bool allow_surface_lost, Query&& query) {
+	for (;;) {
+		uint32_t count = 0;
+		if (!SurfaceQuerySucceeded(query(&count, nullptr), operation, allow_surface_lost)) {
+			return false;
+		}
+		values.resize(count);
+		if (count == 0) {
+			return true;
+		}
+		const auto result = query(&count, values.data());
+		if (result == vk::Result::eIncomplete) {
+			continue;
+		}
+		if (!SurfaceQuerySucceeded(result, operation, allow_surface_lost)) {
+			return false;
+		}
+		values.resize(count);
+		return true;
+	}
+}
 
-	r.present_modes = EnumerateVulkan<vk::PresentModeKHR>( // @suppress("Ambiguous problem")
-	    "vkGetPhysicalDeviceSurfacePresentModesKHR",
-	    [&](uint32_t* count, vk::PresentModeKHR* values) {
-		    return physical_device.getSurfacePresentModesKHR(surface, count, values);
-	    });
-	EXIT_NOT_IMPLEMENTED(r.present_modes.empty());
+static bool GetSurfaceCapabilities(vk::PhysicalDevice physical_device, vk::SurfaceKHR surface,
+                                   SurfaceCapabilities& r, bool allow_surface_lost = false) {
+	SurfaceCapabilities next;
+	if (!SurfaceQuerySucceeded(physical_device.getSurfaceCapabilitiesKHR(surface, &next.capabilities),
+	                           "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", allow_surface_lost) ||
+	    !QuerySurfaceList(next.formats, "vkGetPhysicalDeviceSurfaceFormatsKHR", allow_surface_lost,
+	                      [&](uint32_t* count, vk::SurfaceFormatKHR* values) {
+		                      return physical_device.getSurfaceFormatsKHR(surface, count, values);
+	                      }) ||
+	    !QuerySurfaceList(next.present_modes, "vkGetPhysicalDeviceSurfacePresentModesKHR", allow_surface_lost,
+	                      [&](uint32_t* count, vk::PresentModeKHR* values) {
+		                      return physical_device.getSurfacePresentModesKHR(surface, count, values);
+	                      })) {
+		return false;
+	}
+	EXIT_NOT_IMPLEMENTED(next.formats.empty());
+	EXIT_NOT_IMPLEMENTED(next.present_modes.empty());
+	r = std::move(next);
+	return true;
 }
 
 static bool CheckFormat(vk::PhysicalDevice device, vk::Format format, bool tile,
@@ -533,12 +572,17 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	    (graphics.required_subgroup_size_stages & vk::ShaderStageFlagBits::eCompute) &&
 	    subgroup_size_control.minSubgroupSize <= 64 &&
 	    subgroup_size_control.maxSubgroupSize >= 64;
+	graphics.fragment_subgroup_size_control_enabled =
+	    supported_features13.subgroupSizeControl == VK_TRUE &&
+	    bool(graphics.required_subgroup_size_stages & vk::ShaderStageFlagBits::eFragment);
 
 	LOGF("Vulkan subgroup: default=%u min=%u max=%u stages=0x%08x size_control=%s wave64=%s\n",
 	     graphics.subgroup_size, graphics.min_subgroup_size, graphics.max_subgroup_size,
 	     static_cast<vk::ShaderStageFlags::MaskType>(graphics.required_subgroup_size_stages),
 	     graphics.compute_subgroup_size_control_enabled ? "true" : "false",
 	     graphics.SupportsComputeWave64() ? "true" : "false");
+	LOGF("Vulkan fragment subgroup size control: %s\n",
+	     graphics.fragment_subgroup_size_control_enabled ? "enabled" : "unavailable");
 	graphics.provoking_vertex_last_enabled = provoking_extension && provoking_vertex.provokingVertexLast;
 	graphics.attachment_feedback_loop_enabled =
 	    feedback_extensions && feedback_layout.attachmentFeedbackLoopLayout &&
@@ -609,7 +653,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	features13.pNext = robustness2_ext_enabled ? static_cast<void*>(&robustness2) : shader_features;
 	features13.robustImageAccess   = supported_features13.robustImageAccess;
 	features13.subgroupSizeControl =
-	    graphics.compute_subgroup_size_control_enabled ? VK_TRUE : VK_FALSE;
+	    (graphics.compute_subgroup_size_control_enabled || graphics.fragment_subgroup_size_control_enabled)
+	        ? VK_TRUE : VK_FALSE;
 
 	LOGF("Vulkan robustness: robustImageAccess=%s robustImageAccess2=%s\n",
 	     features13.robustImageAccess == VK_TRUE ? "true" : "false",
@@ -1077,23 +1122,48 @@ void WindowContext::CreateVulkan() {
 	presenter = std::make_unique<Presenter>(*this);
 }
 
-void WindowContext::RefreshSurfaceCapabilities() {
-	EXIT_IF(graphic_ctx.physical_device == nullptr || surface == nullptr);
-	GetSurfaceCapabilities(graphic_ctx.physical_device, surface, surface_capabilities);
+bool WindowContext::IsPresentationSurfaceAvailable() const {
+#if defined(__ANDROID__)
+	return SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+	                              SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr) != nullptr;
+#else
+	return true;
+#endif
 }
 
-void WindowContext::RecreateSurface() {
+bool WindowContext::RefreshSurfaceCapabilities() {
+	EXIT_IF(graphic_ctx.physical_device == nullptr || surface == nullptr);
+	return GetSurfaceCapabilities(graphic_ctx.physical_device, surface, surface_capabilities, true);
+}
+
+bool WindowContext::RecreateSurface() {
 	EXIT_IF(window == nullptr || graphic_ctx.instance == nullptr);
 	if (surface != nullptr) {
 		graphic_ctx.instance.destroySurfaceKHR(surface, nullptr);
 		surface = nullptr;
 	}
+#if defined(__ANDROID__)
+	// SDL clears this property before releasing its ANativeWindow. Keep the
+	// properties locked through creation so surfaceDestroyed cannot release the
+	// native window between our availability check and SDL's Vulkan call.
+	const auto properties = SDL_GetWindowProperties(window);
+	EXIT_IF(!SDL_LockProperties(properties));
+	if (SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr) == nullptr) {
+		SDL_UnlockProperties(properties);
+		return false;
+	}
+#endif
 	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
-	if (!SDL_Vulkan_CreateSurface(window, static_cast<vk::Instance::CType>(graphic_ctx.instance),
-	                              nullptr, &native_surface)) {
+	const bool created = SDL_Vulkan_CreateSurface(
+	    window, static_cast<vk::Instance::CType>(graphic_ctx.instance), nullptr, &native_surface);
+#if defined(__ANDROID__)
+	SDL_UnlockProperties(properties);
+#endif
+	if (!created) {
 		EXIT("Could not recreate the Vulkan surface: %s\n", SDL_GetError());
 	}
 	surface = native_surface;
+	return true;
 }
 
 WindowContext::~WindowContext() {

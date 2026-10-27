@@ -542,6 +542,7 @@ enum class Opcode {
 	S_BUFFER_LOAD_DWORDX8,
 	S_BUFFER_LOAD_DWORDX16,
 	S_MEMREALTIME,
+	S_DCACHE_INV,
 	BUFFER_LOAD_FORMAT_X,
 	BUFFER_LOAD_FORMAT_XY,
 	BUFFER_LOAD_FORMAT_XYZ,
@@ -745,7 +746,9 @@ enum class OperandKind {
 	M0,
 	PopsExitingWaveId,
 	SharedBase,
+	SharedLimit,
 	PrivateBase,
+	PrivateLimit,
 	Null,
 	Vgpr,
 };

@@ -289,8 +289,12 @@ void TestOperandMutationLifecycle() {
   auto *source = definition.TryInstruction();
   const auto inserted = fixture.Emit(ValueOpcode::BitFieldInsert,
       {definition, definition, Value(4u), Value(4u)});
-  Check(source->UseCount() == 2, "inline operands lost distinct reverse-use indices");
-  inserted.TryInstruction()->SetArg(1, Value(3u));
+  auto *consumer = inserted.TryInstruction();
+  Check(source->Uses() == std::vector<Use>({{consumer, 0}, {consumer, 1}}),
+        "inline operands lost distinct reverse-use indices");
+  consumer->SetArg(0, definition);
+  Check(source->UseCount() == 2, "re-setting an operand to its value duplicated its use");
+  consumer->SetArg(1, Value(3u));
   Check(source->UseCount() == 1, "inline operand mutation did not detach its old use");
   source->ReplaceUsesWith(Value(0xaau));
   uint32_t result = 0;

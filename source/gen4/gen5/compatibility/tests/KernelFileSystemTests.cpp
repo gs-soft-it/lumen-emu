@@ -31,6 +31,10 @@
 #include <string_view>
 #include <vector>
 
+namespace Libs {
+void InitLibKernel_1(Loader::SymbolDatabase *symbols);
+}
+
 namespace Libs::LibKernelApr {
 void InitLibKernel_1_Apr(Loader::SymbolDatabase *symbols);
 }
@@ -130,6 +134,27 @@ void TestSaveOpenVisibility() {
   Check(FileSystem::KernelStat(Path, &stat) == OK && stat.st_size == 0,
         "save truncation is visible before close");
   Check(FileSystem::KernelClose(truncated) == OK, "close truncated save file");
+}
+
+void TestFsync() {
+  Loader::SymbolDatabase symbols;
+  Libs::InitLibKernel_1(&symbols);
+  const auto* symbol = symbols.Find(
+      {"juWbTNM+8hw", "Posix", 1, "libkernel", 1, 1, Loader::SymbolType::Func});
+  Check(symbol != nullptr, "POSIX fsync export resolves");
+  const auto fsync = reinterpret_cast<int (KYTY_SYSV_ABI *)(int)>(symbol->vaddr);
+  Check(fsync(std::numeric_limits<int>::min()) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EBADF,
+        "invalid fsync descriptor reports POSIX EBADF");
+
+  constexpr char Path[] = "/savedata0/fsync.dat";
+  const int fd = FileSystem::KernelOpen(Path, 0x602, 0777);
+  Check(fd >= 3 && FileSystem::KernelWrite(fd, "save", 4) == 4 && fsync(fd) == OK &&
+            FileSystem::KernelLseek(fd, 0, 1) == 4,
+        "fsync flushes a writable file without changing its offset");
+  Check(FileSystem::KernelClose(fd) == OK && fsync(fd) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EBADF,
+        "closed fsync descriptor reports POSIX EBADF");
 }
 
 void CheckMountRoot(const std::filesystem::path &root) {
@@ -268,6 +293,9 @@ void CheckArchiveMount(const std::filesystem::path &root) {
             std::equal(bytes.begin(), bytes.begin() + 9, payload.end() - 9) &&
             FileSystem::KernelRead(fd, bytes.data(), bytes.size()) == 0,
         "archive reads stop at the member boundary");
+  Check(FileSystem::KernelFsync(fd) == OK &&
+            FileSystem::KernelLseek(fd, 0, 1) == payload.size(),
+        "fsync succeeds on an immutable archive member without changing its offset");
   Check(FileSystem::KernelWrite(fd, bytes.data(), 1) ==
             Libs::LibKernel::KERNEL_ERROR_EBADF &&
             FileSystem::KernelPwrite(fd, bytes.data(), 1, 0) ==
@@ -836,6 +864,7 @@ int main(int, char**) {
   CheckAprPaths(temporary.Path());
   FileSystem::Mount(temporary.Path(), "/savedata0");
   TestSaveOpenVisibility();
+  TestFsync();
   CheckSaveRename(temporary.Path(), "first-save");
   CheckSaveRename(temporary.Path(), "replacement-save");
   FileSystem::Shutdown();

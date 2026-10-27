@@ -6,6 +6,11 @@ https://github.com/KytyPS5/KytyPS5.git, under GPL-2.0-only.
 Original copyright and license notices are retained in the sources and in
 the project's existing Kyty and third-party notices.
 
+Selected shader, filesystem/libc and PM4 correctness/compiler changes were
+adapted from subsequent KytyPS5 commits reviewed through
+db12f0c5fb1617b7ce5eaffba0d6be8d9b042bc1 on 2026-10-27. UPSTREAM.json lists
+the individual commits; this is not a complete upstream revision update.
+
 Lumen's modifications adapt the original engine to Android ARM64, its host
 window and UI bridges, and the isolated Gen4 direct FEX CPU implementation.
 The existing legacy PS5 renderer, memory publication and facade optimization
@@ -34,7 +39,8 @@ and the vendored translator are not modified by these options. Each option
 can be disabled individually with its explicit environment selector.
 
 An additional Gen5 host adaptation can generate fragment barycentric
-coordinates through a geometry stage for supported triangle-list pipelines.
-Its native default is disabled. Android direct Gen5/FEX selects it by default
-only for Minecraft PS5 (title ID PPSA17221), preserving explicit overrides.
+coordinates through geometry or mesh stages for supported triangle pipelines.
+It is enabled by default for all titles, subject to validated pipeline
+requirements and host capabilities. Explicit environment or admitted Android
+launch overrides take precedence, including disabling the adaptation.
 It does not expose unsupported native Vulkan barycentric features.

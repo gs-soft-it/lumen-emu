@@ -609,6 +609,79 @@ void TestConcurrentSharedWatchers() {
   Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
 }
 
+void TestHostPageAggregation() {
+  PageManager manager;
+  const auto host_page = manager.GetHostPageSize();
+  Check(host_page == 4 * TRACKER_PAGE_SIZE, "expected four logical slices per host page");
+  auto* memory = Allocate(TRACKER_REGION_SIZE * 2);
+  const auto base = reinterpret_cast<uint64_t>(memory);
+  const auto region = (base + TRACKER_REGION_SIZE - 1) & ~(TRACKER_REGION_SIZE - 1);
+  const auto check_span = [&](uint64_t address, uint64_t size) {
+    Check(g_protection_ranges.size() == 1 &&
+              g_protection_ranges[0].address == address && g_protection_ranges[0].size == size,
+          "protection must cover exactly the affected host pages");
+  };
+
+  RegionBits first;
+  first.Set(0);
+  RegionBits neighbor;
+  neighbor.Set(2);
+  g_protection_ranges.clear();
+  manager.UpdatePageWatchersForRegion<true>(region, first);
+  check_span(region, host_page);
+  Check(Protection(reinterpret_cast<void*>(region + 3 * TRACKER_PAGE_SIZE)) == PAGE_READONLY &&
+            IsWritable(reinterpret_cast<void*>(region + host_page)),
+        "logical write watch must protect its host page but not the next");
+  g_protection_ranges.clear();
+  manager.UpdatePageWatchersForRegion<true>(region, neighbor);
+  Check(g_protection_ranges.empty(), "neighbor watcher must not re-protect an unchanged host page");
+  manager.UpdatePageWatchersForRegion<false>(region, first);
+  Check(g_protection_ranges.empty() && Protection(reinterpret_cast<void*>(region)) == PAGE_READONLY,
+        "unwatching first slice must retain neighbor protection");
+
+  g_protection_ranges.clear();
+  manager.UpdatePageWatchersForRegion<true, true>(region, first);
+  check_span(region, host_page);
+  Check(Protection(reinterpret_cast<void*>(region + 3 * TRACKER_PAGE_SIZE)) == PAGE_NOACCESS,
+        "read watcher dominates neighboring write watch");
+  g_protection_ranges.clear();
+  manager.UpdatePageWatchersForRegion<false, true>(region, first);
+  check_span(region, host_page);
+  Check(Protection(reinterpret_cast<void*>(region)) == PAGE_READONLY,
+        "read unwatch preserves neighboring write watcher");
+  manager.UpdatePageWatchersForRegion<false>(region, neighbor);
+  Check(IsWritable(reinterpret_cast<void*>(region)), "last slice releases the entire host page");
+
+  RegionBits sparse;
+  sparse.Set(0);
+  sparse.Set(3);
+  sparse.Set(4);
+  sparse.Set(7);
+  g_protection_ranges.clear();
+  manager.UpdatePageWatchersForRegion<true>(region, sparse);
+  check_span(region, 2 * host_page);
+  g_protection_ranges.clear();
+  manager.UpdatePageWatchersForRegion<true>(region, sparse);
+  manager.UpdatePageWatchersForRegion<false>(region, sparse);
+  Check(g_protection_ranges.empty() && !IsWritable(reinterpret_cast<void*>(region)),
+        "duplicate sparse watchers retain per-slice counts");
+  manager.UpdatePageWatchersForRegion<false>(region, sparse);
+  check_span(region, 2 * host_page);
+
+  g_protection_ranges.clear();
+  manager.UpdatePageWatchers<true>(region - TRACKER_PAGE_SIZE, 2 * TRACKER_PAGE_SIZE);
+  Check(g_protection_ranges.size() == 2 &&
+            g_protection_ranges[0].address == region - host_page &&
+            g_protection_ranges[0].size == host_page &&
+            g_protection_ranges[1].address == region &&
+            g_protection_ranges[1].size == host_page,
+        "cross-region slice watches preserve both host page boundaries");
+  manager.UpdatePageWatchers<false>(region - TRACKER_PAGE_SIZE, 2 * TRACKER_PAGE_SIZE);
+  Check(IsWritable(reinterpret_cast<void*>(region - host_page)) &&
+            IsWritable(reinterpret_cast<void*>(region)), "cross-region host pages reopen after last watch");
+  Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
+}
+
 [[noreturn]] void RunDeathCase(const char *name) {
   PageManager manager;
   const auto page_size = manager.GetPageSize();
@@ -722,6 +795,14 @@ bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size,
 int main(int argc, char **argv) {
   if (argc == 3 && std::strcmp(argv[1], "--death") == 0) {
     RunDeathCase(argv[2]);
+  }
+  PageManager host;
+  if (host.GetHostPageSize() != TRACKER_PAGE_SIZE) {
+    TestHostPageAggregation();
+    TestConcurrentSharedWatchers();
+    TestFatalPaths();
+    std::puts("PageManagerTests: logical_4k=1 host_16k=1 real_protection=1 sparse_overlap=1");
+    return 0;
   }
   TestWatchAndUnwatch();
   TestWatchAndUnwatch(Libs::LibKernel::Memory::kExtendedMemoryBase);

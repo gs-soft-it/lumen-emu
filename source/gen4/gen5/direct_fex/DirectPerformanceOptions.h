@@ -16,13 +16,18 @@ struct Options {
     bool filesystem_case_cache = true;
     bool release_mem_batch = true;
     bool uniform_metadata = true;
+    bool vm_access_query = true;
+    bool srt_exact_readback = false;
 };
 
-// Read before native runtime initialization. The Android direct features
-// are approved defaults; an explicit 0 restores the previous path individually.
+// Read before native runtime initialization. Approved direct features are ON;
+// an explicit 0 restores the previous path individually.
 // The shared filesystem case cache, release batching and uniform metadata are ON.
 // Barycentric fallback is ON for every title; the renderer uses it only when
 // native barycentrics are unavailable and the required GPU features exist.
+// Allocation-free VM access validation is shared by every direct host/title.
+// Exact ordinary SRT readback and its eligible checked ARM64 walker are
+// experimental and OFF for every direct host/title; explicit 1 enables them.
 // Malformed values deny startup instead of silently changing the selection.
 inline Options ReadOptions(const char* (*lookup)(const char*)) {
     Options result;
@@ -41,13 +46,27 @@ inline Options ReadOptions(const char* (*lookup)(const char*)) {
     read("LUMEN_PS5_FILESYSTEM_CASE_CACHE", result.filesystem_case_cache);
     read("LUMEN_PS5_RELEASE_MEM_BATCH", result.release_mem_batch);
     read("LUMEN_PS5_UNIFORM_METADATA", result.uniform_metadata);
+    read("LUMEN_PS5_VM_ACCESS_QUERY", result.vm_access_query);
+    read("LUMEN_PS5_SRT_EXACT_READBACK", result.srt_exact_readback);
     return result;
 }
 
-inline const Options& Get() {
-    static const Options options = ReadOptions([](const char* name) -> const char* {
+// Keep the one-time environment parser out of the hot accessor so callers can
+// inline its initialized guard and option load. Initialization and publication
+// still belong to the function-local static in Get().
+#if defined(_MSC_VER)
+__declspec(noinline)
+#else
+__attribute__((noinline))
+#endif
+inline Options ReadEnvironmentOptions() noexcept {
+    return ReadOptions([](const char* name) -> const char* {
         return std::getenv(name);
     });
+}
+
+inline const Options& Get() {
+    static const Options options = ReadEnvironmentOptions();
     return options;
 }
 

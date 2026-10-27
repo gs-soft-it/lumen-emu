@@ -22,6 +22,7 @@ if((APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "arm64" OR
 endif()
 option(LUMEN_BUILD_PS5 "Build the PS5 ARM64/FEX integration"
   ${_lumen_ps5_fex_default})
+option(LUMEN_PS5_DIRECT_FEX "Build Gen5 with the native direct C13 runtime" OFF)
 
 if(LUMEN_BUILD_PS4)
   # The inherited targets remain available for focused regression checks and
@@ -43,27 +44,41 @@ if(LUMEN_BUILD_PS4)
   endif()
 endif()
 if(LUMEN_BUILD_PS5)
-  # Keep the existing binary layout while grouping both engines under source.
-  add_subdirectory(source/gen4/gen5 ps5)
-  if(APPLE AND TARGET lumen_macos_fexcore_runtime)
-    # The complete imported engine has independent third-party target names.
-    # Build it in a separate graph with the audited parent FEX closure, rather
-    # than silently linking a second translator or incompatible fmt archives.
-    set(LUMEN_PS5_FULL_BUILD_DIR "${CMAKE_BINARY_DIR}/ps5-full" CACHE PATH
-      "Build directory for the complete PS5 engine")
-    set(LUMEN_PS5_FFMPEG_PREBUILT_DIR "" CACHE PATH
-      "Verified native ARM64 FFmpeg prebuilt directory for the PS5 engine")
-    set(LUMEN_PS5_FULL_BUILD_JOBS "4" CACHE STRING
-      "Parallel jobs for the independent PS5 engine build")
-    if(NOT LUMEN_PS5_FULL_BUILD_JOBS MATCHES "^[1-9][0-9]*$")
-      message(FATAL_ERROR "LUMEN_PS5_FULL_BUILD_JOBS must be a positive integer")
-    endif()
+  if(APPLE AND LUMEN_PS5_DIRECT_FEX)
+    option(LUMEN_PS5_NATIVE_METAL "Execute Gen5 graphics through the native Metal backend" ON)
+    set(LUMEN_PS5_FULL_BUILD_DIR "${CMAKE_BINARY_DIR}/ps5-direct" CACHE PATH
+      "Independent Gen5 direct build directory")
+    set(LUMEN_PS5_FFMPEG_PREBUILT_DIR "" CACHE PATH "Native ARM64 FFmpeg for Gen5")
+    set(LUMEN_PS5_FULL_BUILD_JOBS "4" CACHE STRING "Parallel Gen5 build jobs")
     add_custom_target(lumen_ps5_runtime
-      COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/source/gen4/gen5/tools/build-full-kyty.sh"
-        "${CMAKE_BINARY_DIR}" "${LUMEN_PS5_FULL_BUILD_DIR}"
-        "${LUMEN_PS5_FFMPEG_PREBUILT_DIR}" "${LUMEN_PS5_FULL_BUILD_JOBS}"
-      DEPENDS lumen_macos_fexcore_runtime
+      COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/source/gen4/gen5/tools/build-direct-macos.sh"
+        "${LUMEN_PS5_FULL_BUILD_DIR}" "${LUMEN_PS5_FFMPEG_PREBUILT_DIR}"
+        "${LUMEN_PS5_FULL_BUILD_JOBS}"
+        "-DLUMEN_PS5_NATIVE_METAL=${LUMEN_PS5_NATIVE_METAL}"
       USES_TERMINAL VERBATIM)
+  else()
+    # Keep the existing binary layout while grouping both engines under source.
+    add_subdirectory(source/gen4/gen5 ps5)
+    if(APPLE AND TARGET lumen_macos_fexcore_runtime)
+      # The complete imported engine has independent third-party target names.
+      # Build it in a separate graph with the audited parent FEX closure, rather
+      # than silently linking a second translator or incompatible fmt archives.
+      set(LUMEN_PS5_FULL_BUILD_DIR "${CMAKE_BINARY_DIR}/ps5-full" CACHE PATH
+        "Build directory for the complete PS5 engine")
+      set(LUMEN_PS5_FFMPEG_PREBUILT_DIR "" CACHE PATH
+        "Verified native ARM64 FFmpeg prebuilt directory for the PS5 engine")
+      set(LUMEN_PS5_FULL_BUILD_JOBS "4" CACHE STRING
+        "Parallel jobs for the independent PS5 engine build")
+      if(NOT LUMEN_PS5_FULL_BUILD_JOBS MATCHES "^[1-9][0-9]*$")
+        message(FATAL_ERROR "LUMEN_PS5_FULL_BUILD_JOBS must be a positive integer")
+      endif()
+      add_custom_target(lumen_ps5_runtime
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/source/gen4/gen5/tools/build-full-kyty.sh"
+          "${CMAKE_BINARY_DIR}" "${LUMEN_PS5_FULL_BUILD_DIR}"
+          "${LUMEN_PS5_FFMPEG_PREBUILT_DIR}" "${LUMEN_PS5_FULL_BUILD_JOBS}"
+        DEPENDS lumen_macos_fexcore_runtime
+        USES_TERMINAL VERBATIM)
+    endif()
   endif()
 endif()
 
