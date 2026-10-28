@@ -10,7 +10,7 @@ Experimental **PS4 and PS5 emulation for Android**, with a **macOS (Apple Silico
 
 <p align="center">
   <a href="https://lumen-emu.com"><strong>Official website</strong></a> ·
-  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.2-spike-fexlab/lumenemu-0.1.2-spike-fexlab-v3.apk"><strong>Download Android APK</strong></a> ·
+  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.5-spike-fexlab/lumenemu-0.1.5-spike-fexlab-v6.apk"><strong>Download Android APK</strong></a> ·
   <a href="https://lumen-emu.com/support/"><strong>Support development</strong></a> ·
   <a href="#compatibility"><strong>Compatibility list</strong></a> ·
   <a href="#prepare-the-source"><strong>Build the cores</strong></a>
@@ -67,7 +67,7 @@ The Android package includes **SUCCI** to test the phone's performance. Its indi
 
 The application reads **already-extracted ROMs**; it does not open, extract or install PKG files. Prepare content you are legally authorised to use before selecting its library folder. No commercial games, firmware, BIOS files or keys are provided. See the [content requirements and responsible-use information](https://lumen-emu.com/legal/).
 
-From version **0.1.2**, select the complete prepared library with Android's system folder picker. After checking its estimated size and available space, the app copies it into private storage. Allow enough free space for this copy. The original folder remains unchanged and can be disconnected after import. A new import creates a separate library, without merging or automatically synchronising later changes from the source. Existing shared-storage selections require an explicit re-import; the app no longer requests access to all files on the device.
+In version **0.1.5**, choose the prepared ROMs folder with Android's system folder picker. The selected folder becomes the active library and is used directly, without a mandatory private copy. When changing folders, you can move existing games from the previous folder to the new one or leave them in the previous location. Transfers are verified before originals are removed, and files are not silently overwritten. The active folder is marked in grey and cannot be selected again in Lumen's confirmation. Keep the selected storage available while using it; the app does not request access to all files on the device.
 
 Use a suitably powerful device with adequate cooling, and stop if it becomes excessively hot or shows a temperature warning. Android gaming consoles have not yet been tested. See the [hardware guidance](https://lumen-emu.com/legal/#hardware-safety).
 
@@ -75,7 +75,7 @@ Use a suitably powerful device with adequate cooling, and stop if it becomes exc
 
 **Historical reports: 8 games · 4 playable · 2 almost playable · 2 boots only**
 
-The table below preserves the previously published tests of version 0.1.0. It is not a new compatibility claim for version 0.1.2.
+The table below preserves the previously published tests of version 0.1.0. It is not a new compatibility claim for version 0.1.5.
 
 [Open the full compatibility list and report form](https://lumen-emu.com/compatibility/).
 
@@ -129,14 +129,16 @@ The Lumen dashboard, game-library UI, Android Java/resources/Gradle application,
 
 ## Android download
 
-**Latest update — 0.1.2-spike-fexlab (version code 3):** imports the prepared library through Android's folder picker into private storage, removes broad storage permissions, includes current memory/shader/rendering and Android surface-recovery fixes, and identifies the active graphics driver in the benchmark result. See the [changelog](CHANGELOG.md) for package verification and testing limits.
+**Latest update — 0.1.5-spike-fexlab (version code 6), 28 October 2026:** Fixed ROM folder handling and improved emulation speed. See the [changelog](CHANGELOG.md) for package details and verification limits.
 
-**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.2-spike-fexlab/lumenemu-0.1.2-spike-fexlab-v3.apk)** ([experimental release 0.1.2-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.2-spike-fexlab)). Requires Android 15/API 35 or newer and an ARM64 device (`arm64-v8a`). This project-provided APK is the only application binary offered here. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
+**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.5-spike-fexlab/lumenemu-0.1.5-spike-fexlab-v6.apk)** ([experimental release 0.1.5-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.5-spike-fexlab)). Requires Android 15/API 35 or newer and an ARM64 device (`arm64-v8a`). This project-provided APK is the only application binary offered here. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
+
+This APK update includes later runtime and application fixes; the public native source snapshot remains the separately identified 27 October export.
 
 The APK has the same signing certificate as the previous GitHub download. Its SHA-256 is:
 
 ```text
-d70d03dff98ce73b3e77a45f6d1802ccbc6e59024ac30b6a457490688e301a9d
+6dc5f2adeba2dece7d1136cb8ebd67b4db8b28092e3ae5c3e85b35daf5747bcb
 ```
 
 ## Prepare the source

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.5-spike-fexlab — Android version code 6
+
+28 October 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.5-spike-fexlab)
+
+Fixed ROM folder handling and improved emulation speed.
+
+### Android package
+
+- File: `lumenemu-0.1.5-spike-fexlab-v6.apk`
+- Package: `it.gssoft.lumenemu`
+- Android 15 (API 35) or newer, ARM64 (`arm64-v8a`); target API 36.
+- Signature verified and unchanged from the previous GitHub APK.
+- Final Release build with temporary diagnostic tracing removed.
+
+SHA-256:
+
+```text
+6dc5f2adeba2dece7d1136cb8ebd67b4db8b28092e3ae5c3e85b35daf5747bcb
+```
+
+The existing release checks passed for build, package identity, signature, native packaging, diagnostic removal and all 21 Android document fixtures. Checksum, signing continuity and 16 KiB ZIP alignment were verified again for publication. The final APK was not rebuilt or retested in gameplay for this upload; no new FPS claim is made. This publication updates the APK and download documentation; the public native source snapshot remains the 27 October export described by `SOURCE_SNAPSHOT.json`.
+
 ## 0.1.2-spike-fexlab — Android version code 3
 
 27 October 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.2-spike-fexlab)
