@@ -129,6 +129,21 @@ outside the repository. APKs retain source-lock.json, NOTICE.txt and package
 metadata under Legal/Vulkan/panvk. The component terms remain applicable;
 these records do not certify reproduction of the upstream prebuilt binary.
 
+Android Adreno 8xx support packages the unmodified Banners A8xx release
+v27.0.0-20261018-r3 from The412Banner/Banners-Turnip, recipe revision
+7be393dd160769eb36d9962a2605ed18fd90c2ed and declared Mesa revision
+c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee. The exact archive and driver
+hashes, complete licence texts, source recipes and patches are retained under
+android/gpu-drivers/turnip-banners. The Banners recipe repository and its
+identified Max/WinNative patches carry GPL-3.0 terms; this driver must not be
+summarised as MIT-only. Mesa component terms and retained NDK notices also
+apply. android/scripts/prepare-banners.py verifies and stages the prebuilt
+without changing or rebuilding it. APK/AAB assets retain these records under
+Legal/Vulkan/turnip-banners. Independent reproduction and the complete
+transitive binary licence closure have not been verified; these records do
+not qualify the combined application for distribution. No driver binary is
+stored in Git. The A8xx package is distinct from the A6xx/A7xx package.
+
 These notices do not resolve the GPL-2.0-only / Apache-2.0 issue in the PS5
 SPIRV-Tools linkage or the Gen4 FDK AAC licence compatibility issue.
 Complete corresponding source and applicable relinking/component materials

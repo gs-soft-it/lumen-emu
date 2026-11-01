@@ -7,7 +7,8 @@
 ### Highlights
 
 - **Massive loading speedup, especially on PS5:** restored direct filesystem access to local ROM folders, shared by PS4 and PS5. The tested PS5 startup scenario showed substantially shorter initial loading delays.
-- **Preliminary PanVK support for compatible Mali GPUs:** the Android package includes JimVulkan PanVK r8 as an explicitly selectable experimental driver. The system driver remains the default on Mali.
+- **Preliminary PanVK support for compatible Mali GPUs:** the Android package includes JimVulkan PanVK r8 and selects it automatically on detected compatible Mali devices. The system driver remains available as a manual option.
+- **Bundled, selectable Turnip Banners:** the recommended configuration on supported Snapdragon/Adreno 8xx devices uses Mojo/Bionic for PS4 and Banners for PS5. Other Snapdragon devices retain Mojo/Bionic. Saved explicit driver choices are preserved.
 - **Android 13 support for the FEX package:** the minimum is now API 33 on ARM64, with target API 36. Builds containing the pinned QEMU backend still require API 35 or newer.
 
 ### Loading and ROM folders
@@ -16,11 +17,11 @@ Local ROM folders now use direct filesystem reads after the user grants Android'
 
 For document-backed libraries, the update reduces repeated provider acquisition, path-resolution and directory-enumeration work. Native document requests no longer hold a global lock while waiting on the provider, and certified read-only file handles can obtain their size directly without changing their read position. These changes reduce storage overhead without caching failed path lookups across guest filesystem calls.
 
-In the adopted Release baseline on the realme GT 8 Pro, using a separately configured Turnip Banners `20261018-r3-astro` driver, Astro Bot showed its Sony logo within 22 seconds and reached the title prompt within 198 seconds; the preceding document-backed path was still black at 233 seconds. These are observed startup timings with the tested driver and library, not a controlled speedup ratio, an FPS measurement or a guarantee for every game/device. Banners is not bundled in this APK: it includes Mojo/Bionic and PanVK, with Mojo/Bionic as the default on a fresh Snapdragon installation.
+In the adopted Release baseline on the realme GT 8 Pro, using Turnip Banners `20261018-r3-astro`, Astro Bot showed its Sony logo within 22 seconds and reached the title prompt within 198 seconds; the preceding document-backed path was still black at 233 seconds. These are observed startup timings with the tested driver and library, not a controlled speedup ratio, an FPS measurement or a guarantee for every game/device. The same pinned Banners driver is now included in both the APK and AAB, alongside Mojo/Bionic and PanVK.
 
 ### Mali and graphics compatibility
 
-The **PanVK (Experimental for Mali)** option is available on detected compatible Mali/kbase devices and applies to both PS4 and PS5. Compatibility depends on the GPU, kernel interface, Vulkan features and game. The bundled driver is JimVulkan r8; private diagnostic driver variants are not part of this release.
+The **PanVK (Experimental for Mali)** option is selected automatically on detected compatible Mali/kbase devices without a saved explicit choice, and applies to both PS4 and PS5. System Vulkan remains selectable manually; a custom-driver loading error is reported rather than silently falling back to another driver. Compatibility depends on the GPU, kernel interface, Vulkan features and game. The bundled driver is JimVulkan r8; private diagnostic driver variants are not part of this release.
 
 The initial Ulefone Note 16 Pro / Unisoc T606 / Mali-G57 MC1 tests reached the SUCCI menu with both System and PanVK, and completed a PanVK 3D benchmark in a Debug development build. This is preliminary device support, not general PS4/PS5 game compatibility on Mali. The core also adds targeted shader handling for smaller native GPU subgroups, capability checks for shaders that actually need optional features, and Android surface/landscape corrections.
 
@@ -30,7 +31,8 @@ The public core snapshot is refreshed from source revision `b9cde237`, including
 
 ### Android package
 
-- File: `lumenemu-0.1.6-spike-fexlab-v7.apk`
+- APK: `lumenemu-0.1.6-spike-fexlab-v7.apk`
+- Android App Bundle: `lumenemu-0.1.6-spike-fexlab-v7.aab`
 - Package: `it.gssoft.lumenemu`
 - Version: `0.1.6-spike-fexlab` (version code `7`)
 - Android 13 (API 33) or newer, ARM64 (`arm64-v8a`); target API 36.
@@ -39,12 +41,21 @@ The public core snapshot is refreshed from source revision `b9cde237`, including
 SHA-256:
 
 ```text
-7719a0ac2d7215f1d0a4e9343e25a32e49299a6d602d5ec7bd31427d3c0b780e
+a09143884c7a2ee53b6dd49ecf9bb81e82ea8586f7f3aff8b838ded97208c105
 ```
 
 ### Verification
 
-The signed Release build, package identity, signing continuity, 16 KiB ZIP alignment, bundled PanVK identity/notices and native PS4/PS5 packaging audit passed. The adopted source baseline had 30 passing JVM tests (3 existing skips) and 14 passing Android instrumentation tests; those results are reused here. The release rebuild changes version metadata, signing and native build identities, so its libraries are not claimed to be byte-identical to the tested local APK. No new installation, gameplay run or FPS benchmark was performed on this exact signed package. Alignment alone does not establish runtime compatibility with a 16 KiB-page Android device.
+The signed APK and AAB Release builds passed identity, signing-continuity and packaging checks, including bundletool validation and 16 KiB native alignment. Both contain the same native libraries, all three pinned graphics drivers and all 45 expected licence/provenance files. The native PS4/PS5 APK audit and 25 JVM Release tests for hardware detection, driver choices, defaults and preserved preferences passed.
+
+The earlier adopted source baseline had 30 passing JVM tests (3 existing skips) and 14 passing Android instrumentation tests; those results are reused for the unchanged paths. This release adds the driver-selection and packaging changes described above. No new installation, gameplay run or FPS benchmark was performed on the exact signed packages, and the new Mali defaults were not tested on a connected Mali device. Alignment alone does not establish runtime compatibility with a 16 KiB-page Android device.
+
+AAB SHA-256:
+
+```text
+8a466c425b719b80ea07da654999e57d91fe5e7ec587ec5e5e8e8c14158b7f02
+```
+
 
 ## 0.1.5-spike-fexlab — Android version code 6
 

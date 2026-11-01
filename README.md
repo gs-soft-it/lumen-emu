@@ -30,7 +30,7 @@ Lumen Emu brings PS4 and PS5 software into one Android library. Its dashboard pr
 | Graphics drivers | Custom Turnip drivers for compatible Snapdragon/Adreno devices, preliminary selectable PanVK support for compatible Mali devices, and the system Vulkan driver. |
 | Included benchmark | SUCCI, a homebrew demo benchmark, helps assess the phone's performance and shows the active graphics driver in its result. |
 
-Development now includes **experimental Mali GPU support**, alongside the existing Snapdragon/Adreno work. The Android package includes **JimVulkan PanVK r8** for explicit selection on compatible Mali devices; Mali devices still use their system driver by default. Custom-driver support depends on the GPU, Android version and kernel driver interface. A custom-driver loading failure stops startup rather than silently selecting another driver. See the [GPU compatibility notes](#gpu-and-device-compatibility) below.
+Development now includes **experimental Mali GPU support**, alongside the existing Snapdragon/Adreno work. The Android package includes **JimVulkan PanVK r8**, selected automatically on detected compatible Mali devices unless the user has saved a different valid choice. The system driver remains available as a manual option. On supported Snapdragon/Adreno 8xx devices, the recommended configuration uses **Turnip Mojo/Bionic for PS4** and the bundled **Turnip Banners for PS5**; either Turnip driver can also be selected explicitly. Custom-driver support depends on the GPU, Android version and kernel driver interface. A custom-driver loading failure stops startup rather than silently selecting another driver. See the [GPU compatibility notes](#gpu-and-device-compatibility) below.
 
 **The macOS (Apple Silicon) application remains in development.** No Mac or iOS application binary is offered by this repository. iOS is outside the active development and release plan; its retained legacy source build exposes CPU/VM components, as described below.
 
@@ -79,8 +79,8 @@ Use a suitably powerful device with adequate cooling, and stop if it becomes exc
 
 | GPU family | Driver options | Current scope |
 | --- | --- | --- |
-| Qualcomm Adreno / Snapdragon | System Vulkan and compatible custom Turnip drivers | Main development hardware; compatibility still varies by GPU, driver and game. |
-| ARM Mali, including Mali-G57 | System Vulkan; bundled JimVulkan PanVK r8 on compatible devices | **Preliminary, experimental support.** Initial device work used an Ulefone Note 16 Pro with Unisoc T606 / Mali-G57 MC1 and Android 13. |
+| Qualcomm Adreno / Snapdragon | System Vulkan, bundled Mojo/Bionic and Banners | Recommended configuration: Mojo/Bionic for PS4 and Banners for PS5 on supported Adreno 8xx devices; compatibility still varies by GPU, driver and game. |
+| ARM Mali, including Mali-G57 | Bundled JimVulkan PanVK r8 selected automatically on compatible devices; System remains selectable | **Preliminary, experimental support.** Initial device work used an Ulefone Note 16 Pro with Unisoc T606 / Mali-G57 MC1 and Android 13. |
 | Other or unidentified GPUs | System Vulkan | Device-specific testing is required; no general compatibility claim. |
 
 Initial development tests on the Mali-G57 device, using a Debug build, reached the SUCCI menu with both the system driver and the selected bundled PanVK driver; a PanVK 3D benchmark run also completed. These results are separate from verification of the release APK and do not establish broad PS4/PS5 game playability. PanVK requires a compatible Mali/kernel interface; a Mali model name alone does not guarantee that a custom driver will load. Shader and Vulkan feature support remain game-specific. The PS5 shader work also improves handling of supported subgroup sizes and checks optional GPU capabilities only where needed.
@@ -124,7 +124,7 @@ A contribution does not guarantee a requested feature, game or device compatibil
 
 ## Public source scope
 
-The emulator-core sources are public at [gs-soft-it/lumen-emu](https://github.com/gs-soft-it/lumen-emu), starting from a snapshot exported on 23 October 2026 without the original project's Git history, and updated on **1 November 2026** from source revision `b9cde237`. **Documenting and showing the full application above does not include its dashboard or application-shell sources in this repository.**
+The emulator-core sources are public at [gs-soft-it/lumen-emu](https://github.com/gs-soft-it/lumen-emu), starting from a snapshot exported on 23 October 2026 without the original project's Git history, and updated on **1 November 2026** from source revision `b9cde237`, with the Banners provenance and verification additions recorded in `SOURCE_SNAPSHOT.json`. **Documenting and showing the full application above does not include its dashboard or application-shell sources in this repository.**
 
 Included: emulator engines, CPU translation and virtual memory, rendering, native host bridges, build scripts, dependency locks, local patches, tests and licence records. Runtime input, IME and in-game guest dialogs remain part of the core.
 
@@ -147,12 +147,12 @@ The Lumen dashboard, game-library UI, Android Java/resources/Gradle application,
 
 **[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.6-spike-fexlab/lumenemu-0.1.6-spike-fexlab-v7.apk)** ([experimental release 0.1.6-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab)). Requires **Android 13/API 33 or newer** and an ARM64 device (`arm64-v8a`); target API 36. This FEX Release package uses the existing publication signing certificate. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
 
-Both the APK and public core snapshot are updated for this release. The public snapshot contains the native/runtime changes; application storage and driver-selection UI changes are delivered in the APK. The PS5 startup observations in the changelog used a separately configured Turnip Banners driver. This APK bundles Mojo/Bionic and PanVK; Banners is not included, and a fresh Snapdragon installation defaults to Mojo/Bionic.
+Both the APK and public core snapshot are updated for this release. The public snapshot contains the native/runtime changes; application storage and driver-selection UI changes are delivered in the APK. The PS5 startup observations in the changelog used Turnip Banners `20261018-r3-astro`; the same pinned driver is now bundled and used by the recommended PS5 configuration on supported Snapdragon/Adreno 8xx devices. Other Snapdragon devices retain Mojo/Bionic. The release also includes a signed Android App Bundle (AAB); use the APK for direct installation.
 
 The APK has the same signing certificate as the previous GitHub download. Its SHA-256 is:
 
 ```text
-7719a0ac2d7215f1d0a4e9343e25a32e49299a6d602d5ec7bd31427d3c0b780e
+a09143884c7a2ee53b6dd49ecf9bb81e82ea8586f7f3aff8b838ded97208c105
 ```
 
 ## Prepare the source

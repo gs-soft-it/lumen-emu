@@ -1,0 +1,268 @@
+{
+  "schema": 1,
+  "name": "Mesa Turnip Banners A8xx r3",
+  "source_repository": "https://gitlab.freedesktop.org/mesa/mesa",
+  "source_commit": "c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee",
+  "recipe_repository": "https://github.com/The412Banner/Banners-Turnip",
+  "recipe_commit": "7be393dd160769eb36d9962a2605ed18fd90c2ed",
+  "recipe_license": "GPL-3.0",
+  "patch_license_note": "Upstream patches/common/SOURCE identifies Max/WinNative patches 0001-0005 as GPL-3.0; Mesa component terms remain applicable.",
+  "release": "v27.0.0-20261018-r3",
+  "variant": "A8xx Android/AdrenoTools",
+  "gpu_profile": {
+    "vendor": "Qualcomm Adreno",
+    "series": "8xx",
+    "models": [
+      810,
+      812,
+      825,
+      829,
+      830,
+      840
+    ],
+    "selection_requires_verified_gpu": true
+  },
+  "archive_url": "https://github.com/The412Banner/Banners-Turnip/releases/download/v27.0.0-20261018-r3/Turnip-v27.0.0-20261018-r3-A8xx.zip",
+  "archive_sha256": "f377082e67cbec12c2d71b3a8718c9ed0c74da83396644a232a566e449f9f390",
+  "archive_bytes": 2673332,
+  "minimum_android_api": 28,
+  "files": {
+    "libvulkan_freedreno.so": {
+      "sha256": "06f01b7063c857f893219560a025f683a6edba11a2452675f54dbb8e1b32b737",
+      "bytes": 13577384
+    },
+    "meta.json": {
+      "sha256": "1200231f46a95b8a607de2b27237e158c949439be761079c01f87e5a8650ee7a",
+      "bytes": 453
+    }
+  },
+  "legal_files": {
+    "NOTICE.txt": {
+      "sha256": "06905a4b35230527102204341b0d4099cb2b3e56e454527c33034ac76bcb7b07",
+      "bytes": 2696
+    },
+    "licenses/Banners-Turnip-GPL-3.0.txt": {
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+      "bytes": 35149
+    },
+    "licenses/android-ndk-r29/NOTICE": {
+      "sha256": "faf0dc52cf6ce9ab09a04b0c074a378dd2565ee1ed9bc1179d83793bcdba012e",
+      "bytes": 516438
+    },
+    "licenses/android-ndk-r29/NOTICE.toolchain": {
+      "sha256": "789714a9076571c580cf531bdcebec776a4d889c12c3c1108adafc6e4338710a",
+      "bytes": 799639
+    },
+    "licenses/mesa/Apache-2.0": {
+      "sha256": "7e4d3fba250d15e9e0afa380d4b611828fa2560cc8fdebe95bcf2f01a487de12",
+      "bytes": 10045
+    },
+    "licenses/mesa/BSL-1.0": {
+      "sha256": "9b9fea7520a816107fcac2598b7c0155222f16bc430e989706b22f4367f1df7d",
+      "bytes": 1649
+    },
+    "licenses/mesa/GPL-1.0-or-later": {
+      "sha256": "8ff76f1528e6e4e9400c0f6b1f2d19d4979aaac3bcc44bb707a55389132825c4",
+      "bytes": 13047
+    },
+    "licenses/mesa/GPL-2.0-only": {
+      "sha256": "6667ad4063569cd53b13500550d93fcd3dc11bcf82c5514296af013a0b720ba5",
+      "bytes": 18424
+    },
+    "licenses/mesa/MIT": {
+      "sha256": "323c587d0ccf10e376f8bf9a7f31fb4ca6078105194b42e0b1e0ee2bc9bde71f",
+      "bytes": 1372
+    },
+    "licenses/mesa/SGI-B-2.0": {
+      "sha256": "686bf035a1fd22076416fd3b90370ac67771e884bf57f55693d51f8ce7c710a7",
+      "bytes": 1822
+    },
+    "licenses/mesa/exceptions/Linux-Syscall-Note": {
+      "sha256": "9b4084655174654608fd037e9ddb4feeadfada01cd042e9c17b05aa7105b2b9f",
+      "bytes": 1257
+    },
+    "licenses/mesa/license.rst": {
+      "sha256": "0d1a0472ecc81830e75c20d59b0ea02841e3db21255e0ebad97ab682c54d6615",
+      "bytes": 1816
+    },
+    "provenance/banners/build_turnip.sh": {
+      "sha256": "e485de28a4d9be9b384c9ecbd2cacf315a33bb0d73b3a35e9befdf7ad239ab52",
+      "bytes": 7441
+    },
+    "provenance/banners/github-workflows/turnip_build_combined.yml": {
+      "sha256": "6d605410b830dc6ae1fd7911b23f98ddd880d19b6909b60a405227eec24197c2",
+      "bytes": 21623
+    },
+    "provenance/banners/mesa_hash.txt": {
+      "sha256": "74e56bfcf452e0e30066374f395cf7853e0d1b8b5c4b269b0c8b9bc90dc0dc53",
+      "bytes": 41
+    },
+    "provenance/banners/patches/a8xx-winnative/0001-tu-Emulate-VK_EXT_mesh_shader-with-compute.patch": {
+      "sha256": "accdd77078bb53ac4d7dc13c42a25bdb8a9f8257b0f8eb7e352bdd82bf20ecb7",
+      "bytes": 104930
+    },
+    "provenance/banners/patches/a8xx-winnative/0002-tu-ir3-Support-a-required-subgroup-size-of-half-a-wa.patch": {
+      "sha256": "926a9796a5ab52eab21c0b7a537223cad96146eec58e74c16fed9acf9c06fae2",
+      "bytes": 19099
+    },
+    "provenance/banners/patches/a8xx-winnative/0003-ir3-Sanitize-cube-map-directions-on-A8XX.patch": {
+      "sha256": "63efbee980917791386a1d9568b6cb4e810724be4edf47fee7a43b53a1415e77",
+      "bytes": 4813
+    },
+    "provenance/banners/patches/a8xx-winnative/0004-tu-Invalidate-bindless-descriptors-through-the-A8XX-.patch": {
+      "sha256": "33e3c0105269ae654317158a549e830fd2dd11ef2d7afc6b4d3c91ee4caa5858",
+      "bytes": 3653
+    },
+    "provenance/banners/patches/a8xx-winnative/0005-tu-kgsl-Fetch-A8XX-command-streams-through-a-virtual.patch": {
+      "sha256": "887c2888eb75b3ac922fed258b93deb34407b180b73858ec41251bd95c94d756",
+      "bytes": 4803
+    },
+    "provenance/banners/patches/a8xx_gen8.patch": {
+      "sha256": "34d12b5af2bdbc38dbb7b0990620129a62c6e5ee086cdfa5e7975f6193886ba1",
+      "bytes": 43051
+    },
+    "provenance/banners/patches/a8xx_shared_mem.py": {
+      "sha256": "fa3cc2750e0d0cb911f2b0f7ca19ff5da762179610c22064242048f1fba020c1",
+      "bytes": 1364
+    },
+    "provenance/banners/patches/common/SOURCE": {
+      "sha256": "a730e85955bd2b75c8cc75d56bcdcbed35193e85d40a59486e86349c8f406dcd",
+      "bytes": 5446
+    },
+    "provenance/banners/patches/common/apply_common.sh": {
+      "sha256": "b194183f8f4dc02639141f3df49f4995cb18822ec2083a7d2c2a446ddbaf5ac4",
+      "bytes": 3878
+    }
+  },
+  "legal_sources": {
+    "provenance/banners/build_turnip.sh": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/build_turnip.sh",
+      "sha256": "e485de28a4d9be9b384c9ecbd2cacf315a33bb0d73b3a35e9befdf7ad239ab52",
+      "bytes": 7441
+    },
+    "provenance/banners/mesa_hash.txt": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/mesa_hash.txt",
+      "sha256": "74e56bfcf452e0e30066374f395cf7853e0d1b8b5c4b269b0c8b9bc90dc0dc53",
+      "bytes": 41
+    },
+    "provenance/banners/patches/common/SOURCE": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/patches/common/SOURCE",
+      "sha256": "a730e85955bd2b75c8cc75d56bcdcbed35193e85d40a59486e86349c8f406dcd",
+      "bytes": 5446
+    },
+    "provenance/banners/patches/common/apply_common.sh": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/patches/common/apply_common.sh",
+      "sha256": "b194183f8f4dc02639141f3df49f4995cb18822ec2083a7d2c2a446ddbaf5ac4",
+      "bytes": 3878
+    },
+    "provenance/banners/patches/a8xx_gen8.patch": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/patches/a8xx_gen8.patch",
+      "sha256": "34d12b5af2bdbc38dbb7b0990620129a62c6e5ee086cdfa5e7975f6193886ba1",
+      "bytes": 43051
+    },
+    "provenance/banners/patches/a8xx_shared_mem.py": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/patches/a8xx_shared_mem.py",
+      "sha256": "fa3cc2750e0d0cb911f2b0f7ca19ff5da762179610c22064242048f1fba020c1",
+      "bytes": 1364
+    },
+    "provenance/banners/patches/a8xx-winnative/0001-tu-Emulate-VK_EXT_mesh_shader-with-compute.patch": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/patches/a8xx-winnative/0001-tu-Emulate-VK_EXT_mesh_shader-with-compute.patch",
+      "sha256": "accdd77078bb53ac4d7dc13c42a25bdb8a9f8257b0f8eb7e352bdd82bf20ecb7",
+      "bytes": 104930
+    },
+    "provenance/banners/patches/a8xx-winnative/0002-tu-ir3-Support-a-required-subgroup-size-of-half-a-wa.patch": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/patches/a8xx-winnative/0002-tu-ir3-Support-a-required-subgroup-size-of-half-a-wa.patch",
+      "sha256": "926a9796a5ab52eab21c0b7a537223cad96146eec58e74c16fed9acf9c06fae2",
+      "bytes": 19099
+    },
+    "provenance/banners/patches/a8xx-winnative/0003-ir3-Sanitize-cube-map-directions-on-A8XX.patch": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/patches/a8xx-winnative/0003-ir3-Sanitize-cube-map-directions-on-A8XX.patch",
+      "sha256": "63efbee980917791386a1d9568b6cb4e810724be4edf47fee7a43b53a1415e77",
+      "bytes": 4813
+    },
+    "provenance/banners/patches/a8xx-winnative/0004-tu-Invalidate-bindless-descriptors-through-the-A8XX-.patch": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/patches/a8xx-winnative/0004-tu-Invalidate-bindless-descriptors-through-the-A8XX-.patch",
+      "sha256": "33e3c0105269ae654317158a549e830fd2dd11ef2d7afc6b4d3c91ee4caa5858",
+      "bytes": 3653
+    },
+    "provenance/banners/patches/a8xx-winnative/0005-tu-kgsl-Fetch-A8XX-command-streams-through-a-virtual.patch": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/patches/a8xx-winnative/0005-tu-kgsl-Fetch-A8XX-command-streams-through-a-virtual.patch",
+      "sha256": "887c2888eb75b3ac922fed258b93deb34407b180b73858ec41251bd95c94d756",
+      "bytes": 4803
+    },
+    "licenses/Banners-Turnip-GPL-3.0.txt": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/LICENSE",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+      "bytes": 35149
+    },
+    "licenses/mesa/license.rst": {
+      "url": "https://gitlab.freedesktop.org/mesa/mesa/-/raw/c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee/docs/license.rst",
+      "sha256": "0d1a0472ecc81830e75c20d59b0ea02841e3db21255e0ebad97ab682c54d6615",
+      "bytes": 1816
+    },
+    "licenses/mesa/Apache-2.0": {
+      "url": "https://gitlab.freedesktop.org/mesa/mesa/-/raw/c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee/licenses/Apache-2.0",
+      "sha256": "7e4d3fba250d15e9e0afa380d4b611828fa2560cc8fdebe95bcf2f01a487de12",
+      "bytes": 10045
+    },
+    "licenses/mesa/BSL-1.0": {
+      "url": "https://gitlab.freedesktop.org/mesa/mesa/-/raw/c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee/licenses/BSL-1.0",
+      "sha256": "9b9fea7520a816107fcac2598b7c0155222f16bc430e989706b22f4367f1df7d",
+      "bytes": 1649
+    },
+    "licenses/mesa/GPL-1.0-or-later": {
+      "url": "https://gitlab.freedesktop.org/mesa/mesa/-/raw/c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee/licenses/GPL-1.0-or-later",
+      "sha256": "8ff76f1528e6e4e9400c0f6b1f2d19d4979aaac3bcc44bb707a55389132825c4",
+      "bytes": 13047
+    },
+    "licenses/mesa/GPL-2.0-only": {
+      "url": "https://gitlab.freedesktop.org/mesa/mesa/-/raw/c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee/licenses/GPL-2.0-only",
+      "sha256": "6667ad4063569cd53b13500550d93fcd3dc11bcf82c5514296af013a0b720ba5",
+      "bytes": 18424
+    },
+    "licenses/mesa/MIT": {
+      "url": "https://gitlab.freedesktop.org/mesa/mesa/-/raw/c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee/licenses/MIT",
+      "sha256": "323c587d0ccf10e376f8bf9a7f31fb4ca6078105194b42e0b1e0ee2bc9bde71f",
+      "bytes": 1372
+    },
+    "licenses/mesa/SGI-B-2.0": {
+      "url": "https://gitlab.freedesktop.org/mesa/mesa/-/raw/c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee/licenses/SGI-B-2.0",
+      "sha256": "686bf035a1fd22076416fd3b90370ac67771e884bf57f55693d51f8ce7c710a7",
+      "bytes": 1822
+    },
+    "licenses/mesa/exceptions/Linux-Syscall-Note": {
+      "url": "https://gitlab.freedesktop.org/mesa/mesa/-/raw/c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee/licenses/exceptions/Linux-Syscall-Note",
+      "sha256": "9b4084655174654608fd037e9ddb4feeadfada01cd042e9c17b05aa7105b2b9f",
+      "bytes": 1257
+    },
+    "licenses/android-ndk-r29/NOTICE": {
+      "source": "Android NDK 29.0.14206865 installed SDK package; retained broad component notices",
+      "package_url": "https://dl.google.com/android/repository/android-ndk-r29-linux.zip",
+      "sha256": "faf0dc52cf6ce9ab09a04b0c074a378dd2565ee1ed9bc1179d83793bcdba012e",
+      "bytes": 516438
+    },
+    "licenses/android-ndk-r29/NOTICE.toolchain": {
+      "source": "Android NDK 29.0.14206865 installed SDK package; retained broad component notices",
+      "package_url": "https://dl.google.com/android/repository/android-ndk-r29-linux.zip",
+      "sha256": "789714a9076571c580cf531bdcebec776a4d889c12c3c1108adafc6e4338710a",
+      "bytes": 799639
+    },
+    "NOTICE.txt": {
+      "source": "Lumen packaging notice; original attribution and verification limits, 2026-11-01",
+      "sha256": "06905a4b35230527102204341b0d4099cb2b3e56e454527c33034ac76bcb7b07",
+      "bytes": 2696
+    },
+    "provenance/banners/github-workflows/turnip_build_combined.yml": {
+      "url": "https://raw.githubusercontent.com/The412Banner/Banners-Turnip/7be393dd160769eb36d9962a2605ed18fd90c2ed/.github/workflows/turnip_build_combined.yml",
+      "sha256": "6d605410b830dc6ae1fd7911b23f98ddd880d19b6909b60a405227eec24197c2",
+      "bytes": 21623
+    }
+  },
+  "verification_limits": {
+    "driver_modified_by_lumen": false,
+    "driver_rebuilt_by_lumen": false,
+    "independent_source_to_binary_reproduction": false,
+    "complete_transitive_binary_license_closure_verified": false,
+    "combined_binary_distribution_qualified": false
+  }
+}

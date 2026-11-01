@@ -1,0 +1,44 @@
+Mesa Turnip Banners A8xx — pinned upstream prebuilt
+===================================================
+
+This package preserves the unmodified Adreno A8xx Android/AdrenoTools driver
+from The412Banner/Banners-Turnip release v27.0.0-20261018-r3.
+Release: https://github.com/The412Banner/Banners-Turnip/releases/tag/v27.0.0-20261018-r3
+Build recipe revision: 7be393dd160769eb36d9962a2605ed18fd90c2ed
+Mesa revision: c823a83e8f373a5c36c2b9ed1d7dc98a4f3360ee
+Driver SHA-256: 06f01b7063c857f893219560a025f683a6edba11a2452675f54dbb8e1b32b737
+
+Original work includes Mesa and its contributors, The412Banner's build
+integration, whitebelyash's turnip/gen8 stack, and the Max/MaxsTechReview
+WinNative series identified by the upstream patches/common/SOURCE record.
+The recipe, source record and applied A8xx patches are retained without
+modification in provenance/banners. The upstream workflow is stored under
+github-workflows instead of .github/workflows so Android asset packaging
+retains it; its bytes and source URL remain unchanged.
+The build recipe selects a8xx_gen8.patch,
+a8xx_shared_mem.py and WinNative patches 0001 through 0005; it omits 0006.
+
+The Banners repository distributes its recipe under GPL-3.0 and its SOURCE
+record identifies the Max/WinNative patch series as GPL-3.0. The complete
+repository licence is retained at licenses/Banners-Turnip-GPL-3.0.txt.
+Mesa's own component terms and per-file copyrights remain applicable;
+licenses/mesa preserves the licence texts and licence description at the
+recorded Mesa revision. The driver must not be described as MIT-only.
+The upstream recipe names Android NDK r29 and statically links the C++
+runtime. Broad NDK r29 notices are retained under licenses/android-ndk-r29.
+
+No Lumen modification or rebuild of this driver is performed. The upstream
+binary archive contains only the shared library and meta.json, so Lumen adds
+these source, attribution and licence records alongside it without altering
+the driver bytes. source-lock.json identifies all retained materials.
+The complete upstream source trees remain available at the recorded
+repositories/revisions; the retained recipe is not a complete Mesa checkout.
+
+The exact source-to-binary reproduction and full transitive binary licence
+closure have not been independently verified. Preserving these records is not
+a determination of combined-binary licence compatibility or redistribution
+qualification. Existing project licence limitations remain applicable.
+
+This A8xx package is separate from upstream's Standard A6xx/A7xx build.
+Its meta.json declares Android API 28 and Adreno 810/812/825/829/830/840;
+those upstream declarations do not qualify every device or emulator runtime.

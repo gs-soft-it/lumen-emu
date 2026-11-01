@@ -1,6 +1,6 @@
 # Lumen Emu: licences, credits and source availability
 
-Updated 22 October 2026.
+Updated 1 November 2026.
 
 Lumen Emu is an independent emulator port optimised for Android, iOS and Mac (Apple Silicon), developed by
 GS-Soft using work from **shadPS4**, **Kyty** and **KytyPS5**. We thank their
@@ -46,6 +46,7 @@ rather than replaced by this summary:
 | Optional Adreno driver loader | [libadrenotools BSD-2-Clause](source/licenses/ps5/AdrenoTools/LICENSE), [liblinkernsbypass BSD-2-Clause](source/licenses/ps5/AdrenoTools/liblinkernsbypass-LICENSE) and [source record](source/licenses/ps5/AdrenoTools/SOURCE.txt) |
 | Mesa Turnip Mojo/Bionic driver | [Source lock](android/gpu-drivers/turnip-mojo-bionic/source-lock.json), [local-change notice](android/gpu-drivers/turnip-mojo-bionic/NOTICE.txt) and the verified external package's complete licence directory; loader-enabled APKs copy these materials to `Legal/Vulkan/turnip-mojo-bionic` |
 | Optional Mesa PanVK Mali r8 driver | [Source lock](android/gpu-drivers/panvk/source-lock.json), [complete upstream notices](android/gpu-drivers/panvk/NOTICE.txt) and [verified package preparer](android/scripts/prepare-panvk.py); loader-enabled APKs preserve these records under `Legal/Vulkan/panvk`. The prebuilt driver is kept outside Git. |
+| Mesa Turnip Banners A8xx driver | Unmodified `v27.0.0-20261018-r3` prebuilt; [pinned package, Mesa revision and recipe](android/gpu-drivers/turnip-banners/source-lock.json), [NOTICE](android/gpu-drivers/turnip-banners/NOTICE.txt), complete [licences](android/gpu-drivers/turnip-banners/licenses/) and [recipe/patch provenance](android/gpu-drivers/turnip-banners/provenance/banners/). The recipe repository and identified WinNative patches carry GPL-3.0 terms; Mesa and NDK component terms also apply. APK/AAB legal assets retain these records under `Legal/Vulkan/turnip-banners`; this is not a MIT-only package or a source-to-binary reproduction claim. |
 | Metal software tessellator | Microsoft D3D11 reference through Mesa 26.1.0, MIT, with Valve wrapper definitions; [modified MSL source and upstream SHA](source/emulator/src/Graphics/Metal/MetalSoftwareTessellatorSource.inc), full retained terms in [THIRD_PARTY_NOTICES.txt](source/licenses/THIRD_PARTY_NOTICES.txt) |
 | Desktop/shared additional components | Original notices under `source/3rdparty`, [desktop packaging list](source/legal_notices.cmake), and [supplemental macOS texts](macos/packaging/legal/notices.json) |
 

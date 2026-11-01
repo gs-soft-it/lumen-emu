@@ -1,0 +1,68 @@
+Patches every leg applies (build_turnip.sh, build_turnip_perf.sh, build_turnip_wayland.sh,
+build_turnip_linux.sh) through apply_common.sh, before the variant's own EXTRA_PATCH/EXTRA_SCRIPT.
+Since 2026-10-10 there are none of our own left: both KGSL fixes below went upstream in Mesa MR 44838
+(Danylo Piliaiev, merged 2026-10-08), and apply_common.sh asserts the Mesa tree carries them. Max's
+A8xx series (below) is the only thing it still applies, on the A8xx driver.
+
+kgsl-syncobj-merge-ts-fd.patch (DroidDeck, 2026-09-26) - DROPPED 2026-10-10: Mesa main carries
+  the fix since 1da50a1b "tu/kgsl: Correctly merge timestamps and sync files" (Danylo Piliaiev,
+  MR 44838, merged 2026-10-08), which rewrote kgsl_syncobj_merge; apply_common.sh now asserts that
+  rewrite is present instead of patching it. What the patch fixed, for the record:
+  kgsl_syncobj_merge converted the wrong syncobj when a timestamp result met a
+  sync-file: it called kgsl_syncobj_ts_to_fd on the fd syncobj, which has no queue
+  (NULL dereference in release builds, an assert in debug ones), and the
+  two-queues branch merged an fd the timestamp result never had. A submit that
+  waits on two semaphores of the two kinds - Cemu's every frame: the previous
+  command buffer plus the swapchain acquire - crashed on the first frame. Now the
+  timestamp side becomes the fence and is merged with the fd.
+  Device-proven on the Linux leg (Cemu SM3DW/Deus Ex/Wipeout 3; RPCS3, Dolphin,
+  Steam unchanged).
+
+A8XX DRIVER ONLY (since 2026-09-30, after r7): ../a8xx-winnative/0001-0005 are applied by
+apply_common.sh only when EXTRA_PATCH is the gen8 stack. 0001 (mesh) and 0002 (wave32) also switch
+on for A7xx (0002 for A6xx gen4 too: has_getfiberid), where they can steer DX12 games onto
+emulated paths (compute mesh + forced sysmem, half-wave subgroups); a user felt A7xx slower on
+r6/r7. The A6xx/A7xx drivers therefore carry no patches,
+and apply_common.sh fails if tu_mesh.cc reaches a non-A8xx driver.
+
+a8xx-winnative/0001-0006 (Max / MaxsTechReview, WinNative-Emu/Drivers linux/patches, GPL-3.0;
+  0001-0005 2026-09-27/28, 0006 c71f600a 2026-09-29). Kept under Max's own names and numbers so
+  they can be diffed against his repo; they build on each other and apply in that order. Replaces our earlier renamed copies of
+  0003-0005 (a8xx-*.patch, 2026-09-28), which had 0004 adapted because 0001 was missing.
+  - 0001 mesh shaders: VK_EXT_mesh_shader emulated with compute. Task/mesh shaders write into a
+    device ring that a generated vertex shader draws; render passes with mesh draws use sysmem.
+    Exposed on chip >= A7XX with >= 32 KiB compute shared memory.
+    REBASED onto Mesa 4da08cb (2026-09-30): upstream folded tu_shader_serialize/deserialize into
+    tu_shader_cache_process_blob(), so Max's two MESA_SHADER_COMPUTE blob hunks are one
+    io.bytes(&shader->mesh) case there. At fuzz 3 the old hunks landed outside any function.
+    Everything else is Max's diff unchanged.
+  - 0002 wave32: a required subgroup size of 32 on A8XX's 64-wide waves (each half-wave is a
+    subgroup), so vkd3d-proton accepts WaveSize(32) shaders.
+  - 0003 cube-coord sanitize: a NaN/zero cube-map direction hangs A8XX; clamp NaN to 0 and turn the
+    zero vector into +Z (quirk on a8xx_base only).
+  - 0004 bindless invalidate: A8XX's SP_UPDATE_CNTL has no bindless bits; invalidate through
+    SP_GFX/CS_BINDLESS_INVALIDATE. Older chips unchanged.
+  - 0005 IB VBO alias: freeing command-stream memory with GPUMEM_FREE_ID hangs A8XX; IBs are fetched
+    through a KGSL VBO alias that is unbound before the free (A8XX only).
+  - 0006 IB cache: DROPPED 2026-10-06, following Max (Droid-Deck/Drivers 27bf2ac, 2026-10-01):
+    "The IB cache (0006) broke the Linux driver on some Adreno 840 devices; without it they work
+    again." IB storage is freed again after use (0005's unbind-before-free still applies).
+  All six verified 2026-09-30 on Mesa 4da08cb for every leg's recipe (Standard, A8xx + gen8 stack,
+  710-720, 8G2 One UI; Android, Wayland pre-steps, Linux pre-patches): zero rejects, zero fuzz.
+  When Mesa moves and one stops applying, rebase it here (or pull Max's rebase) - never drop it
+  silently.
+
+kgsl-zero-timeout-poll.patch (The412Banner, 2026-09-29) - DROPPED 2026-10-10: Mesa main carries
+  the fix since e984ef29 "tu/kgsl: Prevent indefinite wait times for 0 timeout waits" (MR 44838,
+  merged 2026-10-08, crediting The412Banner for the find): a zero timeout now reads the retired
+  timestamp through kgsl_poll_timestamp(). Our patch applied with fuzz onto the rewritten
+  wait_timestamp_safe() and no longer compiled (the fd it used became device->fd). What it fixed:
+  wait_timestamp_safe() turned a poll (a timeout that is zero or already past) into
+  IOCTL_KGSL_DEVICE_WAITTIMESTAMP_CTXTID with timeout 0, which KGSL treats as "wait
+  forever". Mesa's emulated timeline semaphores poll from vk_sync_timeline_gc_locked on
+  every submit that signals a timeline, while holding the timeline mutex, so vkd3d-proton
+  (a timeline signal per submit plus a fence thread on the same mutex) ran CPU and GPU in
+  lock-step. A poll now reads IOCTL_KGSL_CMDSTREAM_READTIMESTAMP_CTXTID (retired) and
+  answers VK_SUCCESS / VK_TIMEOUT without waiting. Found on Bannerlator's Wayland adapter
+  (Pocket FIT A750): a D3D12 demo capped at ~615 fps went to 4335 fps with the same answer
+  given from outside the driver; X11 D3D12 (809 fps) had the same stall, milder.
