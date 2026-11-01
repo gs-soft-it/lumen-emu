@@ -4,12 +4,9 @@
 
 1 November 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab)
 
-### Package update — 1 November 2026
-
-Fixed a bug with the controller.
-
 ### Highlights
 
+- Fixed a bug with the controller.
 - **Massive loading speedup, especially on PS5:** restored direct filesystem access to local ROM folders, shared by PS4 and PS5. The tested PS5 startup scenario showed substantially shorter initial loading delays.
 - **Preliminary PanVK support for compatible Mali GPUs:** the Android package includes JimVulkan PanVK r8 and selects it automatically on detected compatible Mali devices. The system driver remains available as a manual option.
 - **Bundled, selectable Turnip Banners:** the recommended configuration on supported Snapdragon/Adreno 8xx devices uses Mojo/Bionic for PS4 and Banners for PS5. Other Snapdragon devices retain Mojo/Bionic. Saved explicit driver choices are preserved.

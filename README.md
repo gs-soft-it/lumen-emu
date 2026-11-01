@@ -143,7 +143,7 @@ The Lumen dashboard, game-library UI, Android Java/resources/Gradle application,
 
 ## Android download
 
-**Latest update — 0.1.6-spike-fexlab (version code 7), 1 November 2026:** Fixed a bug with the controller. See the [changelog](CHANGELOG.md).
+**Latest update — 0.1.6-spike-fexlab (version code 7), 1 November 2026:** Massively reduced loading delays in the tested PS5 startup path, direct local-ROM access for both PS4 and PS5, and preliminary PanVK support for Mali GPUs. Fixed a bug with the controller. See the [changelog](CHANGELOG.md) for details and the scope of the observations.
 
 **[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.6-spike-fexlab/lumenemu-0.1.6-spike-fexlab-v7.apk)** ([experimental release 0.1.6-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab)). Requires **Android 13/API 33 or newer** and an ARM64 device (`arm64-v8a`); target API 36. This FEX Release package uses the existing publication signing certificate. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
 
