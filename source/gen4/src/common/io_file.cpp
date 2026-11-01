@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include <vector>
 
 #include "common/alignment.h"
@@ -192,7 +193,7 @@ int IOFile::Open(const fs::path& path, FileAccessMode mode, FileType type, FileS
         result = _wfopen_s(&file, path.c_str(), AccessModeToWStr(mode, type));
     }
 #else
-    file = std::fopen(path.c_str(), AccessModeToStr(mode, type));
+    file = Lumen::HostFileSystem::fopen(path, AccessModeToStr(mode, type));
     result = errno;
 #endif
 
@@ -368,9 +369,27 @@ u64 IOFile::GetSize() const {
     // Flush any unwritten buffered data into the file prior to retrieving the file size.
     std::fflush(file);
 
+#if defined(__ANDROID__)
+    if (Lumen::Documents::IsMounted(file_path)) {
+        // Use the admitted descriptor: resolving the document path here would
+        // repeat provider directory queries before every guest read.
+        struct stat info {};
+        const int result = ::fstat(fileno(file), &info);
+        if (result != 0 || !S_ISREG(info.st_mode) || info.st_size < 0) {
+            const auto error =
+                std::error_code{result != 0 ? errno : EIO, std::generic_category()};
+            LOG_ERROR(Common_Filesystem,
+                      "Failed to retrieve the open document size at path={}, ec_message={}",
+                      PathToUTF8String(file_path), error.message());
+            return 0;
+        }
+        return static_cast<u64>(info.st_size);
+    }
+#endif
+
     std::error_code ec;
 
-    const auto file_size = fs::file_size(file_path, ec);
+    const auto file_size = Lumen::HostFileSystem::file_size(file_path, ec);
 
     if (ec) {
         LOG_ERROR(Common_Filesystem, "Failed to retrieve the file size of path={}, ec_message={}",

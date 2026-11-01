@@ -39,6 +39,9 @@ int RunSession(const SessionOptions& options, const std::function<void(bool, int
     auto settings = std::make_shared<EmulatorSettingsImpl>();
     EmulatorSettingsImpl::SetInstance(settings);
     settings->SetConfigMode(ConfigMode::Global);
+#if defined(__ANDROID__) && defined(NDEBUG)
+    settings->SetLogFilter("*:Warning");
+#endif
 #ifdef LUMEN_GEN4_DIRECT_FEX
     settings->SetLogSync(false);
     settings->SetCopyGpuBuffers(true);
@@ -52,6 +55,9 @@ int RunSession(const SessionOptions& options, const std::function<void(bool, int
     settings->SetWindowHeight(options.height);
     settings->SetSysModulesDir(options.root / "sce_module");
     Common::Log::Setup("lumen-startup.log");
+#if defined(__ANDROID__) && defined(NDEBUG)
+    Common::Log::UpdateLogLevels(settings->GetLogFilter());
+#endif
     UserSettings.Load();
 #ifdef __ANDROID__
     UserManagement.LoginUser(UserManagement.GetUserByPlayerIndex(1), 1);

@@ -73,7 +73,6 @@ void Initialize(const ::Vulkan::Instance& instance, const Frontend::WindowSDL& w
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.DisplaySize = ImVec2((float)window.GetWidth(), (float)window.GetHeight());
     PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f); // Makes the window edges rounded
 
     auto path = config_path.u8string();
@@ -116,6 +115,9 @@ void Initialize(const ::Vulkan::Instance& instance, const Frontend::WindowSDL& w
     ::Core::Devtools::Layer::SetupSettings();
     std::fprintf(stderr, "LUMEN_HOST_IMGUI_SDL\n");
     Sdl::Init(window.GetSDLWindow());
+    // Initialize logical size and framebuffer scale even if the surface settled
+    // before the window was created and no later resize event is delivered.
+    Sdl::OnResize();
 
     const Vulkan::InitInfo vk_info{
         .instance = instance.GetInstance(),

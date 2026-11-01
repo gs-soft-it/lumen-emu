@@ -4,7 +4,7 @@
 
 namespace Lumen::Android::FexCoreLab {
 
-inline constexpr std::int32_t kMinimumAndroidApi = 35;
+inline constexpr std::int32_t kMinimumAndroidApi = 33;
 constexpr bool IsSupportedHostPageSize(std::int64_t hostPageSize) {
     return hostPageSize == 4096 || hostPageSize == 16384;
 }

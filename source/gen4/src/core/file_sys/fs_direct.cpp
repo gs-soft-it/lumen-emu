@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include <algorithm>
 #include <array>
 #include <unordered_set>
@@ -72,15 +73,15 @@ std::optional<std::filesystem::path> BaseGameFromOverlay(const std::filesystem::
 }
 
 std::optional<std::filesystem::path> ResolveGameRoot(const std::filesystem::path& root) {
-    if (std::filesystem::is_directory(root)) {
+    if (Lumen::HostFileSystem::is_directory(root)) {
         return root;
     }
-    if (root.extension() == ".zar" && std::filesystem::is_regular_file(root)) {
+    if (root.extension() == ".zar" && Lumen::HostFileSystem::is_regular_file(root)) {
         return root;
     }
     std::filesystem::path with_ext = root;
     with_ext += ".zar";
-    if (std::filesystem::is_regular_file(with_ext)) {
+    if (Lumen::HostFileSystem::is_regular_file(with_ext)) {
         return with_ext;
     }
     return std::nullopt;
@@ -93,14 +94,15 @@ void MntPoints::Mount(const std::filesystem::path& host_folder, const std::strin
     // Build the backend stack for this mount.
     std::vector<std::shared_ptr<IBackend>> stack;
     const bool eligible_for_overlays =
-        guest_folder_sanitized == "/app0" || guest_folder_sanitized == "/hostapp";
+        (guest_folder_sanitized == "/app0" || guest_folder_sanitized == "/hostapp") &&
+        !Lumen::Documents::IsMounted(host_folder);
     const auto make_backend = [](const std::filesystem::path& p,
                                  bool ro) -> std::shared_ptr<IBackend> {
-        if (std::filesystem::is_directory(p)) {
+        if (Lumen::HostFileSystem::is_directory(p)) {
             return std::make_shared<HostFsBackend>(p, ro);
         }
         const auto try_zar = [ro](const std::filesystem::path& zar) -> std::shared_ptr<IBackend> {
-            if (std::filesystem::is_regular_file(zar) && zar.extension() == ".zar") {
+            if (Lumen::HostFileSystem::is_regular_file(zar) && zar.extension() == ".zar") {
                 auto backend = std::make_shared<ZArchiveBackend>(zar);
                 if (backend->IsOpen()) {
                     return backend;
@@ -180,6 +182,11 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
         *is_read_only = mount->read_only;
     }
 
+    if (Lumen::Documents::IsMounted(mount->host_path)) {
+        if (corrected_path == mount->mount) return mount->host_path;
+        return mount->host_path / corrected_path.substr(mount->mount.size() + 1);
+    }
+
     const bool host_backed =
         mount->backends.empty() || mount->backends.back()->RootHostPath().has_value();
 
@@ -188,7 +195,7 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
 
     // Update folder is either mount + "-UPDATE" or mount + "-patch"
     std::filesystem::path patch_path = OverlayPath(mount->host_path, "-UPDATE");
-    if (!std::filesystem::exists(patch_path)) {
+    if (!Lumen::HostFileSystem::exists(patch_path)) {
         patch_path = OverlayPath(mount->host_path, "-patch");
     }
 
@@ -219,13 +226,13 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
     }
 
     if ((corrected_path.starts_with("/app0") || corrected_path.starts_with("/hostapp")) &&
-        path_type != HostPathType::Base && std::filesystem::exists(mods_path)) {
+        path_type != HostPathType::Base && Lumen::HostFileSystem::exists(mods_path)) {
         return mods_path;
     }
 
     if ((corrected_path.starts_with("/app0") || corrected_path.starts_with("/hostapp")) &&
         path_type != HostPathType::Base && !ignore_game_patches &&
-        std::filesystem::exists(patch_path)) {
+        Lumen::HostFileSystem::exists(patch_path)) {
         return patch_path;
     }
 
@@ -239,7 +246,7 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
         std::scoped_lock lk{m_mutex};
         path_parts.clear();
         auto current_path = host_path;
-        while (!current_path.empty() && !std::filesystem::exists(current_path)) {
+        while (!current_path.empty() && !Lumen::HostFileSystem::exists(current_path)) {
             // We have probably cached this if it's a folder.
             if (auto it = path_cache.find(current_path); it != path_cache.end()) {
                 current_path = it->second;
@@ -261,7 +268,7 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
                     path_parts.pop_back();
                 };
                 // Can happen when the mismatch is in upper folder.
-                if (std::filesystem::exists(current_path / part)) {
+                if (Lumen::HostFileSystem::exists(current_path / part)) {
                     add_match(part);
                     continue;
                 }
@@ -451,6 +458,7 @@ std::unique_ptr<IFile> MntPoints::Open(std::string_view guest_path, bool writabl
 
 std::unique_ptr<IFile> MntPoints::Open(std::string_view guest_path,
                                        Common::FS::FileAccessMode mode) {
+    const Lumen::Documents::ReadOperation document_operation;
     const auto corrected = SanitizeGuestPath(guest_path);
     if (!corrected) {
         return nullptr;
@@ -479,6 +487,7 @@ std::unique_ptr<IFile> MntPoints::Open(std::string_view guest_path,
 }
 
 std::unique_ptr<IDirectory> MntPoints::OpenDir(std::string_view guest_path) {
+    const Lumen::Documents::ReadOperation document_operation;
     const auto corrected = SanitizeGuestPath(guest_path);
     if (!corrected) {
         return nullptr;

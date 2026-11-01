@@ -4,10 +4,10 @@
 #include <SDL_error.h>
 #include <SDL_system.h>
 
-bool LumenAndroidPs4ConfigureVulkanDriver(const char* directory, const char* name) {
+bool LumenAndroidPs4ConfigureVulkanDriver(const char* directory, const char* name, const char* loader) {
     const LumenAndroidVulkanHost host {SDL_AndroidGetInternalStoragePath,
         SDL_AndroidGetJNIEnv, SDL_AndroidGetActivity};
-    if (LumenAndroidConfigureVulkanDriver("PS4", directory, name, host)) return true;
+    if (LumenAndroidConfigureVulkanDriver("PS4", directory, name, host, loader)) return true;
     // SDL2 returns -1 on error; SDL3 returns false. Never coerce SDL2's result.
     SDL_SetError("PS4 private Vulkan driver: %s", LumenAndroidVulkanDriverError());
     return false;

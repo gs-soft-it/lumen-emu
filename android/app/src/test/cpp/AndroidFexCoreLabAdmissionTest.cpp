@@ -12,12 +12,12 @@ int main() {
         std::numeric_limits<std::int32_t>::max(),
         std::numeric_limits<std::int64_t>::max(),
     };
-    constexpr std::array<std::int32_t, 5> apiLevels {-1, 26, 34, 35, 36};
+    constexpr std::array<std::int32_t, 7> apiLevels {-1, 26, 32, 33, 34, 35, 36};
     std::uint32_t cases {};
     for (const auto pageSize : pageSizes) {
         for (const auto api : apiLevels) {
             for (unsigned flags = 0; flags < 8; ++flags) {
-                const bool expected = flags == 7 && api >= 35 &&
+                const bool expected = flags == 7 && api >= 33 &&
                     (pageSize == 4096 || pageSize == 16384);
                 const bool admitted = IsAdmissionAllowed({
                     (flags & 1u) != 0, (flags & 2u) != 0,

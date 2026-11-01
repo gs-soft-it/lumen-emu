@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "name": "PanVK Mali r8",
+  "source_repository": "https://github.com/JimVulkan/mali-panvk",
+  "source_commit": "d896b0a9c10b92f0f9d53ef3373006b79ed709e8",
+  "release": "v1.4.0",
+  "archive_url": "https://github.com/JimVulkan/mali-panvk/releases/download/v1.4.0/mali-panvk-27.0.0-devel-r8.zip",
+  "archive_sha256": "d82d8f2dd4a368770b9b43566f7b5295d205060cb6ffd536b07afc33914858a1",
+  "minimum_android_api": 31,
+  "files": {
+    "libvulkan_panfrost.so": {
+      "sha256": "5150d3234b5ff24dae40888eae6347c9e193483fbfabe063649fd6d21d5de624",
+      "bytes": 17542496
+    },
+    "NOTICE.txt": {
+      "sha256": "ed3e69b5c2079c4f2f7099cef3738dfb359cc9c8275718d0fecb406004fe8102",
+      "bytes": 19998
+    },
+    "meta.json": {
+      "sha256": "ae29c5a9b8468f865fdfedade26c24c32203bd9a21d892409be4ebe757e17b9c",
+      "bytes": 387
+    }
+  }
+}

@@ -1104,6 +1104,20 @@ target_sources(lumen_gen4_runtime PRIVATE
     src/sdl_window.cpp
 )
 
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}/..")
+if(ANDROID)
+    add_library(lumen_android_documents SHARED IMPORTED GLOBAL)
+    file(STRINGS "${LUMEN_GEN4_PARENT_BUILD}/CMakeCache.txt" gen4_document_output_line
+        REGEX "^CMAKE_LIBRARY_OUTPUT_DIRECTORY:[^=]*=")
+    string(REGEX REPLACE "^[^=]*=" "" gen4_document_output "${gen4_document_output_line}")
+    if(NOT gen4_document_output)
+        set(gen4_document_output "${LUMEN_GEN4_PARENT_BUILD}")
+    endif()
+    set_target_properties(lumen_android_documents PROPERTIES
+        IMPORTED_LOCATION "${gen4_document_output}/liblumen_android_documents.so")
+    target_link_libraries(lumen_gen4_runtime PRIVATE lumen_android_documents)
+endif()
+
 target_compile_definitions(lumen_gen4_runtime PRIVATE LUMEN_GEN4_HOST_RUNTIME=1 VK_ENABLE_BETA_EXTENSIONS=)
 if(ANDROID)
     find_library(LUMEN_ANDROID_LOG_LIBRARY log REQUIRED)

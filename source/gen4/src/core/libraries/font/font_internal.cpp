@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include "font_internal.h"
 
 #include <array>
@@ -918,7 +919,7 @@ std::filesystem::path ResolveGuestPath(const char* guest_path) {
 
 bool LoadGuestFileBytes(const std::filesystem::path& host_path,
                         std::vector<unsigned char>& out_bytes) {
-    std::ifstream file(host_path, std::ios::binary | std::ios::ate);
+    Lumen::HostFileSystem::InputStream file(host_path, std::ios::binary | std::ios::ate);
     if (!file) {
         return false;
     }

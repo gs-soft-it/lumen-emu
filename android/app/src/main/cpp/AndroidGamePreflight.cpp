@@ -1,4 +1,5 @@
 // Lumen PS5 integration modifications, 2026-10-02. SPDX-License-Identifier: GPL-2.0-only
+#include "host/DocumentFileSystem.h"
 #include "AndroidGamePreflight.h"
 
 #include <cerrno>
@@ -56,7 +57,8 @@ bool BuildPath(char* destination, size_t destinationSize,
 
 int OpenRegularFile(const char* path, uint64_t* fileSize)
 {
-    const int descriptor = ::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    const int descriptor = Lumen::Documents::IsMounted(path) ? Lumen::Documents::OpenRead(path)
+        : ::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (descriptor < 0)
     {
         return -1;
@@ -216,7 +218,9 @@ extern "C" uint32_t LumenAndroidGamePreflightV1(
         return LUMEN_ANDROID_GAME_PREFLIGHT_INVALID_ARGUMENT_V1;
     }
     struct stat ps5Metadata {};
-    if (::lstat(ps5MetadataPath, &ps5Metadata) == 0) {
+    if (Lumen::Documents::IsMounted(ps5MetadataPath)
+            ? Lumen::Documents::Stat(ps5MetadataPath, ps5Metadata)
+            : ::lstat(ps5MetadataPath, &ps5Metadata) == 0) {
         return LUMEN_ANDROID_GAME_PREFLIGHT_PS5_REQUIRES_SEPARATE_RUNTIME_V1;
     }
     if (errno != ENOENT) {

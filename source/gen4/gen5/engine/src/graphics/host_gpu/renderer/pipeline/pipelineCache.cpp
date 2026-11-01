@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/image/textureCommon.h"
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
@@ -18,6 +19,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/spirvModuleAdmission.h"
+#include "graphics/host_gpu/computeSubgroupPolicy.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "graphics/shader/barycentricFallback.h"
@@ -152,6 +154,107 @@ bool ShaderCaptureEnabled() {
 	       Config::GetShaderLogDirection() == Config::LogDirection::File;
 }
 
+void DumpRasterSubgroupDenial(const ShaderRecompiler::IR::Program& program,
+                              std::span<const uint32_t> spirv) {
+	// Fatal-only capture: no global shader logging/validation, allocations proportional
+	// to the shader, or game selector. Preserve the failing IR's dependencies and flags.
+	namespace IR = ShaderRecompiler::IR;
+	constexpr size_t MaxInstructions = 4096;
+	constexpr size_t MaxArguments = 32;
+	constexpr size_t MaxIrBytes = 256 * 1024;
+	constexpr size_t MaxSpirvWords = 16384;
+	std::array<const IR::Inst*, MaxInstructions> instructions {};
+	size_t total = 0;
+	for (const auto* block: program.blocks) {
+		for (const auto& inst: *block) {
+			if (total < instructions.size()) instructions[total] = &inst;
+			++total;
+		}
+	}
+	const auto captured = std::min(total, instructions.size());
+	size_t bytes = 0;
+	bool truncated = total > captured;
+	const auto print = [&](const char* format, auto... args) {
+		std::array<char, 512> text {};
+		int requested;
+		if constexpr (sizeof...(args) == 0)
+			requested = std::snprintf(text.data(), text.size(), "%s", format);
+		else requested = std::snprintf(text.data(), text.size(), format, args...);
+		if (requested <= 0) return;
+		const auto size = std::min({static_cast<size_t>(requested), text.size() - 1u,
+		                            MaxIrBytes - bytes});
+		truncated |= size != static_cast<size_t>(requested);
+		bytes += std::fwrite(text.data(), 1, size, stderr);
+	};
+	const auto value = [&](IR::Value arg) {
+		if (arg.IsEmpty()) { print("<null>"); return; }
+		if (const auto* source = arg.TryInstruction()) {
+			const auto found = std::find(instructions.begin(), instructions.begin() + captured, source);
+			if (found == instructions.begin() + captured) {
+				print("<outside-capture>");
+				truncated = true;
+			} else print("%%%zu", static_cast<size_t>(found - instructions.begin()) + 1u);
+			return;
+		}
+		switch (arg.GetType()) {
+			case IR::Type::U1: print("%s", arg.U1() ? "true" : "false"); break;
+			case IR::Type::U8: print("%uu8", arg.U8()); break;
+			case IR::Type::U16: print("%uu16", arg.U16()); break;
+			case IR::Type::U32: print("0x%08x", arg.U32()); break;
+			case IR::Type::U64: print("0x%016" PRIx64, arg.U64()); break;
+			case IR::Type::F16: print("f16(0x%04x)", arg.F16Bits()); break;
+			case IR::Type::F32: print("%gf", static_cast<double>(arg.F32Value())); break;
+			case IR::Type::ScalarReg: print("s%u", IR::RegIndex(arg.ScalarRegister())); break;
+			case IR::Type::VectorReg: print("v%u", IR::RegIndex(arg.VectorRegister())); break;
+			default: print("<type=%u>", static_cast<uint32_t>(arg.GetType())); break;
+		}
+	};
+	const auto& info = program.info;
+	std::fprintf(stderr, "PS5_RASTER_SUBGROUP_DIAGNOSTIC_V1 hash=0x%016" PRIx64
+	    " ballot=%u vote=%u barrier=%u shuffle=%u arithmetic=%u lane_id=%u"
+	    " ir_instructions=%zu ir_cap=%zu ir_byte_cap=%zu arg_cap=%zu spirv_words=%zu spirv_cap=%zu\n",
+	    program.shader_hash, info.subgroup_ballot, info.subgroup_vote, info.subgroup_barrier,
+	    info.subgroup_shuffle, info.subgroup_arithmetic, info.subgroup_local_invocation_id,
+	    total, MaxInstructions, MaxIrBytes, MaxArguments, spirv.size(), MaxSpirvWords);
+	size_t index = 0;
+	for (const auto* block: program.blocks) {
+		if (index >= captured || bytes >= MaxIrBytes) break;
+		print("Block $%u pc=0x%08x..0x%08x term=%u true=$%u false=$%u condition=",
+		      block->id, block->start_pc, block->end_pc, static_cast<uint32_t>(block->terminator.kind),
+		      block->terminator.true_block ? block->terminator.true_block->id : UINT32_MAX,
+		      block->terminator.false_block ? block->terminator.false_block->id : UINT32_MAX);
+		value(block->condition);
+		print("\n");
+		for (const auto& inst: *block) {
+			if (index >= captured || bytes >= MaxIrBytes) break;
+			const auto name = IR::ValueOpcodeName(inst.GetOpcode());
+			print("  %%%zu = %.*s flags=0x%016" PRIx64 " uses=%zu args=",
+			      ++index, static_cast<int>(name.size()), name.data(), inst.Flags<uint64_t>(), inst.UseCount());
+			const auto args = std::min(inst.NumArgs(), MaxArguments);
+			for (size_t arg = 0; arg < args; ++arg) {
+				if (arg) print(", ");
+				if (inst.GetOpcode() == IR::ValueOpcode::Phi)
+					print("[$%u]", inst.PhiBlock(arg) ? inst.PhiBlock(arg)->id : UINT32_MAX);
+				value(inst.Arg(arg));
+			}
+			if (args != inst.NumArgs()) { print(", <arguments-truncated>"); truncated = true; }
+			print("\n");
+		}
+	}
+	std::fprintf(stderr, "PS5_RASTER_SUBGROUP_IR_END bytes=%zu instructions=%zu truncated=%u\n",
+	             bytes, index, truncated || index != total);
+	const auto words = std::min(spirv.size(), MaxSpirvWords);
+	for (size_t offset = 0; offset < words; offset += 16u) {
+		std::fprintf(stderr, "PS5_RASTER_SUBGROUP_SPV offset=%zu", offset);
+		for (size_t word = offset; word < std::min(offset + 16u, words); ++word)
+			std::fprintf(stderr, " %08x", spirv[word]);
+		std::fputc('\n', stderr);
+	}
+	std::fprintf(stderr, "PS5_RASTER_SUBGROUP_SPV_END words=%zu truncated=%u\n",
+	             words, words != spirv.size());
+	std::fflush(stderr);
+}
+
 void WriteCaptureText(const std::filesystem::path& path, std::string_view text) {
 	Common::File::CreateDirectories(path.parent_path());
 	Common::File file(path);
@@ -177,8 +280,10 @@ std::string ShaderCaptureMetadata(const ShaderRecompiler::CompileOptions& option
 		                    static_cast<uint32_t>(pixel.alpha_blend_source),
 		                    pixel.ps_pixel_kill_enable);
 		for (uint32_t slot = 0; slot < pixel.target_export_mapping.size(); ++slot) {
-			text += fmt::format("target slot={} mode={} mapping=0x{:02x}\n", slot,
-			                    pixel.target_output_mode[slot], pixel.target_export_mapping[slot].packed);
+			text += fmt::format("target slot={} mode={} numeric_class={} mapping=0x{:02x}\n", slot,
+			                    pixel.target_output_mode[slot],
+			                    static_cast<uint32_t>(pixel.target_numeric_class[slot]),
+			                    pixel.target_export_mapping[slot].packed);
 		}
 	}
 	for (uint32_t i = 0; i < program.info.buffers.size(); ++i) {
@@ -431,7 +536,7 @@ struct PipelineCache::ProgramCache {
 				const BarycentricFallback::Limits fallback_limits {
 				    limits.maxGeometryInputComponents, limits.maxGeometryOutputComponents,
 				    limits.maxGeometryTotalOutputComponents, limits.maxGeometryOutputVertices,
-				    limits.maxFragmentInputComponents};
+				    limits.maxFragmentInputComponents, graphics.fragment_quad_control_enabled};
 				auto fallback = BarycentricFallback::PrepareFragment(result.spirv, fallback_limits);
 				if (fallback.status == BarycentricFallback::Status::Ready) {
 					if (options.input_info.pixel->mesh_barycentric_fallback) {
@@ -469,7 +574,8 @@ struct PipelineCache::ProgramCache {
 		}
 		if (!ValidateShaderSpirv(options.dump_label, options.shader_hash, result.spirv,
 		                         options.maintenance8_enabled,
-		                         barycentric_plan != nullptr || mesh_barycentric_plan != nullptr)) {
+		                         barycentric_plan != nullptr || mesh_barycentric_plan != nullptr ||
+		                             result.program.info.fragment_quad_partitioned)) {
 			DumpShaderSpirv(stage_name, options.shader_hash, result.spirv);
 			EXIT("%s failed hash=0x%016" PRIx64 ": SPIR-V validation failed\n", options.dump_label,
 			     options.shader_hash);
@@ -477,6 +583,45 @@ struct PipelineCache::ProgramCache {
 		if (ShaderCaptureEnabled()) {
 			DumpShaderSpirv(stage_name, options.shader_hash, result.spirv,
 			                ShaderCaptureMetadata(options, result.program, next_shader_id + 1u));
+		}
+
+		if (graphics.subgroup_size < 32u && options.stage != ShaderType::Compute &&
+		    options.stage != ShaderType::Mesh) {
+			const auto& info = result.program.info;
+			const bool consumes_subgroup = info.subgroup_ballot || info.subgroup_vote ||
+			    info.subgroup_barrier || info.subgroup_shuffle || info.subgroup_arithmetic ||
+			    info.subgroup_local_invocation_id;
+			const bool certified_quad_partition = options.stage == ShaderType::Pixel &&
+			    options.fragment_quad_control_enabled && graphics.fragment_quad_control_enabled &&
+			    info.fragment_quad_partitioned;
+			if (consumes_subgroup && !certified_quad_partition) {
+				vk::PhysicalDeviceSubgroupProperties subgroup {};
+				vk::PhysicalDeviceProperties2 properties {};
+				properties.pNext = &subgroup;
+				graphics.physical_device.getProperties2(&properties);
+				vk::ShaderStageFlags stage {};
+				switch (options.stage) {
+					case ShaderType::Vertex:
+					case ShaderType::Local: stage = vk::ShaderStageFlagBits::eVertex; break;
+					case ShaderType::Pixel: stage = vk::ShaderStageFlagBits::eFragment; break;
+					case ShaderType::TessellationControl:
+						stage = vk::ShaderStageFlagBits::eTessellationControl; break;
+					case ShaderType::TessellationEvaluation:
+						stage = vk::ShaderStageFlagBits::eTessellationEvaluation; break;
+					default: break;
+				}
+				const auto admission = SubgroupPolicy::AdmitRaster(
+				    consumes_subgroup, subgroup.subgroupSize, bool(subgroup.supportedStages & stage));
+				if (admission != SubgroupPolicy::RasterAdmission::Supported) {
+					DumpRasterSubgroupDenial(result.program, result.spirv);
+					EXIT("PS5_RASTER_SUBGROUP_DENIED hash=0x%016" PRIx64
+					     " stage=%u guest_wave=%u host_subgroup=%u reason=%s\n",
+					     options.shader_hash, static_cast<uint32_t>(options.stage), options.wave_size,
+					     subgroup.subgroupSize,
+					     admission == SubgroupPolicy::RasterAdmission::StageUnavailable
+					         ? "stage_unavailable" : "raster_wave_lowering_unavailable");
+				}
+			}
 		}
 
 		const auto module = CompileSPV(result.spirv, graphics);
@@ -576,6 +721,8 @@ struct PipelineCache::ProgramCache {
 		ShaderRecompiler::CompileOptions options;
 		options.stage       = stage;
 		options.maintenance8_enabled = graphics.maintenance8_enabled;
+		options.fragment_quad_control_enabled = stage == ShaderType::Pixel &&
+		    graphics.subgroup_size < 32u && graphics.fragment_quad_control_enabled;
 		options.shader_hash = params.hash;
 		options.user_data   = user_data;
 		options.back_code      = params.back_code;
@@ -944,7 +1091,8 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
     const HW::VertexShaderInfo& vertex_regs, const HW::PixelShaderInfo& pixel_regs,
     const HW::ShaderRegisters& sh, const HW::Context& context, const HW::UserConfig& user_config,
     std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping, bool pixel_active,
-    std::array<ShaderVertexInputInfo, 3>& vertex_info, ShaderPixelInputInfo& pixel_info) {
+    std::array<ShaderVertexInputInfo, 3>& vertex_info, ShaderPixelInputInfo& pixel_info,
+    std::span<const Prospero::TextureNumericClass> target_numeric_class) {
 	const bool tess_active = user_config.GetPrimType() == Prospero::PrimitiveType::kPatch;
 	std::array<ShaderParams, 3> vertex_params;
 	if (tess_active) {
@@ -996,6 +1144,19 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 	ShaderParams pixel_params;
 	if (pixel_active) {
 		pixel_params      = PrepareProgram(pixel_regs, sh, target_export_mapping, pixel_info);
+		EXIT_IF(!target_numeric_class.empty() && target_numeric_class.size() != 8);
+		if (!target_numeric_class.empty()) {
+			for (uint32_t index = 0; index < 8; ++index) {
+				if (pixel_info.target_output_mode[index] == 0) continue;
+				const auto slot = ShaderPixelExportTarget(pixel_info.target_shader_mask, index);
+				if (slot >= 8) continue;
+				const auto type = target_numeric_class[slot];
+				EXIT_IF(type != Prospero::TextureNumericClass::Float &&
+				        type != Prospero::TextureNumericClass::Uint &&
+				        type != Prospero::TextureNumericClass::Sint);
+				pixel_info.target_numeric_class[index] = type;
+			}
+		}
 		pixel_info.mesh_barycentric_fallback = mesh_active && m_graphics.barycentric_fallback_enabled;
 		pixel_info.object_primitive_id = object_primitive_id;
 		for (uint32_t export_index = 0; export_index < 8u; export_index++) {
@@ -1018,6 +1179,7 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 				     shader_mask, mapping.packed, static_cast<uint32_t>(blend));
 			}
 			pixel_info.target_packed_unorm_mask |= 1u << export_index;
+			pixel_info.target_numeric_class[export_index] = Prospero::TextureNumericClass::Uint;
 			pixel_info.target_round_mode |= static_cast<uint8_t>(rt.info.round_mode) << export_index;
 		}
 		if (!mesh_active && !tess_active && Prospero::IsRectList(user_config.GetPrimType())) {
@@ -1037,9 +1199,11 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		if (pixel_info.dual_source_blending) {
 			// MRT1 supplies the second blend source for target 0.
 			pixel_info.target_output_mode[1]    = pixel_info.target_output_mode[0];
+			pixel_info.target_numeric_class[1]  = pixel_info.target_numeric_class[0];
 			pixel_info.target_export_mapping[1] = pixel_info.target_export_mapping[0];
 		} else if (blend.enable && !context.GetRenderTarget(0).info.blend_bypass &&
-		           pixel_info.target_output_mode[0] != 0 && pixel_info.target_output_mode[0] != 7 &&
+		           pixel_info.target_output_mode[0] != 0 &&
+		           pixel_info.target_numeric_class[0] == Prospero::TextureNumericClass::Float &&
 		           std::all_of(std::begin(pixel_info.target_output_mode) + 1,
 		                       std::end(pixel_info.target_output_mode),
 		                       [](uint8_t mode) { return mode == 0; })) {
@@ -1058,6 +1222,7 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 			if (pixel_info.alpha_blend_source != ShaderAlphaBlendSource::None) {
 				pixel_info.dual_source_blending     = true;
 				pixel_info.target_output_mode[1]    = pixel_info.target_output_mode[0];
+				pixel_info.target_numeric_class[1]  = pixel_info.target_numeric_class[0];
 				pixel_info.target_export_mapping[1] = {};
 			}
 		}
@@ -1094,7 +1259,11 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs,
                                                const HW::ShaderRegisters&   sh,
                                                ShaderComputeInputInfo&      input_info) {
-	input_info.host_subgroup_size = m_graphics.SupportsComputeWave64() ? 64u : 32u;
+	input_info.host_subgroup_size = SubgroupPolicy::ComputeHostWidth(
+	    m_graphics.subgroup_size, m_graphics.SupportsComputeWave64());
+	if (input_info.host_subgroup_size == 0u) {
+		EXIT("PS5_COMPUTE_SUBGROUP_DENIED native_width=%u\n", m_graphics.subgroup_size);
+	}
 	const auto        params      = PrepareProgram(regs, sh, input_info);
 	input_info.lds_storage = input_info.lds_size_dwords * 4u >
 	    m_graphics.GetPhysicalDeviceProperties().limits.maxComputeSharedMemorySize;
@@ -1149,6 +1318,18 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 			static_params.color_mask[slot] = 1u;
 		}
 		rendering.color_formats[slot] = colors[i].desc.view_info.format;
+		if (ps_input_info != nullptr) {
+			const auto native_class = TextureRenderTargetNumericClass(rendering.color_formats[slot]);
+			EXIT_IF(native_class == Prospero::TextureNumericClass::Unsupported);
+			for (uint32_t index = 0; index < 8; ++index) {
+				const auto target = ps_input_info->dual_source_blending && index == 1
+				                        ? 0u : ShaderPixelExportTarget(ps_input_info->target_shader_mask, index);
+				if (target == slot && ps_input_info->target_output_mode[index] != 0 &&
+				    ps_input_info->target_numeric_class[index] != native_class) {
+					EXIT("fragment export class does not match native color attachment %u\n", slot);
+				}
+			}
+		}
 		if (attachment_samples == 0) {
 			attachment_samples = colors[i].desc.info.samples;
 		} else if (attachment_samples != colors[i].desc.info.samples) {

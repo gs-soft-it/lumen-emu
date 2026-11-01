@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include <cstring>
 
 #include "common/assert.h"
@@ -22,8 +23,8 @@ static inline u32 get_max_size(std::string_view key, u32 default_value) {
 
 bool PSF::Open(const std::filesystem::path& filepath) {
     using namespace std::chrono;
-    if (std::filesystem::exists(filepath)) {
-        const auto t = std::filesystem::last_write_time(filepath);
+    if (Lumen::HostFileSystem::exists(filepath)) {
+        const auto t = Lumen::HostFileSystem::last_write_time(filepath);
         const auto rel =
             duration_cast<seconds>(t - std::filesystem::file_time_type::clock::now()).count();
         const auto tp = system_clock::to_time_t(system_clock::now() + seconds{rel});

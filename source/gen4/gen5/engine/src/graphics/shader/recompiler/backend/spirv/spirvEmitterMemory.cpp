@@ -1516,8 +1516,8 @@ void EmitSharedFloatAtomic(ValueEmitContext& ctx, const IR::Inst& inst) {
 uint32_t EmitAppendConsume(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const bool append = inst.GetOpcode() == IR::ValueOpcode::DataAppend;
 	auto&      state  = ctx.state;
-	if (ctx.half == 1) {
-		return ctx.other_half->Def(IR::Value(const_cast<IR::Inst*>(&inst)));
+	if (ctx.half != 0) {
+		return ctx.Lane(0).Def(IR::Value(const_cast<IR::Inst*>(&inst)));
 	}
 	const auto mem           = ctx.Memory(inst);
 	const auto offset        = mem.offset & 0xfffcu;
@@ -1552,8 +1552,9 @@ uint32_t EmitAppendConsume(ValueEmitContext& ctx, const IR::Inst& inst) {
 	                          Unary(state, spv::OpBitCount, TypeU32(state), high));
 	const auto first = ctx.FirstLane(ballot);
 	const auto source_lane =
-	    state.lane_count == 2
-	        ? Binary(state, spv::OpBitwiseAnd, TypeU32(state), first, ConstantU32(state, 31))
+	    state.lane_count > 1
+	        ? Binary(state, spv::OpBitwiseAnd, TypeU32(state), first,
+	                 ConstantU32(state, state.lane_width - 1u))
 	        : first;
 	const auto is_first       = Binary(state, spv::OpIEqual, TypeBool(state),
 	                                   EmitSubgroupLocalInvocationId(state), source_lane);
@@ -1564,7 +1565,7 @@ uint32_t EmitAppendConsume(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto condition = AndCondition(
 	    state, is_first,
 	    AndCondition(state,
-	                 state.lane_count == 2 ? Binary(state, spv::OpINotEqual, TypeBool(state), count,
+	                 state.lane_count > 1 ? Binary(state, spv::OpINotEqual, TypeBool(state), count,
 	                                                ConstantU32(state, 0))
 	                                       : exec,
 	                 bounds));
@@ -1703,12 +1704,58 @@ uint32_t EmitSwizzleU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto source = EmitNative<spv::OpLoad, IR::Type::U32>(state, ctx.scratch_u32_variable);
 	const auto target = EmitDsSwizzleTargetLane(state, EmitSubgroupLocalInvocationId(state),
 	                                            inst.Arg(1).IsImmediate() ? inst.Arg(1).U32() : 0);
+	if (state.lane_count > 1 && state.lane_width == 16u) {
+		// DS swizzle/bpermute address a guest 32-lane region, including both
+		// virtual 16-lane slices. An inactive source contributes zero.
+		const auto value = ctx.Shuffle(inst, 0, target);
+		const auto ballot = ctx.Ballot(inst.Arg(2));
+		return Select(state, TypeU32(state), EmitBallotLaneActiveBool(state, ballot, target),
+		              value, ConstantU32(state, 0));
+	}
 	return EmitDsMaskedLaneRead(state, source, target, ctx.Arg(inst, 2));
 }
 
 uint32_t EmitPermuteU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&      state   = ctx.state;
 	auto       lane    = EmitSubgroupLocalInvocationId(state);
+	if (state.lane_count > 1 && state.lane_width == 16u) {
+		// RDNA2 DS_PERMUTE chooses the highest enabled writer within a
+		// 32-lane half; collect its writers across both native16 slices.
+		const auto word = state.lane_half * state.lane_width / 32u;
+		const auto ballot_word = [&](const std::array<uint32_t, 4>& predicates) {
+			const auto ballot = ctx.BallotValues(predicates);
+			const auto result = state.builder.AllocateId();
+			state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), result, ballot, word);
+			return result;
+		};
+		std::array<uint32_t, 4> predicates {};
+		for (uint32_t slice = 0; slice < state.lane_count; ++slice) {
+			predicates[slice] = ctx.HalfArg(inst, 2, slice);
+		}
+		auto writers = ballot_word(predicates);
+		for (uint32_t bit = 0; bit < 5u; ++bit) {
+			for (uint32_t slice = 0; slice < state.lane_count; ++slice) {
+				const auto address_bit = Binary(state, spv::OpBitwiseAnd, TypeU32(state),
+				    ctx.HalfArg(inst, 1, slice), ConstantU32(state, 1u << (bit + 2u)));
+				predicates[slice] = Binary(state, spv::OpINotEqual, TypeBool(state), address_bit,
+				                           ConstantU32(state, 0));
+			}
+			const auto mask = ballot_word(predicates);
+			const auto lane_bit = Binary(state, spv::OpBitwiseAnd, TypeU32(state), lane,
+			                             ConstantU32(state, 1u << bit));
+			const auto selected = Select(state, TypeU32(state),
+			    Binary(state, spv::OpINotEqual, TypeBool(state), lane_bit, ConstantU32(state, 0)),
+			    mask, Unary(state, spv::OpNot, TypeU32(state), mask));
+			writers = Binary(state, spv::OpBitwiseAnd, TypeU32(state), writers, selected);
+		}
+		const auto active = Binary(state, spv::OpINotEqual, TypeBool(state), writers,
+		                           ConstantU32(state, 0));
+		const auto source = Select(state, TypeU32(state), active,
+		    Binary(state, spv::OpBitwiseOr, TypeU32(state), ConstantU32(state, word * 32u),
+		           EmitFindUMsb32(state, writers)), lane);
+		return Select(state, TypeU32(state), active, ctx.Shuffle(inst, 0, source),
+		              ConstantU32(state, 0));
+	}
 	if (state.lane_count == 2) {
 		lane = Binary(state, spv::OpBitwiseAnd, TypeU32(state), lane, ConstantU32(state, 31));
 	}
@@ -1762,6 +1809,14 @@ uint32_t EmitBpermuteU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto base   = Binary(state, spv::OpBitwiseAnd, TypeU32(state),
 	                           EmitSubgroupLocalInvocationId(state), ConstantU32(state, ~31u));
 	const auto target = Binary(state, spv::OpBitwiseOr, TypeU32(state), base, index);
+	if (state.lane_count > 1 && state.lane_width == 16u) {
+		// DS swizzle/bpermute address a guest 32-lane region, including both
+		// virtual 16-lane slices. An inactive source contributes zero.
+		const auto value = ctx.Shuffle(inst, 0, target);
+		const auto ballot = ctx.Ballot(inst.Arg(2));
+		return Select(state, TypeU32(state), EmitBallotLaneActiveBool(state, ballot, target),
+		              value, ConstantU32(state, 0));
+	}
 	return EmitDsMaskedLaneRead(state, source, target, ctx.Arg(inst, 2));
 }
 

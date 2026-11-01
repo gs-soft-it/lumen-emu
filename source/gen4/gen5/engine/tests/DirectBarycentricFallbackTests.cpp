@@ -81,13 +81,19 @@ std::vector<uint32_t> Fragment(unsigned barycentrics = 1, const char* interpolat
                                bool array_input = false, bool per_vertex = false,
                                bool component = false, bool second_entry = false,
                                bool primitive_id = false, bool signed_id = false,
-                               unsigned sample_builtin = 0) {
+                               unsigned sample_builtin = 0, bool quad_control = false) {
     std::string text = "OpCapability Shader\n";
     if (primitive_id) text += "OpCapability Geometry\n";
     if (barycentrics || per_vertex) text += "OpCapability FragmentBarycentricKHR\n";
     if (std::string(interpolation) == "Sample" || sample_builtin) text += "OpCapability SampleRateShading\n";
+    if (quad_control)
+        text += "OpCapability GroupNonUniform\nOpCapability GroupNonUniformQuad\n"
+                "OpCapability QuadControlKHR\n";
     if (barycentrics || per_vertex)
         text += "OpExtension \"SPV_KHR_fragment_shader_barycentric\"\n";
+    if (quad_control)
+        text += "OpExtension \"SPV_KHR_quad_control\"\n"
+                "OpExtension \"SPV_KHR_maximal_reconvergence\"\n";
     text += "OpMemoryModel Logical GLSL450\n";
     const auto interfaces = std::string(" %color %ordinary") +
         ((barycentrics & 1) ? " %perspective" : "") +
@@ -96,6 +102,10 @@ std::vector<uint32_t> Fragment(unsigned barycentrics = 1, const char* interpolat
     text += "OpEntryPoint Fragment %main \"main\"" + interfaces + "\n";
     if (second_entry) text += "OpEntryPoint Fragment %other \"other\"" + interfaces + "\n";
     text += "OpExecutionMode %main OriginUpperLeft\n";
+    if (quad_control)
+        text += "OpExecutionMode %main QuadDerivativesKHR\n"
+                "OpExecutionMode %main RequireFullQuadsKHR\n"
+                "OpExecutionMode %main MaximallyReconvergesKHR\n";
     if (second_entry) text += "OpExecutionMode %other OriginUpperLeft\n";
     text += "OpDecorate %color Location 0\nOpDecorate %ordinary Location 3\n";
     if (component) text += "OpDecorate %ordinary Component 1\n";
@@ -129,6 +139,7 @@ std::vector<uint32_t> Fragment(unsigned barycentrics = 1, const char* interpolat
 %output4 = OpTypePointer Output %vec4
 %color = OpVariable %output4 Output
 )";
+    if (quad_control) text += "%bool = OpTypeBool\n%fzero = OpConstant %float 0\n";
     text += (array_input || per_vertex) ? "%ordinary = OpVariable %inputArray Input\n"
                                       : "%ordinary = OpVariable %input4 Input\n";
     if (barycentrics & 1) text += "%perspective = OpVariable %input3 Input\n";
@@ -151,6 +162,14 @@ std::vector<uint32_t> Fragment(unsigned barycentrics = 1, const char* interpolat
         text += "%ordinaryElement = OpAccessChain %input4 %ordinary %zero\n"
                 "%parameter = OpLoad %vec4 %ordinaryElement\n";
     else text += "%parameter = OpLoad %vec4 %ordinary\n";
+    if (quad_control)
+        text += "%quadSource = OpGroupNonUniformQuadBroadcast %vec4 %three %parameter %zero\n"
+                "%quadX = OpCompositeExtract %float %parameter 0\n"
+                "%quadPredicate = OpFOrdGreaterThan %bool %quadX %fzero\n"
+                "%quadAny = OpGroupNonUniformQuadAnyKHR %bool %quadPredicate\n"
+                "%quadScale = OpSelect %float %quadAny %one %fzero\n"
+                "%quadParameter = OpVectorTimesScalar %vec4 %quadSource %quadScale\n";
+    const char* parameter = quad_control ? "%quadParameter" : "%parameter";
     if (barycentrics) {
         if (barycentrics & 1) text += "%smooth = OpLoad %vec3 %perspective\n";
         if (barycentrics & 2) text += "%affine = OpLoad %vec3 %linear\n";
@@ -162,9 +181,9 @@ std::vector<uint32_t> Fragment(unsigned barycentrics = 1, const char* interpolat
         text += "%x = OpCompositeExtract %float " + selected + " 0\n";
         text += "%y = OpCompositeExtract %float " + selected + " 1\n";
         text += "%z = OpCompositeExtract %float " + selected + " 2\n";
-        text += "%coordinates = OpCompositeConstruct %vec4 %x %y %z %one\n"
-                "%result = OpFAdd %vec4 %coordinates %parameter\nOpStore %color %result\n";
-    } else text += "OpStore %color %parameter\n";
+        text += "%coordinates = OpCompositeConstruct %vec4 %x %y %z %one\n";
+        text += std::string("%result = OpFAdd %vec4 %coordinates ") + parameter + "\nOpStore %color %result\n";
+    } else text += std::string("OpStore %color ") + parameter + "\n";
     text += "OpReturn\nOpFunctionEnd\n";
     if (second_entry)
         text += "%other = OpFunction %void None %function\n%otherEntry = OpLabel\n"
@@ -473,6 +492,141 @@ void PositiveContracts() {
                           Libs::Graphics::SpirvModuleAdmission::Allowed, "geometry does not require barycentric feature");
                 }
             }
+        }
+    }
+}
+
+// The fallback changes barycentric interfaces, not the independently required
+// quad operations or execution model. Retain their operands as well as modes.
+std::vector<std::vector<uint32_t>> QuadInstructions(std::span<const uint32_t> words) {
+    std::vector<std::vector<uint32_t>> result;
+    for (size_t cursor = 5; cursor < words.size(); cursor += words[cursor] >> 16u) {
+        const auto count = words[cursor] >> 16u;
+        const auto opcode = words[cursor] & 0xffffu;
+        const auto* instruction = words.data() + cursor;
+        bool retain = opcode == spv::OpGroupNonUniformQuadBroadcast ||
+                      opcode == spv::OpGroupNonUniformQuadAnyKHR;
+        if (opcode == spv::OpCapability)
+            retain |= instruction[1] == spv::CapabilityQuadControlKHR ||
+                      instruction[1] == spv::CapabilityGroupNonUniformQuad;
+        if (opcode == spv::OpExecutionMode)
+            retain |= instruction[2] == spv::ExecutionModeQuadDerivativesKHR ||
+                      instruction[2] == spv::ExecutionModeRequireFullQuadsKHR ||
+                      instruction[2] == spv::ExecutionModeMaximallyReconvergesKHR;
+        if (opcode == spv::OpExtension) {
+            const std::string extension(reinterpret_cast<const char*>(instruction + 1));
+            retain |= extension == "SPV_KHR_quad_control" ||
+                      extension == "SPV_KHR_maximal_reconvergence";
+        }
+        if (retain) result.emplace_back(instruction, instruction + count);
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+void QuadControlContracts() {
+    namespace Graphics = Libs::Graphics;
+    auto enabled = Limits();
+    enabled.fragment_quad_control_enabled = true;
+    const auto disabled = Limits();
+    Graphics::SpirvOptionalFeatures enabled_features{}, disabled_features{};
+    enabled_features.fragment_quad_control = true;
+    const auto vertex = Vertex();
+    for (unsigned barycentrics : {0u, 1u, 2u, 3u}) {
+        const auto source = Fragment(barycentrics, "", false, false, false, false,
+                                     false, false, 0, true);
+        Validate(source, "quad fragment source");
+        const auto signature = QuadInstructions(source);
+        Check(signature.size() == 9, "fixture contains two live quad ops, two capabilities, two extensions and three modes");
+        Check(Graphics::AdmitSpirvModule(source, true, enabled_features) ==
+                  Graphics::SpirvModuleAdmission::Allowed,
+              "source quad contract is valid when both source features are enabled");
+        Check(Graphics::AdmitSpirvModule(source, true, disabled_features) ==
+                  Graphics::SpirvModuleAdmission::FragmentQuadControlUnavailable,
+              "source quad feature is independent of native barycentrics");
+        Check(Fallback::PrepareFragment(source, disabled).status == Fallback::Status::Unsupported,
+              "PrepareFragment cannot infer permission for quad execution modes");
+
+        const auto fragment = Fallback::PrepareFragment(source, enabled);
+        if (barycentrics == 0) {
+            Check(fragment.status == Fallback::Status::NotNeeded,
+                  "quad-only fragment must pass through PrepareFragment: " + fragment.reason);
+            Check(fragment.plan.spirv == source, "quad-only passthrough must be byte-identical");
+        } else {
+            Check(fragment.status == Fallback::Status::Ready,
+                  "quad plus barycentric fragment must retain its enabled context: " + fragment.reason);
+            Validate(fragment.plan.spirv, "quad fragment after barycentric rewrite");
+            Check(fragment.plan.barycentric_inputs.size() == (barycentrics == 3 ? 2u : 1u),
+                  "quad feature must not bypass the barycentric rewrite");
+            Check(FunctionInstructions(fragment.plan.spirv) == FunctionInstructions(source),
+                  "geometry-assisted rewrite preserves live quad function instructions");
+            Check(QuadInstructions(fragment.plan.spirv) == signature,
+                  "geometry-assisted fragment preserves every quad requirement");
+
+            const auto plan_copy = fragment.plan.spirv;
+            const auto geometry = Fallback::BuildGeometry(vertex, fragment.plan,
+                Fallback::Topology::TriangleList, false, enabled);
+            Check(geometry.success, "geometry producer accepts the enabled quad fragment: " + geometry.reason);
+            Validate(geometry.spirv, "geometry producer paired with quad fragment");
+            Check(fragment.plan.spirv == plan_copy, "geometry construction leaves the quad fragment unchanged");
+            Check(QuadInstructions(geometry.spirv).empty(),
+                  "fragment-only quad modes must not leak into the generated geometry stage");
+            Check(Graphics::AdmitSpirvModule(geometry.spirv, false, disabled_features) ==
+                      Graphics::SpirvModuleAdmission::Allowed,
+                  "the generated geometry stage has no quad requirement");
+            Check(!Fallback::BuildGeometry(vertex, fragment.plan, Fallback::Topology::TriangleList,
+                                            false, disabled).success,
+                  "geometry preparation rechecks the actual quad capability context");
+
+            for (bool allow_compact : {false, true}) {
+                const auto mesh = Fallback::PrepareMeshFragment(fragment.plan, enabled, allow_compact);
+                Check(mesh.status == Fallback::Status::Ready,
+                      "mesh fragment accepts the enabled quad contract: " + mesh.reason);
+                Check(mesh.plan.compact == (allow_compact && barycentrics != 3),
+                      "quad feature preserves the existing compact/homogeneous mesh choice");
+                Validate(mesh.plan.spirv, "quad fragment after mesh rewrite");
+                Check(QuadInstructions(mesh.plan.spirv) == signature,
+                      "compact/homogeneous mesh rewrite preserves quad operands and execution modes");
+                Check(Graphics::AdmitSpirvModule(mesh.plan.spirv, false, enabled_features) ==
+                          Graphics::SpirvModuleAdmission::Allowed,
+                      "mesh rewrite removes barycentric requirements while keeping enabled quad support");
+                Check(Graphics::AdmitSpirvModule(mesh.plan.spirv, false, disabled_features) ==
+                          Graphics::SpirvModuleAdmission::FragmentQuadControlUnavailable,
+                      "final mesh fragment is still rejected if the device quad feature is disabled");
+                Check(Fallback::PrepareMeshFragment(fragment.plan, disabled, allow_compact).status ==
+                          Fallback::Status::Unsupported,
+                      "mesh preparation cannot bypass the actual device feature gate");
+                const auto repeated = Fallback::PrepareFragment(mesh.plan.spirv, enabled);
+                Check(repeated.status == Fallback::Status::NotNeeded && repeated.plan.spirv == mesh.plan.spirv,
+                      "rewritten mesh fragment traverses PrepareFragment without another rewrite");
+                Check(Fallback::PrepareFragment(mesh.plan.spirv, disabled).status == Fallback::Status::Unsupported,
+                      "rewritten mesh fragment cannot bypass a later disabled feature context");
+            }
+
+            auto malformed_plan = fragment.plan;
+            malformed_plan.spirv.push_back(0);
+            Check(Fallback::PrepareMeshFragment(malformed_plan, enabled).status == Fallback::Status::Unsupported,
+                  "enabled quad support cannot admit malformed mesh input framing");
+            Check(!Fallback::BuildGeometry(vertex, malformed_plan, Fallback::Topology::TriangleList,
+                                           false, enabled).success,
+                  "enabled quad support cannot admit malformed geometry fragment framing");
+        }
+        Check(Graphics::AdmitSpirvModule(fragment.plan.spirv, false, enabled_features) ==
+                  Graphics::SpirvModuleAdmission::Allowed,
+              "prepared fragment needs no native barycentric capability");
+        Check(Graphics::AdmitSpirvModule(fragment.plan.spirv, false, disabled_features) ==
+                  Graphics::SpirvModuleAdmission::FragmentQuadControlUnavailable,
+              "preparation does not erase the final quad feature requirement");
+
+        std::array<std::vector<uint32_t>, 3> malformed{source, source, source};
+        malformed[0].resize(4);
+        malformed[1].push_back(0);
+        malformed[2].push_back((0xffffu << 16u) | spv::OpNop);
+        for (const auto& words : malformed) {
+            Check(Fallback::PrepareFragment(words, enabled).status == Fallback::Status::Unsupported,
+                  "enabled quad support cannot admit malformed source framing");
+            Check(Fallback::PrepareFragment(words, disabled).status == Fallback::Status::Unsupported,
+                  "disabled quad support cannot admit malformed source framing");
         }
     }
 }
@@ -835,6 +989,7 @@ void MeshCompactContracts() {
 int main() {
     PrimitiveAssemblyContracts();
     PositiveContracts();
+    QuadControlContracts();
     BuiltinContracts();
     PerVertexContracts();
     MeshLegacyVersionContracts();

@@ -21,6 +21,8 @@
 #include "graphics/host_gpu/hostMemory.h"
 #include "graphics/host_gpu/memoryTracker.h"
 #include "graphics/host_gpu/pageManager.h"
+#include "graphics/host_gpu/spirvModuleAdmission.h"
+#include "graphics/host_gpu/computeSubgroupPolicy.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
@@ -1425,6 +1427,8 @@ struct GraphicsCase {
   bool pixel_no_perspective = false;
   bool provoking_vtx_last = false;
   std::vector<u32> vertices;
+  // The color field retains its 16-byte slot; narrow formats leave padding.
+  vk::Format vertex_color_format = vk::Format::eR32G32B32A32Sfloat;
   bool pixel_ancillary = false;
   bool pixel_front_face = false;
   bool pixel_front_face_all_bits = false;
@@ -1446,6 +1450,14 @@ struct GraphicsCase {
   bool primitive_restart = false;
   std::optional<vk::Viewport> viewport_override;
   u32 pixel_wave_size = 64;
+  std::vector<vk::Format> color_target_formats;
+  std::array<uint8_t, 8> pixel_output_modes{};
+  std::array<Prospero::TextureNumericClass, 8> pixel_numeric_classes = [] {
+    std::array<Prospero::TextureNumericClass, 8> classes;
+    classes.fill(Prospero::TextureNumericClass::Float);
+    return classes;
+  }();
+  std::array<Prospero::ColorComponentMapping, 8> pixel_export_mappings{};
 };
 
 struct CompiledShader {
@@ -1903,6 +1915,10 @@ CompiledShader CompileFragmentCase(const GraphicsCase &test) {
       MakeNativeUserData(test.has_user_data ? &test.user_data : nullptr);
   ShaderPixelInputInfo pixel_info{};
   pixel_info.wave_size = test.pixel_wave_size;
+  std::copy(test.pixel_output_modes.begin(), test.pixel_output_modes.end(),
+            std::begin(pixel_info.target_output_mode));
+  pixel_info.target_numeric_class = test.pixel_numeric_classes;
+  pixel_info.target_export_mapping = test.pixel_export_mappings;
   pixel_info.input_num =
       test.pixel_interpolator_settings.empty()
           ? 1u
@@ -2069,8 +2085,9 @@ std::vector<u32> MakePassthroughVertexSpirv(bool layered, float clip_w = 1.0f) {
 
 class VulkanHarness {
 public:
-  enum class Profile { FullShaderSuite, AluSubset, MemoryTransfers, BarycentricGeometry, Mesh, NativeMetalContract, PrimitiveStages, FragmentRasterization };
+  enum class Profile { FullShaderSuite, AluSubset, MemoryTransfers, BarycentricGeometry, Mesh, NativeMetalContract, PrimitiveStages, FragmentRasterization, VertexEligibility, UniformFragmentVote, RasterQuad };
 
+  struct Image;
   void CheckNativeMetalContract();
   void CheckNullDescriptorFallback();
   void CheckNativeTessellation();
@@ -2081,7 +2098,12 @@ public:
       const std::vector<u32> &control, const std::vector<u32> &evaluation,
       const std::vector<u32> &fragment, u32 patch_control_points,
       const std::vector<u32> &vertices, const std::vector<u32> &indices,
-      std::span<const PrimitiveContractDraw> draws);
+      std::span<const PrimitiveContractDraw> draws,
+      vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList,
+      vk::Format color_format = vk::Format::eR32G32B32A32Sfloat,
+      const CompiledShader *fragment_resources = nullptr,
+      std::span<const u32> fragment_constants = {},
+      const Image *fragment_texture = nullptr, vk::Sampler fragment_sampler = nullptr);
   explicit VulkanHarness(Profile profile = Profile::FullShaderSuite) : m_profile(profile) { Init(); }
   ~VulkanHarness() { Destroy(); }
 
@@ -2127,7 +2149,8 @@ public:
             .max_geometry_output_components = limits.maxGeometryOutputComponents,
             .max_geometry_total_output_components = limits.maxGeometryTotalOutputComponents,
             .max_geometry_output_vertices = limits.maxGeometryOutputVertices,
-            .max_fragment_input_components = limits.maxFragmentInputComponents};
+            .max_fragment_input_components = limits.maxFragmentInputComponents,
+            .fragment_quad_control_enabled = m_fragment_quad_control_enabled};
   }
   [[nodiscard]] u32 SubgroupSize() const {
     vk::PhysicalDeviceSubgroupProperties subgroup{};
@@ -9302,15 +9325,7 @@ public:
                       vk::PipelineStageFlagBits::eTransfer,
                       vk::AccessFlagBits::eTransferWrite);
 
-      vk::ShaderModuleCreateInfo module_info{};
-      module_info.sType = vk::StructureType::eShaderModuleCreateInfo;
-      module_info.codeSize = sizeof(GPU_TEST_MS_DEPTH_SPV);
-      module_info.pCode = GPU_TEST_MS_DEPTH_SPV;
-      vk::ShaderModule ms_depth_module = nullptr;
-      RequireVk(
-          name, "MS depth content",
-          m_device.createShaderModule(&module_info, nullptr, &ms_depth_module),
-          "vkCreateShaderModule");
+      const auto ms_depth_module = CreateShaderModule(name, GPU_TEST_MS_DEPTH_SPV);
       std::array<vk::DescriptorSetLayoutBinding, 2> observer_bindings{};
       observer_bindings[0].binding = 0;
       observer_bindings[0].descriptorType = vk::DescriptorType::eSampledImage;
@@ -17743,14 +17758,7 @@ public:
               "unsupported image dimension needs a matching Vulkan test view");
     }
 
-    vk::ShaderModuleCreateInfo module_info{};
-    module_info.sType = vk::StructureType::eShaderModuleCreateInfo;
-    module_info.codeSize = compiled.spirv.size() * sizeof(u32);
-    module_info.pCode = compiled.spirv.data();
-    vk::ShaderModule module = nullptr;
-    RequireVk(test.name, "SPIR-V module",
-              m_device.createShaderModule(&module_info, nullptr, &module),
-              "vkCreateShaderModule");
+    const auto module = CreateShaderModule(test.name, compiled.spirv);
 
     std::vector<vk::DescriptorSetLayoutBinding> layout_bindings;
     auto add_layout_binding =
@@ -19715,9 +19723,17 @@ public:
         TestSpv::MakePassthroughVertexSpirv(test.layers > 1, test.vertex_clip_w);
     ValidateSpirv(test.name, vertex_spirv);
 
+    Require(test.name, "explicit render targets",
+            test.color_target_formats.size() <= 8 &&
+                (test.color_target_formats.empty() ||
+                 (!object_id && test.samples == vk::SampleCountFlagBits::e1)),
+            "typed MRT fixture excludes object-ID and multisample attachment paths");
+    const auto primary_format = test.color_target_formats.empty()
+        ? vk::Format::eR32G32B32A32Sfloat : test.color_target_formats[0];
     Image target =
-        CreateImageMips(test.name, test.width, test.height, vk::Format::eR32G32B32A32Sfloat,
-                      vk::ImageUsageFlagBits::eColorAttachment, {}, 4,
+        CreateImageMips(test.name, test.width, test.height, primary_format,
+                      vk::ImageUsageFlagBits::eColorAttachment, {},
+                      (vk::blockSize(primary_format) + 3u) / 4u,
                       vk::ImageLayout::eGeneral, vk::ImageType::e2D,
                       test.layers > 1 ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D,
                       test.layers, 0, 0, test.samples);
@@ -19738,6 +19754,16 @@ public:
           test.layers > 1 ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D,
           test.layers);
     }
+    std::vector<Image> extra_targets;
+    for (size_t slot = 1; slot < test.color_target_formats.size(); ++slot) {
+      const auto format = test.color_target_formats[slot];
+      extra_targets.push_back(CreateImageMips(
+          test.name, test.width, test.height, format, vk::ImageUsageFlagBits::eColorAttachment,
+          {}, (vk::blockSize(format) + 3u) / 4u, vk::ImageLayout::eGeneral,
+          vk::ImageType::e2D, vk::ImageViewType::e2D, test.layers));
+    }
+    std::vector<Image *> render_images{&target, &primitive_target};
+    for (auto &extra : extra_targets) render_images.push_back(&extra);
     const std::vector<u32> default_vertices = {
         0xbf800000u, 0xbf800000u, 0x3e800000u, 0x3f000000u, 0x3f400000u,
         0x3f800000u, 0x40400000u, 0xbf800000u, 0x3e800000u, 0x3f000000u,
@@ -19844,7 +19870,7 @@ public:
     attributes[0].offset = 0;
     attributes[1].location = 1;
     attributes[1].binding = 0;
-    attributes[1].format = vk::Format::eR32G32B32A32Sfloat;
+    attributes[1].format = test.vertex_color_format;
     attributes[1].offset = 2u * sizeof(float);
     vk::PipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.sType = vk::StructureType::ePipelineVertexInputStateCreateInfo;
@@ -19916,13 +19942,16 @@ public:
     }
     vk::PipelineColorBlendStateCreateInfo color_blend{};
     color_blend.sType = vk::StructureType::ePipelineColorBlendStateCreateInfo;
-    color_blend.attachmentCount = object_id ? 8 : 1;
+    color_blend.attachmentCount = object_id ? 8 : static_cast<u32>(1 + extra_targets.size());
     color_blend.pAttachments = color_attachments.data();
 
     vk::GraphicsPipelineCreateInfo pipeline_info{};
     std::array<vk::Format, 8> color_formats{};
     color_formats[0] = target.format;
     color_formats[7] = primitive_target.format;
+    for (size_t slot = 0; slot < extra_targets.size(); ++slot) {
+      color_formats[slot + 1] = extra_targets[slot].format;
+    }
     vk::PipelineRenderingCreateInfo rendering_pipeline{};
     rendering_pipeline.sType = vk::StructureType::ePipelineRenderingCreateInfo;
     rendering_pipeline.colorAttachmentCount = color_blend.attachmentCount;
@@ -19950,6 +19979,12 @@ public:
     colors[0].imageLayout = vk::ImageLayout::eGeneral;
     colors[0].loadOp = vk::AttachmentLoadOp::eClear;
     colors[0].storeOp = vk::AttachmentStoreOp::eStore;
+    for (size_t slot = 0; slot < extra_targets.size(); ++slot) {
+      colors[slot + 1].imageView = extra_targets[slot].view;
+      colors[slot + 1].imageLayout = vk::ImageLayout::eGeneral;
+      colors[slot + 1].loadOp = vk::AttachmentLoadOp::eClear;
+      colors[slot + 1].storeOp = vk::AttachmentStoreOp::eStore;
+    }
     if (resolved.image != nullptr) {
       colors[0].resolveMode = vk::ResolveModeFlagBits::eAverage;
       colors[0].resolveImageView = resolved.view;
@@ -19972,7 +20007,7 @@ public:
     // Reuse the same shader and pipeline while changing only dynamic object ID.
     for (size_t draw = 0; draw < std::max<size_t>(test.object_ids.size(), 1); ++draw) {
       vk::CommandBuffer cmd = BeginCommands(test.name, "graphics");
-      for (auto *image : {&target, &primitive_target}) {
+      for (auto *image : render_images) {
         if (image->image != nullptr && image->layout != vk::ImageLayout::eGeneral) {
           AddImageBarrier(cmd, image->image, image->layout,
                           vk::ImageLayout::eGeneral,
@@ -20025,6 +20060,10 @@ public:
       EndSubmitAndFree(test.name, "graphics", cmd);
       auto color_words = ReadImage(test.name, resolved.image != nullptr ? &resolved : &target);
       pixel.insert(pixel.end(), color_words.begin(), color_words.end());
+      for (auto &extra : extra_targets) {
+        auto words = ReadImage(test.name, &extra);
+        pixel.insert(pixel.end(), words.begin(), words.end());
+      }
       if (object_id) {
         auto id_words = ReadImage(test.name, &primitive_target);
         pixel.insert(pixel.end(), id_words.begin(), id_words.end());
@@ -20039,6 +20078,7 @@ public:
     DestroyBuffer(&index_buffer);
     DestroyBuffer(&vertex_buffer);
     DestroyImage(&primitive_target);
+    for (auto &extra : extra_targets) DestroyImage(&extra);
     DestroyImage(&resolved);
     DestroyImage(&target);
     return pixel;
@@ -21339,6 +21379,8 @@ private:
   bool m_null_descriptor_enabled = false;
   bool m_min_lod_enabled = false;
   bool m_robust_image_access_enabled = false;
+  bool m_output_layer_enabled = false;
+  bool m_fragment_quad_control_enabled = false;
   vk::PhysicalDeviceFeatures m_enabled_base_features{};
   std::set<std::string> m_available_device_extensions;
   bool m_rasterization_supported = true;
@@ -21380,6 +21422,8 @@ private:
     m_runtime_context.image_view_min_lod_enabled = m_min_lod_enabled;
     m_runtime_context.robust_image_access_enabled = m_robust_image_access_enabled;
     m_runtime_context.shader_cull_distance_enabled = m_enabled_base_features.shaderCullDistance;
+    m_runtime_context.shader_output_layer_enabled = m_output_layer_enabled;
+    m_runtime_context.fragment_quad_control_enabled = m_fragment_quad_control_enabled;
     m_runtime_context.multi_viewport_enabled = m_enabled_base_features.multiViewport;
     m_runtime_context.shader_image_gather_extended_enabled = m_enabled_base_features.shaderImageGatherExtended;
     m_runtime_context.sample_rate_shading_enabled = m_enabled_base_features.sampleRateShading;
@@ -21432,23 +21476,32 @@ private:
   }
 
   void Init() {
+    const bool minimal_shader_contract = m_profile == Profile::AluSubset ||
+        m_profile == Profile::VertexEligibility || m_profile == Profile::UniformFragmentVote ||
+        m_profile == Profile::RasterQuad;
     // An isolated Android fixture can explicitly select the same public driver
     // and loader hooks as the app, without changing production driver selection.
     static const auto get_instance_proc_addr = []() -> PFN_vkGetInstanceProcAddr {
 #if defined(__ANDROID__)
       const char *driver_dir = std::getenv("LUMEN_TEST_VULKAN_DRIVER_DIR");
       const char *hook_dir = std::getenv("LUMEN_TEST_VULKAN_HOOK_DIR");
-      if (driver_dir != nullptr || hook_dir != nullptr) {
+      const char *driver_library = std::getenv("LUMEN_TEST_VULKAN_DRIVER_LIBRARY");
+      if (driver_dir != nullptr || hook_dir != nullptr || driver_library != nullptr) {
         Require("VulkanHarness", "custom dispatch",
                 driver_dir != nullptr && *driver_dir != '\0' &&
                     hook_dir != nullptr && *hook_dir != '\0',
                 "both test driver and hook directories are required; fallback denied");
+        if (driver_library == nullptr) driver_library = "libvulkan_freedreno.so";
+        Require("VulkanHarness", "custom dispatch",
+                std::strcmp(driver_library, "libvulkan_freedreno.so") == 0 ||
+                    std::strcmp(driver_library, "libvulkan_panfrost.so") == 0,
+                "unknown test driver library; fallback denied");
         std::string driver_path(driver_dir);
         if (driver_path.back() != '/') driver_path += '/';
         // Keep namespaces and entrypoints alive until this test process exits.
         void *handle = adrenotools_open_libvulkan(
             RTLD_NOW | RTLD_LOCAL, ADRENOTOOLS_DRIVER_CUSTOM, nullptr, hook_dir,
-            driver_path.c_str(), "libvulkan_freedreno.so", nullptr, nullptr);
+            driver_path.c_str(), driver_library, nullptr, nullptr);
         if (handle == nullptr) {
           const char *error = dlerror();
           Fail("VulkanHarness", "custom dispatch",
@@ -21459,8 +21512,8 @@ private:
             dlsym(handle, "vkGetInstanceProcAddr"));
         Require("VulkanHarness", "custom dispatch", entry != nullptr,
                 "custom driver has no vkGetInstanceProcAddr; fallback denied");
-        std::fprintf(stderr, "DIRECT_RENDERER_TEST driver=custom path=%slibvulkan_freedreno.so "
-                             "hooks=%s fallback=denied\n", driver_path.c_str(), hook_dir);
+        std::fprintf(stderr, "DIRECT_RENDERER_TEST driver=custom path=%s%s "
+                             "hooks=%s fallback=denied\n", driver_path.c_str(), driver_library, hook_dir);
         return entry;
       }
 #endif
@@ -21531,9 +21584,12 @@ private:
         std::fprintf(stderr, "DIRECT_RENDERER_TEST gpu=%s driverID=%u driverName=%s driverInfo=%s\n",
                      properties.properties.deviceName.data(), static_cast<uint32_t>(driver.driverID),
                      driver.driverName.data(), driver.driverInfo.data());
+        const char *library = std::getenv("LUMEN_TEST_VULKAN_DRIVER_LIBRARY");
+        const bool panvk = library != nullptr && std::strcmp(library, "libvulkan_panfrost.so") == 0;
         Require("VulkanHarness", "custom driver identity",
-                driver.driverID == vk::DriverId::eMesaTurnip,
-                "custom driver did not expose Mesa Turnip; fallback denied");
+                driver.driverID == (panvk ? vk::DriverId::eMesaPanvk : vk::DriverId::eMesaTurnip),
+                panvk ? "custom driver did not expose Mesa PanVK; fallback denied"
+                      : "custom driver did not expose Mesa Turnip; fallback denied");
       }
 #endif
       u32 queue_count = 0;
@@ -21576,14 +21632,14 @@ private:
               features.features.shaderInt64 != true ||
               features11.storageBuffer16BitAccess != true ||
               features12.storageBuffer8BitAccess != true ||
-              features12.samplerMirrorClampToEdge != true ||
-              features12.shaderOutputViewportIndex != true ||
-              (m_profile != Profile::MemoryTransfers && m_profile != Profile::AluSubset &&
+              (!minimal_shader_contract && features12.samplerMirrorClampToEdge != true) ||
+              (!minimal_shader_contract && features12.shaderOutputViewportIndex != true) ||
+              (m_profile != Profile::MemoryTransfers && !minimal_shader_contract &&
                m_profile != Profile::NativeMetalContract &&
                m_profile != Profile::PrimitiveStages && m_profile != Profile::FragmentRasterization &&
                features12.shaderBufferInt64Atomics != true) ||
-              features12.shaderSampledImageArrayNonUniformIndexing != true ||
-              features12.shaderStorageImageArrayNonUniformIndexing != true ||
+              (!minimal_shader_contract && features12.shaderSampledImageArrayNonUniformIndexing != true) ||
+              (!minimal_shader_contract && features12.shaderStorageImageArrayNonUniformIndexing != true) ||
               features12.shaderStorageBufferArrayNonUniformIndexing != true ||
               (full_suite && features12.shaderSharedInt64Atomics != true) ||
               (full_suite && !image_int64_supported) ||
@@ -21611,7 +21667,11 @@ private:
 #endif
             continue;
           }
-          m_barycentric_enabled = full_suite && barycentric_supported;
+          m_barycentric_enabled =
+              (full_suite || m_profile == Profile::NativeMetalContract) && barycentric_supported;
+          if (m_profile == Profile::NativeMetalContract)
+            std::fprintf(stderr, "DIRECT_NATIVE_METAL_TEST enabled_fragmentShaderBarycentric=%u\n",
+                         m_barycentric_enabled);
           m_image_int64_enabled = full_suite && image_int64_supported;
           m_workgroup_layout_enabled = full_suite && workgroup_layout_supported;
           m_shared_int64_enabled = full_suite && features12.shaderSharedInt64Atomics;
@@ -21692,7 +21752,39 @@ private:
     available_mesh.pNext = &available_robustness2;
     available_features2.pNext = mesh_extension
         ? static_cast<void *>(&available_mesh) : static_cast<void *>(&available_robustness2);
+    vk::PhysicalDeviceShaderQuadControlFeaturesKHR available_quad_control{};
+    vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR available_maximal_reconvergence{};
+    const bool request_fragment_quad_control = m_profile == Profile::RasterQuad;
+    if (request_fragment_quad_control) {
+      Require("RasterQuad", "required extension advertisement",
+              has_device_extension(VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME) &&
+                  has_device_extension(VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME),
+              "quad control and maximal reconvergence extensions are unavailable; GPU path denied");
+      available_quad_control.pNext = &available_maximal_reconvergence;
+      available_maximal_reconvergence.pNext = available_features2.pNext;
+      available_features2.pNext = &available_quad_control;
+    }
     m_physical_device.getFeatures2(&available_features2);
+    if (request_fragment_quad_control) {
+      vk::PhysicalDeviceSubgroupProperties subgroup{};
+      vk::PhysicalDeviceProperties2 properties{};
+      properties.pNext = &subgroup;
+      m_physical_device.getProperties2(&properties);
+      Require("RasterQuad", "required active device features",
+              properties.properties.apiVersion >= VK_API_VERSION_1_2 &&
+                  available_quad_control.shaderQuadControl &&
+                  available_maximal_reconvergence.shaderMaximalReconvergence &&
+                  bool(subgroup.supportedStages & vk::ShaderStageFlagBits::eFragment) &&
+                  bool(subgroup.supportedOperations & vk::SubgroupFeatureFlagBits::eQuad),
+              "Vulkan1.2+, fragment QUAD, shaderQuadControl and maximal reconvergence are required");
+      std::fprintf(stderr, "RASTER_QUAD available_shaderQuadControl=%u "
+                           "available_shaderMaximalReconvergence=%u native_subgroup=%u "
+                           "supported_stages=0x%x supported_operations=0x%x\n",
+                   available_quad_control.shaderQuadControl,
+                   available_maximal_reconvergence.shaderMaximalReconvergence,
+                   subgroup.subgroupSize, static_cast<u32>(subgroup.supportedStages),
+                   static_cast<u32>(subgroup.supportedOperations));
+    }
 #if defined(LUMEN_PS5_NATIVE_METAL)
     available_features13.dynamicRendering = available_dynamic_rendering.dynamicRendering;
     available_features13.synchronization2 = available_synchronization2.synchronization2;
@@ -21754,12 +21846,12 @@ private:
                          "production_null_fallback=%u image_view_min_lod=%u\n",
                  m_null_descriptor_enabled, !m_null_descriptor_enabled, m_min_lod_enabled);
 #else
-    const bool extended_image_contract = m_profile != Profile::AluSubset;
-    Require("VulkanHarness", "dispatch", m_null_descriptor_enabled,
+    const bool extended_image_contract = !minimal_shader_contract;
+    Require("VulkanHarness", "dispatch", minimal_shader_contract || m_null_descriptor_enabled,
             "null descriptors are not supported");
 #endif
     Require("VulkanHarness", "dispatch",
-            available_features.shaderStorageImageWriteWithoutFormat == true,
+            minimal_shader_contract || available_features.shaderStorageImageWriteWithoutFormat == true,
             "shaderStorageImageWriteWithoutFormat is not supported");
     Require("VulkanHarness", "dispatch",
             (!extended_image_contract || available_features.shaderImageGatherExtended == true) &&
@@ -21790,13 +21882,13 @@ private:
             available_features12.bufferDeviceAddress == true,
             "bufferDeviceAddress is not supported");
     Require("VulkanHarness", "dispatch",
-            available_features12.shaderSampledImageArrayNonUniformIndexing == true,
+            minimal_shader_contract || available_features12.shaderSampledImageArrayNonUniformIndexing == true,
             "nonuniform sampled image indexing is not supported");
     Require("VulkanHarness", "dispatch",
             available_features12.shaderStorageBufferArrayNonUniformIndexing == true,
             "nonuniform storage buffer indexing is not supported");
     Require("VulkanHarness", "dispatch",
-            available_features12.shaderStorageImageArrayNonUniformIndexing == true,
+            minimal_shader_contract || available_features12.shaderStorageImageArrayNonUniformIndexing == true,
             "nonuniform storage image indexing is not supported");
     Require("VulkanHarness", "dispatch", !extended_image_contract || m_min_lod_enabled,
             "image view minimum LOD is not supported");
@@ -21804,8 +21896,7 @@ private:
     Require("VulkanHarness", "dispatch",
             !m_maintenance8_enabled || available_maintenance8.maintenance8 == true,
             "maintenance8 dynamic image offsets are not supported");
-    Require("VulkanHarness", "graphics", available_features12.shaderOutputLayer == true,
-            "vertex layer output is not supported");
+    m_output_layer_enabled = !minimal_shader_contract && available_features12.shaderOutputLayer;
     m_rasterization_supported = available_features.fillModeNonSolid &&
                                 available_features.tessellationShader &&
                                 available_features.depthBounds &&
@@ -21881,6 +21972,16 @@ private:
     device_info.pQueueCreateInfos = &queue_info;
     auto device_features11 = WindowContext::RequiredVulkan11Features();
     auto device_features12 = WindowContext::RequiredVulkan12Features();
+    device_features12.shaderOutputLayer = m_output_layer_enabled;
+    if (minimal_shader_contract) {
+      // Bounded ALU and vertex-eligibility fixtures do not sample images or
+      // write layered/multi-viewport output.
+      // Leave the corresponding optional features disabled, not falsely enabled.
+      device_features12.samplerMirrorClampToEdge = false;
+      device_features12.shaderOutputViewportIndex = false;
+      device_features12.shaderSampledImageArrayNonUniformIndexing = false;
+      device_features12.shaderStorageImageArrayNonUniformIndexing = false;
+    }
     // Memory-transfer cases use the same optional capability as production;
     // all profiles that exercise 64-bit atomics still require it above.
     device_features12.shaderBufferInt64Atomics = m_buffer_int64_enabled;
@@ -21988,11 +22089,46 @@ private:
     mesh_features.pNext = robustness_chain;
     device_info.pNext = m_mesh_shader_enabled
         ? static_cast<void *>(&mesh_features) : robustness_chain;
+    vk::PhysicalDeviceShaderQuadControlFeaturesKHR quad_control{};
+    vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR maximal_reconvergence{};
+    if (request_fragment_quad_control) {
+      quad_control.shaderQuadControl = true;
+      maximal_reconvergence.shaderMaximalReconvergence = true;
+      quad_control.pNext = &maximal_reconvergence;
+      maximal_reconvergence.pNext = const_cast<void *>(device_info.pNext);
+      device_info.pNext = &quad_control;
+    }
     vk::PhysicalDeviceFeatures device_features{};
-    device_features.shaderStorageImageWriteWithoutFormat = true;
+    device_features.shaderStorageImageWriteWithoutFormat = !minimal_shader_contract;
     device_features.shaderImageGatherExtended = extended_image_contract;
     device_features.sampleRateShading = available_features.sampleRateShading;
     device_features.shaderInt64 = true;
+    // The production vertex emitter preserves its position/ClipDistance guard.
+    // This bounded graphics fixture must enable the real device capability.
+    Require("VulkanHarness", "vertex eligibility",
+            m_profile != Profile::VertexEligibility || available_features.shaderClipDistance,
+            "production vertex ClipDistance output is not supported");
+    device_features.shaderClipDistance =
+        m_profile == Profile::VertexEligibility && available_features.shaderClipDistance;
+    if (m_profile == Profile::VertexEligibility) {
+      vk::PhysicalDeviceSubgroupProperties subgroup{};
+      vk::PhysicalDeviceProperties2 properties{};
+      properties.pNext = &subgroup;
+      m_physical_device.getProperties2(&properties);
+      std::fprintf(stderr, "NGG_VERTEX_ELIGIBILITY native_subgroup=%u supported_stages=0x%x "
+                           "enabled_clip_distance=%u required_vertex_subgroups=0\n",
+                   subgroup.subgroupSize, static_cast<u32>(subgroup.supportedStages),
+                   device_features.shaderClipDistance);
+    }
+    if (m_profile == Profile::UniformFragmentVote) {
+      vk::PhysicalDeviceSubgroupProperties subgroup{};
+      vk::PhysicalDeviceProperties2 properties{};
+      properties.pNext = &subgroup;
+      m_physical_device.getProperties2(&properties);
+      std::fprintf(stderr, "UNIFORM_FRAGMENT_VOTE native_subgroup=%u supported_stages=0x%x "
+                           "required_fragment_subgroups=0\n",
+                   subgroup.subgroupSize, static_cast<u32>(subgroup.supportedStages));
+    }
     device_features.shaderCullDistance = available_features.shaderCullDistance;
     device_features.multiViewport = available_features.multiViewport;
     device_features.largePoints = available_features.largePoints;
@@ -22010,6 +22146,10 @@ private:
     m_enabled_base_features = device_features;
     device_info.pEnabledFeatures = &device_features;
     std::vector<const char *> device_extensions{VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
+    if (request_fragment_quad_control) {
+      device_extensions.push_back(VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME);
+      device_extensions.push_back(VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME);
+    }
 #if defined(LUMEN_PS5_NATIVE_METAL)
     device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     device_extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
@@ -22064,6 +22204,8 @@ private:
     RequireVk("VulkanHarness", "dispatch",
               m_physical_device.createDevice(&device_info, nullptr, &m_device),
               "vkCreateDevice");
+    // Record only features enabled on the successfully created device.
+    m_fragment_quad_control_enabled = request_fragment_quad_control;
     VULKAN_HPP_DEFAULT_DISPATCHER.init(m_device);
     m_device.getQueue(m_queue_family, 0, &m_queue);
 
@@ -22126,7 +22268,17 @@ private:
     }
   }
 
-  vk::ShaderModule CreateShaderModule(const char *shader_name, const std::vector<u32> &spirv) {
+  vk::ShaderModule CreateShaderModule(const char *shader_name, std::span<const u32> spirv) {
+    Libs::Graphics::SpirvOptionalFeatures features{};
+    features.output_layer = m_output_layer_enabled;
+    features.fragment_quad_control = m_fragment_quad_control_enabled;
+    const auto admission = Libs::Graphics::AdmitSpirvModule(spirv, m_barycentric_enabled, features);
+    Require(shader_name, "SPIR-V admission",
+            admission != Libs::Graphics::SpirvModuleAdmission::OutputLayerUnavailable,
+            "shaderOutputLayer is unavailable; native shader module was not created");
+    Require(shader_name, "SPIR-V admission",
+            admission == Libs::Graphics::SpirvModuleAdmission::Allowed,
+            "final module requires an unavailable feature or has malformed framing");
     vk::ShaderModuleCreateInfo info{};
     info.codeSize = spirv.size() * sizeof(u32);
     info.pCode = spirv.data();
@@ -50336,6 +50488,10 @@ void CheckPm4CeCompletion(RenderContext &renderer) {
 #include "NativeMetalContractTests.inc"
 #include "NativeMetalPrimitiveTests.inc"
 #include "NativeMetalVertexSubgroupTests.inc"
+#include "ComputeSubgroup16Tests.inc"
+#include "NggVertexEligibilityGpuTests.inc"
+#include "UniformFragmentVoteGpuTests.inc"
+#include "RasterQuadGpuTests.inc"
 
 } // namespace
 } // namespace Libs::Graphics
@@ -50346,6 +50502,52 @@ int main(int argc, char **argv) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   EnsureConfigInitialized();
   CheckLeastRecentlyUsedCacheOrdering();
+  if (argc == 2 && std::strcmp(argv[1], "--raster-quad-reference-only") == 0) {
+    RasterQuadGpu::CheckReference();
+    return 0;
+  }
+  if (argc == 2 && (std::strcmp(argv[1], "--raster-quad-only") == 0 ||
+                   std::strcmp(argv[1], "--raster-quad-host-only") == 0)) {
+    CheckRasterQuadGpu(std::strcmp(argv[1], "--raster-quad-host-only") == 0);
+    return 0;
+  }
+  if (argc == 2 && (std::strcmp(argv[1], "--uniform-fragment-multiword-vote-only") == 0 ||
+                   std::strcmp(argv[1], "--uniform-fragment-multiword-vote-host-only") == 0)) {
+    CheckUniformFragmentMultiwordVoteGpu(
+        std::strcmp(argv[1], "--uniform-fragment-multiword-vote-host-only") == 0);
+    return 0;
+  }
+  if (argc == 2 && (std::strcmp(argv[1], "--uniform-fragment-after-vote-only") == 0 ||
+                   std::strcmp(argv[1], "--uniform-fragment-after-vote-host-only") == 0)) {
+    CheckUniformFragmentAfterVoteGpu(
+        std::strcmp(argv[1], "--uniform-fragment-after-vote-host-only") == 0);
+    return 0;
+  }
+  if (argc == 2 && (std::strcmp(argv[1], "--uniform-fragment-texture-vote-only") == 0 ||
+                   std::strcmp(argv[1], "--uniform-fragment-texture-vote-host-only") == 0)) {
+    CheckUniformFragmentTextureVoteGpu(
+        std::strcmp(argv[1], "--uniform-fragment-texture-vote-host-only") == 0);
+    return 0;
+  }
+  if (argc == 2 && (std::strcmp(argv[1], "--uniform-fragment-vote-only") == 0 ||
+                   std::strcmp(argv[1], "--uniform-fragment-vote-host-only") == 0)) {
+    CheckUniformFragmentVoteGpu(
+        std::strcmp(argv[1], "--uniform-fragment-vote-host-only") == 0);
+    return 0;
+  }
+  if (argc == 2 && (std::strcmp(argv[1], "--ngg-vertex-eligibility-only") == 0 ||
+                   std::strcmp(argv[1], "--ngg-vertex-eligibility-host-only") == 0)) {
+    CheckNggVertexEligibilityGpu(
+        std::strcmp(argv[1], "--ngg-vertex-eligibility-host-only") == 0);
+    return 0;
+  }
+  if (argc == 2 && (std::strcmp(argv[1], "--subgroup16-only") == 0 ||
+                    std::strcmp(argv[1], "--subgroup16-host-only") == 0 ||
+                    std::strcmp(argv[1], "--subgroup-native-only") == 0)) {
+    CheckComputeSubgroup16(std::strcmp(argv[1], "--subgroup16-host-only") == 0,
+                          std::strcmp(argv[1], "--subgroup-native-only") == 0);
+    return 0;
+  }
   if (argc == 2 && (std::strcmp(argv[1], "--upstream-alu-host-only") == 0 ||
                     std::strcmp(argv[1], "--upstream-alu-only") == 0)) {
     const bool host_only = std::strcmp(argv[1], "--upstream-alu-host-only") == 0;

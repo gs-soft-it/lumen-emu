@@ -17,6 +17,9 @@ struct Limits {
     uint32_t max_geometry_total_output_components = 0;
     uint32_t max_geometry_output_vertices = 0;
     uint32_t max_fragment_input_components = 0;
+    // Actual device enablement, shared by all preprocessing stages. This does
+    // not replace the final native shader-module feature admission.
+    bool fragment_quad_control_enabled = false;
 };
 
 enum class Status { NotNeeded, Ready, Unsupported };

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include <map>
 #include <ranges>
 #include <magic_enum/magic_enum.hpp>
@@ -78,6 +79,7 @@ static std::map<std::string, FactoryDevice> available_device = {
 namespace Libraries::Kernel {
 
 s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
+    const Lumen::Documents::ReadOperation document_operation;
     LOG_INFO(Kernel_Fs, "path = {} flags = {:#x} mode = {:#o}", raw_path, flags, mode);
 
     auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
@@ -602,7 +604,7 @@ s32 PS4_SYSV_ABI posix_mkdir(const char* path, u16 mode) {
         return -1;
     }
 
-    if (!fs::exists(dir_name)) {
+    if (!Lumen::HostFileSystem::exists(dir_name)) {
         *__Error() = POSIX_ENOENT;
         return -1;
     }
@@ -638,7 +640,7 @@ s32 PS4_SYSV_ABI posix_rmdir(const char* path) {
         return -1;
     }
 
-    if (!fs::exists(dir_name)) {
+    if (!Lumen::HostFileSystem::exists(dir_name)) {
         *__Error() = POSIX_ENOENT;
         return -1;
     }
@@ -684,6 +686,7 @@ s32 PS4_SYSV_ABI posix_access(const char* path, s32 mode) {
 }
 
 s32 PS4_SYSV_ABI posix_stat(const char* path, OrbisKernelStat* sb) {
+    const Lumen::Documents::ReadOperation document_operation;
     LOG_DEBUG(Kernel_Fs, "(PARTIAL) path = {}", path);
     if (strlen(path) > 255) {
         *__Error() = POSIX_ENAMETOOLONG;
@@ -715,7 +718,7 @@ s32 PS4_SYSV_ABI posix_stat(const char* path, OrbisKernelStat* sb) {
     // calculate the file modified time
     std::error_code ec;
     const auto mtime =
-        fs::exists(path_name, ec) ? fs::last_write_time(path_name, ec) : fs::file_time_type{};
+        Lumen::HostFileSystem::exists(path_name, ec) ? Lumen::HostFileSystem::last_write_time(path_name, ec) : fs::file_time_type{};
     const auto mtimestamp = now_sys + (mtime - now_file);
 
     if (is_dir) {
@@ -746,7 +749,7 @@ s32 PS4_SYSV_ABI posix_stat(const char* path, OrbisKernelStat* sb) {
             }
         } else {
             sb->st_size =
-                fs::exists(path_name, ec) ? static_cast<s64>(fs::file_size(path_name, ec)) : 0;
+                Lumen::HostFileSystem::exists(path_name, ec) ? static_cast<s64>(Lumen::HostFileSystem::file_size(path_name, ec)) : 0;
             sb->st_mtim.tv_sec =
                 std::chrono::duration_cast<std::chrono::seconds>(mtimestamp.time_since_epoch())
                     .count();
@@ -917,7 +920,7 @@ s32 PS4_SYSV_ABI posix_rename(const char* from, const char* to) {
         *__Error() = POSIX_ENAMETOOLONG;
         return -1;
     }
-    if (!fs::exists(src_path)) {
+    if (!Lumen::HostFileSystem::exists(src_path)) {
         *__Error() = POSIX_ENOENT;
         return -1;
     }
@@ -933,7 +936,7 @@ s32 PS4_SYSV_ABI posix_rename(const char* from, const char* to) {
     const bool src_is_dir = fs::is_directory(src_path);
     const bool dst_is_dir = fs::is_directory(dst_path);
 
-    if (fs::exists(dst_path)) {
+    if (Lumen::HostFileSystem::exists(dst_path)) {
         if (src_is_dir && !dst_is_dir) {
             *__Error() = POSIX_ENOTDIR;
             return -1;

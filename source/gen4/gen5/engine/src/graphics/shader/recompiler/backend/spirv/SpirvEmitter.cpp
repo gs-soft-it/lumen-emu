@@ -228,10 +228,18 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 		state.debug_source = state.builder.AddString(name);
 	}
 	const auto* workgroup = ShaderWorkgroupInput(program.stage, input_info);
-	state.lane_count =
-	    workgroup != nullptr && program.wave_size == 64u && workgroup->host_subgroup_size == 32u
-	        ? 2u
-	        : 1u;
+	if (workgroup != nullptr) {
+		state.lane_width = workgroup->host_subgroup_size;
+		if (state.lane_width == 16u) {
+			if (program.stage != ShaderType::Compute ||
+			    (program.wave_size != 32u && program.wave_size != 64u)) {
+				Fail(program, "host subgroup16 lowering requires a compute wave32 or wave64");
+			}
+			state.lane_count = program.wave_size / state.lane_width;
+		} else if (program.wave_size == 64u && state.lane_width == 32u) {
+			state.lane_count = 2u;
+		}
+	}
 	DefineModule(state);
 	ValidateNativeProgram(program, program.stage == ShaderType::Compute &&
 	                                   input_info.compute != nullptr && input_info.compute->lds_storage);

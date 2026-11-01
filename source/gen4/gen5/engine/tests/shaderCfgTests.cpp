@@ -6,6 +6,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/computeSubgroupPolicy.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -21,6 +22,9 @@
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
 #include "graphics/shader/recompiler/ir/passes/ReadLaneElimination.h"
+#include "graphics/shader/recompiler/ir/passes/NggVertexEligibility.h"
+#include "graphics/shader/recompiler/ir/passes/UniformConditionRef.h"
+#include "graphics/shader/recompiler/ir/passes/RasterQuadPartition.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/ShaderInfoCollection.h"
@@ -13629,6 +13633,7 @@ void TestNewShaderRecompilerExpPixelOutputs() {
 
   ShaderPixelInputInfo uint16_info;
   uint16_info.target_output_mode[0] = 7;
+  uint16_info.target_numeric_class[0] = Prospero::TextureNumericClass::Uint;
   options.input_info.pixel = &uint16_info;
   auto uint16_result = RecompileForTest(shader, options);
   const auto uint16_source = DisassembleSpirvBinary(uint16_result.spirv);
@@ -13670,6 +13675,7 @@ void TestNewShaderRecompilerExpPixelOutputs() {
 
   ShaderPixelInputInfo uint_info;
   uint_info.target_output_mode[0] = 7;
+  uint_info.target_numeric_class[0] = Prospero::TextureNumericClass::Uint;
   options.input_info.pixel = &uint_info;
   auto partial_uint_result =
       RecompileForTest(partial_shader, options);
@@ -13705,6 +13711,86 @@ void TestNewShaderRecompilerExpPixelOutputs() {
   Check(CountSourceOccurrences(unorm16_ba_source, "UnpackUnorm2x16") == 1u,
         "compressed UNORM16 BA-only export did not unpack VSRC1");
   CheckSpirvBinaryValidates(unorm16_ba_result.spirv);
+
+  // EXP COMPR transports packed bits; the receiving attachment selects their type.
+  uint16_info.target_output_mode[0] = 4;
+  options.input_info.pixel = &uint16_info;
+  const auto packed_uint = RecompileForTest(compressed_ba_shader, options);
+  Check(SpirvContainsOpcode(packed_uint.spirv, spv::OpBitFieldUExtract) &&
+            !SpirvContainsExtInst(packed_uint.spirv, GLSLstd450UnpackHalf2x16),
+        "FP16 transport into UINT attachment decoded half values instead of raw16 bits");
+  CheckSpirvBinaryValidates(packed_uint.spirv);
+  ShaderPixelInputInfo signed_info = uint16_info;
+  signed_info.target_numeric_class[0] = Prospero::TextureNumericClass::Sint;
+  options.input_info.pixel = &signed_info;
+  const auto packed_signed = RecompileForTest(compressed_ba_shader, options);
+  const auto signed_source = DisassembleSpirvBinary(packed_signed.spirv);
+  Check(signed_source.find("OpVariable %_ptr_Output_v4int Output") != std::string::npos &&
+            CountSourceOccurrences(signed_source, "OpBitFieldSExtract") == 2 &&
+            !SpirvContainsExtInst(packed_signed.spirv, GLSLstd450UnpackHalf2x16),
+        "compressed signed export omitted its I32 interface or raw16 sign extension");
+  CheckSpirvBinaryValidates(packed_signed.spirv);
+  const auto raw_signed = RecompileForTest(partial_shader, options);
+  Check(!SpirvContainsOpcode(raw_signed.spirv, spv::OpBitFieldSExtract) &&
+            !SpirvContainsOpcode(raw_signed.spirv, spv::OpConvertFToS) &&
+            !SpirvContainsOpcode(raw_signed.spirv, spv::OpConvertFToU),
+        "uncompressed integer export added a numeric conversion or narrowed raw32 data");
+  CheckSpirvBinaryValidates(raw_signed.spirv);
+
+  // Compact MRT ordinals retain their receiving type when routed to sparse
+  // attachment locations; full exports preserve raw32 vectors for both types.
+  const uint32_t sparse_shader[] = {
+      EncodeExp0(0x00, 0xf), EncodeExp1(0, 1, 2, 3),
+      EncodeExp0(0x01, 0xf), EncodeExp1(4, 5, 6, 7), EncodeSopp(0x01),
+  };
+  ShaderPixelInputInfo sparse_info;
+  sparse_info.target_shader_mask = 0xf000f000u;
+  sparse_info.target_output_mode[0] = 4;
+  sparse_info.target_output_mode[1] = 4;
+  sparse_info.target_numeric_class[0] = Prospero::TextureNumericClass::Uint;
+  sparse_info.target_numeric_class[1] = Prospero::TextureNumericClass::Sint;
+  options.input_info.pixel = &sparse_info;
+  const auto sparse_result = RecompileForTest(sparse_shader, options);
+  const auto sparse_source = DisassembleSpirvBinary(sparse_result.spirv);
+  Check(sparse_source.find("OpDecorate %out_mrt_0 Location 3") != std::string::npos &&
+            sparse_source.find("OpDecorate %out_mrt_1 Location 7") != std::string::npos &&
+            sparse_source.find("OpVariable %_ptr_Output_v4uint Output") != std::string::npos &&
+            sparse_source.find("OpVariable %_ptr_Output_v4int Output") != std::string::npos &&
+            !SpirvContainsOpcode(sparse_result.spirv, spv::OpConvertFToS) &&
+            !SpirvContainsOpcode(sparse_result.spirv, spv::OpConvertFToU),
+        "sparse typed MRT exports lost their attachment locations or raw32 payloads");
+  CheckSpirvBinaryValidates(sparse_result.spirv);
+  options.input_info.pixel = &signed_info;
+
+  const auto float_key = MakeStageStaticKey(default_info);
+  for (uint32_t slot = 0; slot < 8; ++slot) {
+    auto unsigned_key_info = default_info;
+    unsigned_key_info.target_numeric_class[slot] = Prospero::TextureNumericClass::Uint;
+    auto signed_key_info = unsigned_key_info;
+    signed_key_info.target_numeric_class[slot] = Prospero::TextureNumericClass::Sint;
+    Check(MakeStageStaticKey(unsigned_key_info) != float_key &&
+              MakeStageStaticKey(signed_key_info) != float_key &&
+              MakeStageStaticKey(unsigned_key_info) != MakeStageStaticKey(signed_key_info),
+          "fragment cache key omitted an MRT numerical class");
+  }
+  Check(TextureRenderTargetNumericClass(vk::Format::eR16G16B16A16Uint) ==
+            Prospero::TextureNumericClass::Uint &&
+            TextureRenderTargetNumericClass(vk::Format::eR32G32B32A32Sint) ==
+            Prospero::TextureNumericClass::Sint &&
+            TextureRenderTargetNumericClass(vk::Format::eR8G8B8A8Unorm) ==
+            Prospero::TextureNumericClass::Float &&
+            TextureRenderTargetNumericClass(vk::Format::eUndefined) ==
+            Prospero::TextureNumericClass::Unsupported &&
+            TextureRenderTargetNumericClass(vk::Format::eD32SfloatS8Uint) ==
+            Prospero::TextureNumericClass::Unsupported &&
+            TextureRenderTargetNumericClass(vk::Format::eBc1RgbaUnormBlock) ==
+            Prospero::TextureNumericClass::Unsupported,
+        "fragment numerical classifier admitted a non-color format or lost a valid class");
+  signed_info.target_numeric_class[0] = Prospero::TextureNumericClass::Unsupported;
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+  ExpectFatal([&] { (void)RecompileForTest(partial_shader, options); },
+              "invalid attachment numerical class reached the SPIR-V emitter");
+#endif
 }
 
 void TestAutomaticObjectPrimitiveId() {
@@ -16151,6 +16237,24 @@ void TestCompilerStageInputOwnership() {
 #endif
 }
 
+void TestComputeSubgroupPolicy() {
+  using namespace SubgroupPolicy;
+  Check(ComputeHostWidth(16u, false) == 16u && ComputeHostWidth(32u, false) == 32u &&
+            ComputeHostWidth(64u, true) == 64u && ComputeHostWidth(16u, true) == 64u,
+        "compute selection lost the actual width or native64 preference");
+  Check(ComputeHostWidth(8u, false) == 0u && ComputeHostWidth(128u, false) == 0u,
+        "unsupported compute width was silently treated as native32");
+  Check(AdmitRaster(false, 16u, false) == RasterAdmission::Supported,
+        "subgroup-free raster module was denied on native16");
+  Check(AdmitRaster(true, 16u, false) == RasterAdmission::StageUnavailable &&
+            AdmitRaster(true, 16u, true) == RasterAdmission::WidthUnavailable,
+        "compute subgroup16 lowering incorrectly admitted a raster subgroup consumer");
+  for (uint32_t width : {32u, 64u}) {
+    Check(AdmitRaster(true, width, true) == RasterAdmission::Supported,
+          "existing native32/64 raster path changed admission");
+  }
+}
+
 void TestSpirvRepeatedEmission() {
   using namespace ShaderRecompiler;
   const uint32_t shader[] = {EncodeSopp(0x01)};
@@ -16183,19 +16287,30 @@ void TestSpirvRepeatedEmission() {
             Spirv::EmitProgram(compiled.program, options.input_info) == split,
         "split-wave emission did not reset both halves' definitions");
 
+  compute.host_subgroup_size = 16;
+  const auto quarters = Spirv::EmitProgram(compiled.program, options.input_info);
+  CheckSpirvBinaryValidates(quarters);
+  Check(quarters != split &&
+            Spirv::EmitProgram(compiled.program, options.input_info) == quarters,
+        "subgroup16 re-emission retained another virtual slice's SSA definition");
+
   compute.host_subgroup_size = 64;
   Check(Spirv::EmitProgram(compiled.program, options.input_info) == binary,
         "native-wave re-emission retained split-wave definitions");
   compute.host_subgroup_size = 32;
   Check(Spirv::EmitProgram(compiled.program, options.input_info) == split,
         "split-wave re-emission retained native-wave definitions");
+  compute.host_subgroup_size = 16;
+  Check(Spirv::EmitProgram(compiled.program, options.input_info) == quarters,
+        "subgroup16 re-emission retained native32/64 definitions");
 }
 
 void TestSpirvConditionVotes() {
   using namespace ShaderRecompiler;
   using K = CFG::BranchCondition;
   for (const auto [wave, host] : {std::pair{32u, 32u}, std::pair{64u, 64u},
-                                  std::pair{64u, 32u}}) {
+                                  std::pair{64u, 32u}, std::pair{32u, 16u},
+                                  std::pair{64u, 16u}}) {
     const uint32_t shader[] = {EncodeSopp(0x01)};
     ShaderComputeInputInfo compute{};
     compute.wave_size = wave;
@@ -16233,8 +16348,9 @@ void TestSpirvConditionVotes() {
     Check(scalar.TryInstruction()->Definition(0) == predicate.TryInstruction()->Definition(0),
           "scalar instruction condition acquired a subgroup vote");
     if (wave != host) {
-      Check(SpirvInstructionOpcodeCount(binary, spv::OpLogicalAnd) == 3 &&
-                SpirvInstructionOpcodeCount(binary, spv::OpLogicalOr) == 3 &&
+      const auto combinations = 3u * (wave / host - 1u);
+      Check(SpirvInstructionOpcodeCount(binary, spv::OpLogicalAnd) == combinations &&
+                SpirvInstructionOpcodeCount(binary, spv::OpLogicalOr) == combinations &&
                 std::ranges::all_of(conditions, [](const auto *inst) {
                   return inst->Definition(0) == inst->Definition(1);
                 }) && scalar.TryInstruction()->Definition(0) == scalar.TryInstruction()->Definition(1),
@@ -16572,12 +16688,43 @@ void TestNewShaderRecompilerSpirvSizeBaselines() {
 #include "ShaderRayTracingTests.inc"
 
 } // namespace
+#include "NggVertexEligibilityTests.inc"
+#include "UniformConditionRefTests.inc"
+#include "RasterQuadPartitionTests.inc"
+
 } // namespace Libs::Graphics
 
 int main(int argc, char **argv) {
   using namespace Libs::Graphics;
 
   EnsureConfigInitialized();
+  if (argc == 2 && std::strcmp(argv[1], "--raster-quad-partition-only") == 0) {
+    TestRasterQuadPartition();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--uniform-condition-vote-only") == 0) {
+    TestUniformConditionRefs();
+    std::printf("ShaderCfgTests: uniform condition votes and negative provenance passed\n");
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--ngg-vertex-eligibility-only") == 0) {
+    TestNggVertexEligibility();
+    std::printf("ShaderCfgTests: NGG vertex eligibility and negative escapes passed\n");
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--subgroup16-only") == 0) {
+    TestComputeSubgroupPolicy();
+    TestSpirvRepeatedEmission();
+    TestSpirvConditionVotes();
+    std::printf("ShaderCfgTests: subgroup16/32/64 re-emission and votes passed\n");
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--pixel-exports-only") == 0) {
+    TestNewShaderRecompilerExpPixelOutputs();
+    TestRenderTargetReverseExportMapping();
+    std::printf("ShaderCfgTests: typed pixel exports and render-target mappings passed\n");
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--upstream-shader-only") == 0) {
     TestSsaRewriteSealsFilledBlocks();
     TestScalarDataCacheInvalidation();
@@ -16600,6 +16747,9 @@ int main(int argc, char **argv) {
   TestTypedSpirvSerialization();
   TestDeferredSpirvPhiPatching();
   TestCompilerStageInputOwnership();
+  TestComputeSubgroupPolicy();
+  TestNggVertexEligibility();
+  TestUniformConditionRefs();
   TestSpirvRepeatedEmission();
   TestSpirvConditionVotes();
   TestRepeatedExportsHaveOneInterface();

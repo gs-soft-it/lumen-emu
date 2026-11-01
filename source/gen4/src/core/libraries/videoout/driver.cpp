@@ -25,13 +25,6 @@ extern "C" void LumenGen4OnGuestFlip();
 
 namespace Libraries::VideoOut {
 
-static std::atomic_uint32_t submit_traces{};
-static std::atomic_uint32_t dispatch_traces{};
-static std::atomic_uint32_t internal_traces{};
-static std::atomic_uint32_t queue_traces{};
-static std::atomic_uint32_t dequeue_traces{};
-static std::atomic_uint32_t present_traces{};
-
 constexpr static bool Is32BppPixelFormat(PixelFormat format) {
     switch (format) {
     case PixelFormat::A8R8G8B8Srgb:
@@ -258,11 +251,6 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
 }
 
 void VideoOutDriver::Flip(const Request& req) {
-    if (present_traces.fetch_add(1, std::memory_order_relaxed) < 32) {
-        LOG_INFO(Lib_VideoOut,
-                 "LUMEN_HOST_FLIP_TRACE stage=present index={} arg={} eop={} frame={}", req.index,
-                 req.flip_arg, req.eop, static_cast<const void*>(req.frame));
-    }
     // Update HDR status before presenting.
     presenter->SetHDR(req.port->is_hdr);
 
@@ -275,10 +263,6 @@ void VideoOutDriver::Flip(const Request& req) {
 #ifdef __ANDROID__
     LumenGen4OnGuestFlip();
 #endif
-    if (present_traces.load(std::memory_order_relaxed) <= 32) {
-        LOG_INFO(Lib_VideoOut, "LUMEN_HOST_FLIP_TRACE stage=present_returned index={} arg={}",
-                 req.index, req.flip_arg);
-    }
 
     // Update flip status.
     auto* port = req.port;
@@ -342,11 +326,6 @@ void VideoOutDriver::DrawLastFrame() {
 
 bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
                                 bool is_eop /*= false*/, u64 lock_generation) {
-    if (submit_traces.fetch_add(1, std::memory_order_relaxed) < 32) {
-        LOG_INFO(Lib_VideoOut,
-                 "LUMEN_HOST_FLIP_TRACE stage=driver_submit index={} arg={} eop={} pending={}", index,
-                 flip_arg, is_eop, port->flip_status.flip_pending_num);
-    }
     {
         std::unique_lock lock{port->port_mutex};
         if (index != -1 && port->flip_status.flip_pending_num > 16) {
@@ -364,11 +343,6 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
     if (!is_eop) {
         // Non EOP flips can arrive from any thread so ask GPU thread to perform them
         liverpool->SendCommand([=, this]() {
-            if (dispatch_traces.fetch_add(1, std::memory_order_relaxed) < 32) {
-                LOG_INFO(Lib_VideoOut,
-                         "LUMEN_HOST_FLIP_TRACE stage=gpu_dispatch index={} arg={} eop={}", index,
-                         flip_arg, is_eop);
-            }
             SubmitFlipInternal(port, index, flip_arg, is_eop, lock_generation);
         });
     } else {
@@ -380,11 +354,6 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
 
 void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
                                         u64 lock_generation) {
-    if (internal_traces.fetch_add(1, std::memory_order_relaxed) < 32) {
-        LOG_INFO(Lib_VideoOut,
-                 "LUMEN_HOST_FLIP_TRACE stage=prepare_enter index={} arg={} eop={}", index, flip_arg,
-                 is_eop);
-    }
     Vulkan::Frame* frame;
     if (index == -1) {
         frame = presenter->PrepareBlankFrame(false);
@@ -403,12 +372,6 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
         return;
     }
 
-    if (queue_traces.fetch_add(1, std::memory_order_relaxed) < 32) {
-        LOG_INFO(Lib_VideoOut,
-                 "LUMEN_HOST_FLIP_TRACE stage=prepare_done index={} arg={} frame={}", index, flip_arg,
-                 static_cast<const void*>(frame));
-    }
-
     std::scoped_lock lock{mutex};
     requests.push({
         .frame = frame,
@@ -419,11 +382,6 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
         .lock_generation = lock_generation,
     });
     request_cv.notify_one();
-    if (queue_traces.load(std::memory_order_relaxed) <= 32) {
-        LOG_INFO(Lib_VideoOut,
-                 "LUMEN_HOST_FLIP_TRACE stage=queue_insert index={} arg={} depth={}", index, flip_arg,
-                 requests.size());
-    }
 }
 
 void VideoOutDriver::PresentThread(std::stop_token token) {
@@ -479,11 +437,6 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                     }
                 }
             } else {
-                if (dequeue_traces.fetch_add(1, std::memory_order_relaxed) < 32) {
-                    LOG_INFO(Lib_VideoOut,
-                             "LUMEN_HOST_FLIP_TRACE stage=queue_dequeue index={} arg={}", request.index,
-                             request.flip_arg);
-                }
                 Flip(request);
                 FRAME_END;
             }

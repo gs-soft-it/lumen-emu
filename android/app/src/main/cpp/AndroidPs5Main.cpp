@@ -1,4 +1,5 @@
 // Lumen PS5 Android embedding, 2026-10-02. SPDX-License-Identifier: GPL-2.0-only
+#include "host/DocumentFileSystem.h"
 #include "AndroidFexCoreRuntime.h"
 #include "GuestCpuRuntime.h"
 #include "AndroidPs5VulkanDriver.h"
@@ -29,13 +30,14 @@ bool CanonicalDirectory(const char* text, std::filesystem::path* result) {
     if (text == nullptr || result == nullptr || text[0] != '/') return false;
     std::error_code error;
     const std::filesystem::path requested(text);
-    *result = std::filesystem::canonical(requested, error);
-    return !error && requested == *result && std::filesystem::is_directory(*result, error)
+    *result = Lumen::HostFileSystem::canonical(requested, error);
+    return !error && requested == *result && Lumen::HostFileSystem::is_directory(*result, error)
         && !error;
 }
 
 bool RegularFile(const std::filesystem::path& path) {
-    const int file = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    const int file = Lumen::Documents::IsMounted(path) ? Lumen::Documents::OpenRead(path)
+        : open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (file < 0) return false;
     struct stat status {};
     const bool valid = fstat(file, &status) == 0 && S_ISREG(status.st_mode)
@@ -78,9 +80,10 @@ extern "C" __attribute__((visibility("default")))
 int LumenAndroidPs5MainV1(int argc, char* argv[]) {
     // SDL prepends its executable name. Older diagnostic callers use system
     // mode with seven options; the app adds driver options and the explicit
-    // default-OFF frame/audio aggregates and image publication experiment.
+    // default-OFF frame/audio aggregates, image publication experiment, and
+    // explicit process-wide Vulkan loader route as the last option.
     // Older callers remain accepted with every new selector disabled.
-    if ((argc != 8 && argc != 10 && argc != 11 && argc != 13) || argv == nullptr)
+    if ((argc != 8 && argc != 10 && argc != 11 && argc != 13 && argc != 14) || argv == nullptr)
         return Failure("arguments");
     std::filesystem::path game, data, session;
     Emulator::RunOptions options;
@@ -91,42 +94,53 @@ int LumenAndroidPs5MainV1(int argc, char* argv[]) {
         || !Dimension(argv[5], &options.config.screen_height)
         || !Boolean(argv[6]) || !Boolean(argv[7])
         || (argc >= 11 && !Boolean(argv[10]))
-        || (argc == 13 && (!Boolean(argv[11]) || !Boolean(argv[12]))))
+        || (argc >= 13 && (!Boolean(argv[11]) || !Boolean(argv[12]))))
         return Failure("paths-or-options");
 #if defined(LUMEN_PS5_DIRECT_ENGINE)
     if ((argc >= 11 && std::strcmp(argv[10], "0") != 0)
-        || (argc == 13 && (std::strcmp(argv[11], "0") != 0
+        || (argc >= 13 && (std::strcmp(argv[11], "0") != 0
                           || std::strcmp(argv[12], "0") != 0)))
         return Failure("legacy-engine-selectors-unavailable");
 #else
     if (setenv("LUMEN_PS5_FRAME_PIPELINE_TRACE", argc >= 11 ? argv[10] : "0", 1) != 0)
         return Failure("frame-trace-environment");
-    if (setenv("LUMEN_PS5_AUDIO_TIMING_TRACE", argc == 13 ? argv[11] : "0", 1) != 0
-        || setenv("LUMEN_PS5_IMAGE_PUBLICATION_SNAPSHOT", argc == 13 ? argv[12] : "0", 1) != 0)
+    if (setenv("LUMEN_PS5_AUDIO_TIMING_TRACE", argc >= 13 ? argv[11] : "0", 1) != 0
+        || setenv("LUMEN_PS5_IMAGE_PUBLICATION_SNAPSHOT", argc >= 13 ? argv[12] : "0", 1) != 0)
         return Failure("timing-selector-environment");
 #endif
     const auto metadata = game / "sce_sys";
-    struct stat ps4_metadata {};
     if (!CanonicalDirectory(metadata.c_str(), &options.app0_dir)
         || !RegularFile(metadata / "param.json") || !RegularFile(game / "eboot.bin")
-        || lstat((metadata / "param.sfo").c_str(), &ps4_metadata) == 0)
+        || Lumen::HostFileSystem::exists(metadata / "param.sfo"))
         return Failure("ps5-format");
 
-    if (std::strcmp(argv[6], "1") == 0) {
+    // A diagnostic APK may embed the optimized Release core. Preserve its
+    // explicit stream request without enabling shader validation or dumps.
+    const bool capture_streams = std::strcmp(argv[6], "1") == 0;
+#ifdef NDEBUG
+    constexpr bool diagnostics = false;
+#else
+    const bool diagnostics = capture_streams;
+#endif
+    if (capture_streams) {
         std::fflush(stdout);
         std::fflush(stderr);
         if (!RedirectDiagnosticStream(session / "stdout.log", STDOUT_FILENO)
             || !RedirectDiagnosticStream(session / "stderr.log", STDERR_FILENO))
             return Failure("diagnostic-stream");
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
+            "LUMEN_ANDROID_PS5_STREAM_CAPTURE_V1 enabled=1 heavyDiagnostics=%d session=%s",
+            diagnostics ? 1 : 0, session.c_str());
     }
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
     const long page_size = sysconf(_SC_PAGESIZE);
-    if (android_get_device_api_level() < 35 || (page_size != 4096 && page_size != 16384))
+    if (android_get_device_api_level() < 33 || (page_size != 4096 && page_size != 16384))
         return Failure("cpu-host");
     if (chdir(data.c_str()) != 0) return Failure("data-directory");
     if (!LumenAndroidPs5ConfigureVulkanDriver(argc >= 10 ? argv[8] : "",
-                                             argc >= 10 ? argv[9] : ""))
+                                             argc >= 10 ? argv[9] : "",
+                                             argc == 14 ? argv[13] : ""))
         return Failure("vulkan-driver-admission");
     options.app0_dir = game;
     // Emulator::Run mounts canonical app0_dir before resolving this guest VFS
@@ -138,7 +152,7 @@ int LumenAndroidPs5MainV1(int argc, char* argv[]) {
 #if defined(LUMEN_PS5_DIRECT_ENGINE)
     options.config.splash_enabled = false;
 #endif
-    if (std::strcmp(argv[6], "1") == 0) {
+    if (diagnostics) {
         options.config.printf_direction = Config::LogDirection::Console;
         options.config.shader_log_direction = Config::LogDirection::File;
         options.config.shader_validation_enabled = true;

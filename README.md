@@ -10,7 +10,7 @@ Experimental **PS4 and PS5 emulation for Android**, with a **macOS (Apple Silico
 
 <p align="center">
   <a href="https://lumen-emu.com"><strong>Official website</strong></a> ·
-  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.5-spike-fexlab/lumenemu-0.1.5-spike-fexlab-v6.apk"><strong>Download Android APK</strong></a> ·
+  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.6-spike-fexlab/lumenemu-0.1.6-spike-fexlab-v7.apk"><strong>Download Android APK</strong></a> ·
   <a href="https://lumen-emu.com/support/"><strong>Support development</strong></a> ·
   <a href="#compatibility"><strong>Compatibility list</strong></a> ·
   <a href="#prepare-the-source"><strong>Build the cores</strong></a>
@@ -27,10 +27,10 @@ Lumen Emu brings PS4 and PS5 software into one Android library. Its dashboard pr
 | Dashboard and library | Import and browse prepared PS4 and PS5 content in one Android interface. |
 | Touch controls | Shared controls with one virtual joystick, an opaque menu and a centred 16:9 game surface. |
 | Physical controllers | Compatible Bluetooth and USB-C gamepads; DualSense and Xbox Series X\|S controllers have been tested by the developer. |
-| Graphics drivers | A custom Turnip Mojo/Bionic path for compatible Snapdragon/Adreno devices, with a selectable system Vulkan driver. Non-Snapdragon or unidentified chipsets automatically use the system driver. |
+| Graphics drivers | Custom Turnip drivers for compatible Snapdragon/Adreno devices, preliminary selectable PanVK support for compatible Mali devices, and the system Vulkan driver. |
 | Included benchmark | SUCCI, a homebrew demo benchmark, helps assess the phone's performance and shows the active graphics driver in its result. |
 
-Development currently focuses on Snapdragon smartphones because available test hardware is limited. The system-driver path is reported to be slower; performance depends on the device, driver, game and emulator build. A custom-driver loading failure stops startup rather than silently selecting another driver.
+Development now includes **experimental Mali GPU support**, alongside the existing Snapdragon/Adreno work. The Android package includes **JimVulkan PanVK r8** for explicit selection on compatible Mali devices; Mali devices still use their system driver by default. Custom-driver support depends on the GPU, Android version and kernel driver interface. A custom-driver loading failure stops startup rather than silently selecting another driver. See the [GPU compatibility notes](#gpu-and-device-compatibility) below.
 
 **The macOS (Apple Silicon) application remains in development.** No Mac or iOS application binary is offered by this repository. iOS is outside the active development and release plan; its retained legacy source build exposes CPU/VM components, as described below.
 
@@ -67,15 +67,29 @@ The Android package includes **SUCCI** to test the phone's performance. Its indi
 
 The application reads **already-extracted ROMs**; it does not open, extract or install PKG files. Prepare content you are legally authorised to use before selecting its library folder. No commercial games, firmware, BIOS files or keys are provided. See the [content requirements and responsible-use information](https://lumen-emu.com/legal/).
 
-In version **0.1.5**, choose the prepared ROMs folder with Android's system folder picker. The selected folder becomes the active library and is used directly, without a mandatory private copy. When changing folders, you can move existing games from the previous folder to the new one or leave them in the previous location. Transfers are verified before originals are removed, and files are not silently overwritten. The active folder is marked in grey and cannot be selected again in Lumen's confirmation. Keep the selected storage available while using it; the app does not request access to all files on the device.
+Version **0.1.6** restores **direct filesystem reads for local ROM folders**, shared by the PS4 and PS5 runtimes, to avoid repeated document-provider overhead during loading. Grant Android's **all-files access** when prompted for a local folder. The system folder picker remains available: recognised Android filesystem-provider selections resolve to the real local folder, while other supported providers continue through the document bridge. The selected folder remains the single active library, without a mandatory private copy.
+
+When changing folders, you can move existing games from the previous folder to the new one or leave them in the previous location. Transfers are verified before originals are removed, and files are not silently overwritten. The active folder is marked in grey and cannot be selected again in Lumen's confirmation. Keep the selected storage available while using it; a missing permission or unavailable root does not silently switch to another library.
 
 Use a suitably powerful device with adequate cooling, and stop if it becomes excessively hot or shows a temperature warning. Android gaming consoles have not yet been tested. See the [hardware guidance](https://lumen-emu.com/legal/#hardware-safety).
 
 ## Compatibility
 
+### GPU and device compatibility
+
+| GPU family | Driver options | Current scope |
+| --- | --- | --- |
+| Qualcomm Adreno / Snapdragon | System Vulkan and compatible custom Turnip drivers | Main development hardware; compatibility still varies by GPU, driver and game. |
+| ARM Mali, including Mali-G57 | System Vulkan; bundled JimVulkan PanVK r8 on compatible devices | **Preliminary, experimental support.** Initial device work used an Ulefone Note 16 Pro with Unisoc T606 / Mali-G57 MC1 and Android 13. |
+| Other or unidentified GPUs | System Vulkan | Device-specific testing is required; no general compatibility claim. |
+
+Initial development tests on the Mali-G57 device, using a Debug build, reached the SUCCI menu with both the system driver and the selected bundled PanVK driver; a PanVK 3D benchmark run also completed. These results are separate from verification of the release APK and do not establish broad PS4/PS5 game playability. PanVK requires a compatible Mali/kernel interface; a Mali model name alone does not guarantee that a custom driver will load. Shader and Vulkan feature support remain game-specific. The PS5 shader work also improves handling of supported subgroup sizes and checks optional GPU capabilities only where needed.
+
+### Historical game reports
+
 **Historical reports: 8 games · 4 playable · 2 almost playable · 2 boots only**
 
-The table below preserves the previously published tests of version 0.1.0. It is not a new compatibility claim for version 0.1.5.
+The table below preserves the previously published tests of version 0.1.0. It is not a new compatibility claim for version 0.1.6 or for Mali devices.
 
 [Open the full compatibility list and report form](https://lumen-emu.com/compatibility/).
 
@@ -104,17 +118,17 @@ To contribute a report, use the [website report form](https://lumen-emu.com/comp
 
 **[Contribute on Ko-fi](https://ko-fi.com/M4J429BFNH)** · **[Official support page](https://lumen-emu.com/support/)**
 
-Voluntary contributions help fund development and additional test smartphones, so we can investigate chipset-specific issues and improve compatibility beyond the current Snapdragon focus. Useful compatibility reports are another way to help.
+Voluntary contributions help fund development and additional test smartphones, so we can investigate chipset-specific issues and improve Snapdragon/Adreno and experimental Mali compatibility. Useful compatibility reports are another way to help.
 
 A contribution does not guarantee a requested feature, game or device compatibility, priority or a delivery date. Contributions support ongoing development; they do not purchase games or access to copyrighted content.
 
 ## Public source scope
 
-The emulator-core sources are public at [gs-soft-it/lumen-emu](https://github.com/gs-soft-it/lumen-emu), starting from a snapshot exported on 23 October 2026 without the original project's Git history, and updated on **27 October 2026** from source revision `d4040176`. **Documenting and showing the full application above does not include its dashboard or application-shell sources in this repository.**
+The emulator-core sources are public at [gs-soft-it/lumen-emu](https://github.com/gs-soft-it/lumen-emu), starting from a snapshot exported on 23 October 2026 without the original project's Git history, and updated on **1 November 2026** from source revision `b9cde237`. **Documenting and showing the full application above does not include its dashboard or application-shell sources in this repository.**
 
 Included: emulator engines, CPU translation and virtual memory, rendering, native host bridges, build scripts, dependency locks, local patches, tests and licence records. Runtime input, IME and in-game guest dialogs remain part of the core.
 
-The Lumen dashboard, game-library UI, Android Java/resources/Gradle application, Qt desktop frontend, UIKit application and application packaging are excluded. There is no `lumen_dashboard` target. Native Android entry points still need a host application to supply their window, input and lifecycle callbacks.
+The Lumen dashboard, game-library UI, Android Java/resources/Gradle application, Qt desktop frontend, UIKit application and application packaging are excluded. There is no `lumen_dashboard` target. Native Android entry points still need a host application to supply their window, input and lifecycle callbacks, as well as the Java document-provider callbacks when using the Android document-filesystem bridge.
 
 | Path | Contents |
 | --- | --- |
@@ -129,21 +143,21 @@ The Lumen dashboard, game-library UI, Android Java/resources/Gradle application,
 
 ## Android download
 
-**Latest update — 0.1.5-spike-fexlab (version code 6), 28 October 2026:** Fixed ROM folder handling and improved emulation speed. See the [changelog](CHANGELOG.md) for package details and verification limits.
+**Latest update — 0.1.6-spike-fexlab (version code 7), 1 November 2026:** Massively reduced loading delays in the tested PS5 startup path, direct local-ROM access for both PS4 and PS5, and preliminary PanVK support for Mali GPUs. See the [changelog](CHANGELOG.md) for details and the scope of the observations.
 
-**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.5-spike-fexlab/lumenemu-0.1.5-spike-fexlab-v6.apk)** ([experimental release 0.1.5-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.5-spike-fexlab)). Requires Android 15/API 35 or newer and an ARM64 device (`arm64-v8a`). This project-provided APK is the only application binary offered here. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
+**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.6-spike-fexlab/lumenemu-0.1.6-spike-fexlab-v7.apk)** ([experimental release 0.1.6-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab)). Requires **Android 13/API 33 or newer** and an ARM64 device (`arm64-v8a`); target API 36. This FEX Release package uses the existing publication signing certificate. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
 
-This APK update includes later runtime and application fixes; the public native source snapshot remains the separately identified 27 October export.
+Both the APK and public core snapshot are updated for this release. The public snapshot contains the native/runtime changes; application storage and driver-selection UI changes are delivered in the APK.
 
 The APK has the same signing certificate as the previous GitHub download. Its SHA-256 is:
 
 ```text
-6dc5f2adeba2dece7d1136cb8ebd67b4db8b28092e3ae5c3e85b35daf5747bcb
+7719a0ac2d7215f1d0a4e9343e25a32e49299a6d602d5ec7bd31427d3c0b780e
 ```
 
 ## Prepare the source
 
-Use Git, Python 3, CMake 3.25 or newer, Ninja and a suitable native/cross C/C++ toolchain. The Gen4 engine uses C++23; the macOS dependency workflow calls for Python 3.12 or newer. Apple targets require Xcode and its platform SDKs. Android requires an NDK supporting API 35.
+Use Git, Python 3, CMake 3.25 or newer, Ninja and a suitable native/cross C/C++ toolchain. The Gen4 engine uses C++23; the macOS dependency workflow calls for Python 3.12 or newer. Apple targets require Xcode and its platform SDKs. Android FEX requires an NDK supporting API 33; the optional QEMU dependency closure requires API 35 or newer.
 
 ```sh
 git clone https://github.com/gs-soft-it/lumen-emu.git lumen-core
@@ -186,15 +200,15 @@ The PS4 executable is `build/macos/gen4/lumen_gen4_runtime`; the full PS5 child 
 
 ### Android ARM64
 
-Configure the native entry point directly, without Gradle. Only `arm64-v8a` and API 35 or newer are accepted. The example selects the direct PS5 FEX path; the PS4 runtime also uses direct FEX. Runtime support currently requires 4 KiB host pages: 16 KiB ELF segment alignment does not establish support for a 16 KiB-page Android device.
+Configure the native entry point directly, without Gradle. The FEX path accepts `arm64-v8a` and API 33 or newer; builds including QEMU require API 35 or newer. The example selects the direct PS5 FEX path; the PS4 runtime also uses direct FEX. The direct FEX runtime currently requires 4 KiB host pages: 16 KiB ELF segment alignment does not establish support for a 16 KiB-page Android device.
 
 ```sh
 python3 source/gen4/tools/prepare_dependencies.py --platform android
 cmake -S android/app/src/main/cpp -B build/android-arm64 -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=/absolute/path/android-ndk/build/cmake/android.toolchain.cmake \
-  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-35 \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-33 \
   -DANDROID_STL=c++_shared \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_BUILD_TYPE=Release \
   -DLUMEN_ANDROID_FULL_RUNTIME=ON -DLUMEN_ANDROID_FEXCORE_LAB=ON \
   -DLUMEN_PS5_DIRECT_FEX=ON \
   -DFFMPEG_PREBUILT_DIR=/absolute/path/ffmpeg-android-arm64
@@ -237,7 +251,7 @@ The example uses POSIX line continuation; in PowerShell put the configure comman
 
 ## Validation and limitations
 
-The initial export recorded CMake parsing, the native Metal build graph, source-manifest paths and dependency-bootstrap checks. The 27 October update preserves the core-only adaptations and records its source-selection and integrity checks in [SOURCE_SNAPSHOT.json](SOURCE_SNAPSHOT.json). A full clean compilation and game execution were **not** repeated for this public source export. The separately built Android package has its own checks and limitations in the [changelog](CHANGELOG.md). Platform support, runtime correctness and individual game compatibility need separate validation on the target hardware.
+The initial export recorded CMake parsing, the native Metal build graph, source-manifest paths and dependency-bootstrap checks. The 1 November update preserves the core-only adaptations and records its source-selection and integrity checks in [SOURCE_SNAPSHOT.json](SOURCE_SNAPSHOT.json). A full clean compilation and game execution were **not** repeated for this public source export. The separately built Android package has its own checks and limitations in the [changelog](CHANGELOG.md). Platform support, runtime correctness and individual game compatibility need separate validation on the target hardware.
 
 [CONTENTS.sha256](CONTENTS.sha256) records exported file bytes. Check it with `sha256sum -c CONTENTS.sha256` where available, or `shasum -a 256 -c CONTENTS.sha256` on macOS. This is an integrity check, not a build test; line-ending conversion or local edits can change hashes. The separately downloaded sources are checked by the dependency bootstrap.
 

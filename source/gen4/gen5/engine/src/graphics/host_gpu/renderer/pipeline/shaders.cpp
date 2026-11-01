@@ -294,7 +294,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		    topology, static_params.provoking_vtx_last,
 		    {limits.maxGeometryInputComponents, limits.maxGeometryOutputComponents,
 		     limits.maxGeometryTotalOutputComponents, limits.maxGeometryOutputVertices,
-		     limits.maxFragmentInputComponents});
+		     limits.maxFragmentInputComponents, graphics.fragment_quad_control_enabled});
 		if (!geometry.success) {
 			EXIT("PS5_BARYCENTRIC_FALLBACK_DENIED topology=%u provokingLast=%u reason=%s\n",
 			     static_cast<uint32_t>(static_params.topology), static_params.provoking_vtx_last,

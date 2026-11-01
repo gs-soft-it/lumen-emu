@@ -141,7 +141,8 @@ uint32_t EmitSubgroupLocalInvocationId(EmitterState& state) {
 	const auto value = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value,
 	                          state.subgroup_local_invocation_id_variable);
-	return state.lane_half == 0 ? value : EmitAddU32(state, value, ConstantU32(state, 32));
+	return state.lane_half == 0 ? value
+	    : EmitAddU32(state, value, ConstantU32(state, state.lane_half * state.lane_width));
 }
 
 uint32_t InputVariableForKind(const EmitterState& state, IR::StageInputKind kind) {
@@ -183,11 +184,13 @@ uint32_t EmitLocalInvocationIndex(EmitterState& state) {
 	}
 	const auto value = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, variable);
-	if (state.lane_count == 2) {
-		const auto wave_base =
-		    EmitBinaryU32(state, spv::OpBitwiseAnd, value, ConstantU32(state, ~31u));
-		return EmitAddU32(state, EmitAddU32(state, value, wave_base),
-		                  ConstantU32(state, state.lane_half * 32));
+	if (state.lane_count > 1) {
+		const auto wave_base = EmitBinaryU32(
+		    state, spv::OpBitwiseAnd, value, ConstantU32(state, ~(state.lane_width - 1u)));
+		const auto expanded_base = EmitBinaryU32(
+		    state, spv::OpIMul, wave_base, ConstantU32(state, state.lane_count - 1u));
+		return EmitAddU32(state, EmitAddU32(state, value, expanded_base),
+		                  ConstantU32(state, state.lane_half * state.lane_width));
 	}
 	return value;
 }

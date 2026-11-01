@@ -1,3 +1,4 @@
+#include "host/DocumentFileSystem.h"
 #include "kernel/fileSystem.h"
 
 #include "common/archive.h"
@@ -400,7 +401,7 @@ std::filesystem::path MountPoints::ResolvePath(const std::string& mounted_name) 
 		}
 
 		const auto native_rel_path = Common::PathFromUtf8(rel_path);
-		if (Common::IsArchivePath(p.dir)) {
+		if (Common::IsArchivePath(p.dir) || Lumen::Documents::IsMounted(p.dir)) {
 			return p.dir / native_rel_path;
 		}
 
@@ -457,6 +458,7 @@ std::filesystem::path GetRealFilename(const std::string& mounted_file_name) {
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
+	const Lumen::Documents::ReadOperation document_operation;
 	PRINT_NAME();
 
 	if (path == nullptr) {
@@ -526,7 +528,7 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 		g_files->DeleteDescriptor(descriptor);
 		return KERNEL_ERROR_ENOENT;
 	}
-	if (Common::IsArchivePath(file->real_name) &&
+	if ((Common::IsArchivePath(file->real_name) || Lumen::Documents::IsMounted(file->real_name)) &&
 	    (rw_mode != Common::File::Mode::Read || trunc || creat)) {
 		g_files->DeleteDescriptor(descriptor);
 		return KERNEL_ERROR_EROFS;
@@ -1204,6 +1206,7 @@ int64_t KYTY_SYSV_ABI KernelLseek(int d, int64_t offset, int whence) {
 }
 
 int KYTY_SYSV_ABI KernelStat(const char* path, FileStat* sb) {
+	const Lumen::Documents::ReadOperation document_operation;
 	PRINT_NAME();
 
 	if (path == nullptr || sb == nullptr) {
@@ -1340,7 +1343,7 @@ int KYTY_SYSV_ABI KernelTruncate(const char* path, int64_t length) {
 	if (real_name.empty()) {
 		return KERNEL_ERROR_ENOENT;
 	}
-	if (Common::IsArchivePath(real_name)) {
+	if (Common::IsArchivePath(real_name) || Lumen::Documents::IsMounted(real_name)) {
 		return KERNEL_ERROR_EROFS;
 	}
 
@@ -1445,7 +1448,7 @@ int KYTY_SYSV_ABI KernelUnlink(const char* path) {
 	}
 
 	auto real_file_name = g_mount_points->ResolvePath(path);
-	if (Common::IsArchivePath(real_file_name)) {
+	if ((Common::IsArchivePath(real_file_name) || Lumen::Documents::IsMounted(real_file_name))) {
 		return KERNEL_ERROR_EROFS;
 	}
 
@@ -1486,7 +1489,7 @@ int KYTY_SYSV_ABI KernelRename(const char* from, const char* to) {
 	auto to_path   = std::string(to);
 	auto real_from = g_mount_points->ResolvePath(from_path);
 	auto real_to   = g_mount_points->ResolvePath(to_path);
-	if (Common::IsArchivePath(real_from) || Common::IsArchivePath(real_to)) {
+	if ((Common::IsArchivePath(real_from) || Lumen::Documents::IsMounted(real_from)) || (Common::IsArchivePath(real_to) || Lumen::Documents::IsMounted(real_to))) {
 		return KERNEL_ERROR_EROFS;
 	}
 
@@ -1575,7 +1578,7 @@ int KYTY_SYSV_ABI KernelMkdir(const char* path, uint16_t mode) {
 	if (real_name.empty()) {
 		return KERNEL_ERROR_ENOENT;
 	}
-	if (Common::IsArchivePath(real_name)) {
+	if (Common::IsArchivePath(real_name) || Lumen::Documents::IsMounted(real_name)) {
 		return KERNEL_ERROR_EROFS;
 	}
 
@@ -1606,7 +1609,7 @@ int KYTY_SYSV_ABI KernelRmdir(const char* path) {
 	LOGF("\t path = %s\n", path);
 
 	auto real_name = g_mount_points->ResolvePath(std::string(path));
-	if (Common::IsArchivePath(real_name)) {
+	if (Common::IsArchivePath(real_name) || Lumen::Documents::IsMounted(real_name)) {
 		return KERNEL_ERROR_EROFS;
 	}
 

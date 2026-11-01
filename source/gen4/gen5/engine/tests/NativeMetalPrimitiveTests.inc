@@ -52,9 +52,70 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
     const char *name, const std::vector<u32> &vertex, const std::vector<u32> &control,
     const std::vector<u32> &evaluation, const std::vector<u32> &fragment,
     u32 patch_control_points, const std::vector<u32> &vertices,
-    const std::vector<u32> &indices, std::span<const PrimitiveContractDraw> draws) {
+    const std::vector<u32> &indices, std::span<const PrimitiveContractDraw> draws,
+    vk::PrimitiveTopology topology, vk::Format color_format,
+    const CompiledShader *fragment_resources, std::span<const u32> fragment_constants,
+    const Image *fragment_texture, vk::Sampler fragment_sampler) {
   using namespace PrimitiveContract;
   const bool tessellated = !control.empty();
+  const bool fragment_buffer = fragment_resources != nullptr;
+  const bool sampled_fragment = fragment_texture != nullptr;
+  Require(name, "fragment texture contract", sampled_fragment == bool(fragment_sampler) &&
+              (!sampled_fragment || fragment_buffer),
+          "fragment texture and sampler require reflected shader resources");
+  ShaderRecompiler::IR::DescriptorBindingKind image_kind{};
+  Require(name, "fragment constant contract", fragment_buffer == !fragment_constants.empty(),
+          "fragment shader metadata and constant payload must be supplied together");
+  if (fragment_buffer) {
+    using namespace ShaderRecompiler::IR;
+    const auto &program = fragment_resources->program;
+    uint64_t expected_mask = 1u;
+    if (sampled_fragment) {
+      Require(name, "fragment sampled resources", program.info.images.size() == 1 &&
+                  program.info.samplers.size() == 1 &&
+                  program.info.images.front().resource_class == ImageResourceClass::Sampled &&
+                  program.info.images.front().dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D,
+              "bounded sampled fixture requires one 2D sampled image and sampler");
+      const auto kind = DescriptorBindingForImage(program.info.images.front());
+      Require(name, "fragment sampled binding", kind.has_value(), "missing sampled image binding");
+      image_kind = *kind;
+      expected_mask |= (uint64_t{1} << static_cast<u32>(image_kind)) |
+                       (uint64_t{1} << static_cast<u32>(DescriptorBindingKind::Samplers));
+      Require(name, "fragment sampled descriptor counts",
+              program.bindings.descriptor_counts[static_cast<size_t>(image_kind)] == 1 &&
+                  program.bindings.descriptor_counts[static_cast<size_t>(DescriptorBindingKind::Samplers)] == 1 &&
+                  fragment_texture->format == vk::Format::eR8G8B8A8Unorm &&
+                  fragment_texture->layout == vk::ImageLayout::eShaderReadOnlyOptimal &&
+                  fragment_texture->layers == 1,
+              "unexpected sampled image descriptor or layout");
+      Require(name, "sampled format support", bool(m_physical_device.getFormatProperties(
+                  fragment_texture->format).optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage),
+              "RGBA8 sampled image format is unavailable");
+    }
+    Require(name, "fragment constant bindings", program.stage == ShaderType::Pixel &&
+                program.bindings.descriptor_mask == expected_mask &&
+                program.bindings.descriptor_counts[static_cast<size_t>(DescriptorBindingKind::Buffers)] == 1 &&
+                program.bindings.UsesPushData() && program.bindings.push_data_start_dword >= 8 &&
+                program.bindings.push_data_start_dword + fragment_resources->packed_user_data.size() <=
+                    PushData::DwordCount,
+            "bounded fragment fixture has unexpected descriptors or overlapping push data");
+  }
+  Require(name, "color format", color_format == vk::Format::eR32G32B32A32Sfloat ||
+              color_format == vk::Format::eR8G8B8A8Unorm,
+          "unsupported primitive fixture readback format");
+  const u32 words_per_pixel = vk::blockSize(color_format) / sizeof(u32);
+  if (color_format == vk::Format::eR8G8B8A8Unorm) {
+    const auto properties = m_physical_device.getFormatProperties(color_format);
+    const auto required = vk::FormatFeatureFlagBits::eColorAttachment |
+                          vk::FormatFeatureFlagBits::eTransferSrc |
+                          vk::FormatFeatureFlagBits::eTransferDst;
+    Require(name, "color format features",
+            (properties.optimalTilingFeatures & required) == required,
+            "RGBA8 color attachment and transfer format support is unavailable");
+    std::fprintf(stderr, "PRIMITIVE_CONTRACT format=RGBA8Unorm optimal_features=0x%x "
+                         "required_features=0x%x\n",
+                 static_cast<u32>(properties.optimalTilingFeatures), static_cast<u32>(required));
+  }
   Require(name, "stage contract", !draws.empty() && vertices.size() % 8 == 0 &&
               (tessellated == !evaluation.empty()) &&
               (!tessellated || (m_enabled_base_features.tessellationShader && patch_control_points != 0)),
@@ -88,18 +149,40 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
   guarded_indices.insert(guarded_indices.end(), 4, Guard);
   auto index_buffer = CreateHostBuffer(name, guarded_indices.size() * sizeof(u32),
       vk::BufferUsageFlagBits::eIndexBuffer, guarded_indices);
-  vk::DescriptorSetLayoutBinding binding{0, vk::DescriptorType::eStorageBuffer, 1,
-                                         vk::ShaderStageFlagBits::eVertex};
+  std::vector<u32> guarded_constants;
+  Buffer fragment_buffer_storage;
+  if (fragment_buffer) {
+    guarded_constants.assign(4, Guard);
+    guarded_constants.insert(guarded_constants.end(), fragment_constants.begin(), fragment_constants.end());
+    guarded_constants.insert(guarded_constants.end(), 4, Guard);
+    fragment_buffer_storage = CreateStorageBuffer(name, guarded_constants, guarded_constants.size());
+  }
+  const auto fragment_binding = ShaderRecompiler::IR::NativeBinding(
+      ShaderType::Pixel, ShaderRecompiler::IR::DescriptorBindingKind::Buffers);
+  const auto image_binding = ShaderRecompiler::IR::NativeBinding(ShaderType::Pixel, image_kind);
+  const auto sampler_binding = ShaderRecompiler::IR::NativeBinding(
+      ShaderType::Pixel, ShaderRecompiler::IR::DescriptorBindingKind::Samplers);
+  const std::array bindings{
+      vk::DescriptorSetLayoutBinding{0, vk::DescriptorType::eStorageBuffer, 1,
+                                     vk::ShaderStageFlagBits::eVertex},
+      vk::DescriptorSetLayoutBinding{fragment_binding, vk::DescriptorType::eStorageBuffer, 1,
+                                     vk::ShaderStageFlagBits::eFragment},
+      vk::DescriptorSetLayoutBinding{image_binding, vk::DescriptorType::eSampledImage, 1,
+                                     vk::ShaderStageFlagBits::eFragment},
+      vk::DescriptorSetLayoutBinding{sampler_binding, vk::DescriptorType::eSampler, 1,
+                                     vk::ShaderStageFlagBits::eFragment}};
   vk::DescriptorSetLayoutCreateInfo set_layout_info{};
-  set_layout_info.bindingCount = 1;
-  set_layout_info.pBindings = &binding;
+  set_layout_info.bindingCount = sampled_fragment ? 4 : fragment_buffer ? 2 : 1;
+  set_layout_info.pBindings = bindings.data();
   vk::DescriptorSetLayout set_layout{};
   RequireVk(name, "descriptor layout", m_device.createDescriptorSetLayout(
       &set_layout_info, nullptr, &set_layout), "vkCreateDescriptorSetLayout");
   vk::ShaderStageFlags push_stages = vk::ShaderStageFlagBits::eVertex;
   if (tessellated) push_stages |= vk::ShaderStageFlagBits::eTessellationControl |
                                 vk::ShaderStageFlagBits::eTessellationEvaluation;
-  const vk::PushConstantRange push_range{push_stages, 0, 8 * sizeof(u32)};
+  if (fragment_buffer) push_stages |= vk::ShaderStageFlagBits::eFragment;
+  const vk::PushConstantRange push_range{push_stages, 0,
+      fragment_buffer ? ShaderRecompiler::IR::NativePushConstantSize : 32u};
   vk::PipelineLayoutCreateInfo layout_info{};
   layout_info.setLayoutCount = 1;
   layout_info.pSetLayouts = &set_layout;
@@ -108,11 +191,14 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
   vk::PipelineLayout layout{};
   RequireVk(name, "pipeline layout", m_device.createPipelineLayout(&layout_info, nullptr, &layout),
             "vkCreatePipelineLayout");
-  const vk::DescriptorPoolSize pool_size{vk::DescriptorType::eStorageBuffer, 1};
+  const std::array pool_sizes{
+      vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, fragment_buffer ? 2u : 1u},
+      vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 1},
+      vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1}};
   vk::DescriptorPoolCreateInfo pool_info{};
   pool_info.maxSets = 1;
-  pool_info.poolSizeCount = 1;
-  pool_info.pPoolSizes = &pool_size;
+  pool_info.poolSizeCount = sampled_fragment ? 3 : 1;
+  pool_info.pPoolSizes = pool_sizes.data();
   vk::DescriptorPool pool{};
   RequireVk(name, "descriptor pool", m_device.createDescriptorPool(&pool_info, nullptr, &pool),
             "vkCreateDescriptorPool");
@@ -132,13 +218,34 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
   write.descriptorType = vk::DescriptorType::eStorageBuffer;
   write.pBufferInfo = &source_info;
   m_device.updateDescriptorSets(1, &write, 0, nullptr);
+  if (fragment_buffer) {
+    const vk::DescriptorBufferInfo constant_info{fragment_buffer_storage.buffer, 4 * sizeof(u32),
+                                                fragment_constants.size_bytes()};
+    write.dstBinding = fragment_binding;
+    write.pBufferInfo = &constant_info;
+    m_device.updateDescriptorSets(1, &write, 0, nullptr);
+  }
 
-  auto target = CreateImageMips(name, Width, Height, vk::Format::eR32G32B32A32Sfloat,
-      vk::ImageUsageFlagBits::eColorAttachment, {}, 4, vk::ImageLayout::eGeneral,
+  if (sampled_fragment) {
+    const vk::DescriptorImageInfo sampled_info{nullptr, fragment_texture->view, fragment_texture->layout};
+    const vk::DescriptorImageInfo sampler_info{fragment_sampler, nullptr, vk::ImageLayout::eUndefined};
+    write.pBufferInfo = nullptr;
+    write.dstBinding = image_binding;
+    write.descriptorType = vk::DescriptorType::eSampledImage;
+    write.pImageInfo = &sampled_info;
+    m_device.updateDescriptorSets(1, &write, 0, nullptr);
+    write.dstBinding = sampler_binding;
+    write.descriptorType = vk::DescriptorType::eSampler;
+    write.pImageInfo = &sampler_info;
+    m_device.updateDescriptorSets(1, &write, 0, nullptr);
+  }
+
+  auto target = CreateImageMips(name, Width, Height, color_format,
+      vk::ImageUsageFlagBits::eColorAttachment, {}, words_per_pixel, vk::ImageLayout::eGeneral,
       vk::ImageType::e2D, vk::ImageViewType::e2D, 1);
   vk::PipelineVertexInputStateCreateInfo vertex_input{};
   vk::PipelineInputAssemblyStateCreateInfo assembly{};
-  assembly.topology = tessellated ? vk::PrimitiveTopology::ePatchList : vk::PrimitiveTopology::eTriangleList;
+  assembly.topology = tessellated ? vk::PrimitiveTopology::ePatchList : topology;
   vk::PipelineTessellationStateCreateInfo tessellation{};
   tessellation.patchControlPoints = patch_control_points;
   const vk::Viewport viewport{0, 0, float(Width), float(Height), 0, 1};
@@ -180,11 +287,19 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
       &pipeline_info, nullptr, &pipeline), "vkCreateGraphicsPipelines");
 
   std::vector<Buffer> readbacks;
-  const std::vector<u32> initial_readback(Width * Height * 4 + 8, Guard);
+  const std::vector<u32> initial_readback(Width * Height * words_per_pixel + 8, Guard);
   for (size_t i = 0; i < draws.size(); ++i)
     readbacks.push_back(CreateHostBuffer(name, initial_readback.size() * sizeof(u32),
         vk::BufferUsageFlagBits::eTransferDst, initial_readback));
   auto cmd = BeginCommands(name, "primitive stages");
+  if (sampled_fragment) {
+    // The shared upload helper publishes to compute. Add the actual fragment
+    // consumer dependency without changing existing compute fixture behavior.
+    AddImageBarrier(cmd, fragment_texture->image, fragment_texture->layout,
+        fragment_texture->layout, vk::PipelineStageFlagBits::eAllCommands,
+        vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eMemoryWrite,
+        vk::AccessFlagBits::eShaderRead, fragment_texture->mip_levels, fragment_texture->layers);
+  }
   vk::RenderingAttachmentInfo attachment{};
   attachment.imageView = target.view;
   attachment.imageLayout = vk::ImageLayout::eGeneral;
@@ -205,6 +320,12 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 0, 1, &set, 0, nullptr);
     cmd.pushConstants(layout, push_stages, 0, sizeof(draw.push), draw.push.data());
+    if (fragment_buffer) {
+      cmd.pushConstants(layout, push_stages,
+          fragment_resources->program.bindings.push_data_start_dword * sizeof(u32),
+          fragment_resources->packed_user_data.size() * sizeof(u32),
+          fragment_resources->packed_user_data.data());
+    }
     if (draw.indexed) {
       Require(name, "index range", draw.first_index + draw.vertex_count <= indices.size(),
               "indexed fixture references unavailable indices");
@@ -248,6 +369,12 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
           ReadBuffer(name, vertex_buffer, guarded_vertices.size()) == guarded_vertices &&
               ReadBuffer(name, index_buffer, guarded_indices.size()) == guarded_indices,
           "stage expansion changed guarded vertex/index input buffers");
+  if (fragment_buffer) {
+    Require(name, "fragment constant guards and contents",
+            ReadBuffer(name, fragment_buffer_storage, guarded_constants.size()) == guarded_constants,
+            "fragment read changed its constant data or surrounding canaries");
+    DestroyBuffer(&fragment_buffer_storage);
+  }
   m_device.destroyPipeline(pipeline);
   m_device.destroyDescriptorPool(pool);
   m_device.destroyPipelineLayout(layout);

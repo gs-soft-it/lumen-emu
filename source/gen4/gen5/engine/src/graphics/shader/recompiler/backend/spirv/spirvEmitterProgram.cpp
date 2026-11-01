@@ -56,7 +56,7 @@ struct StructuredFunctionState {
 };
 
 struct DispatcherFunctionState {
-	std::array<std::unordered_map<const IR::Inst*, uint32_t>, 2> spills;
+	std::array<std::unordered_map<const IR::Inst*, uint32_t>, 4> spills;
 	uint32_t                                      header_label       = 0;
 	uint32_t                                      select_label       = 0;
 	uint32_t                                      after_switch_label = 0;
@@ -144,9 +144,8 @@ void EmitStructuredTerminator(ValueEmitContext& ctx, const IR::Block* block) {
 void EmitDispatcherTarget(ValueEmitContext& ctx, const DispatcherFunctionState& dispatcher,
                           const IR::Block* from, const IR::Block* block) {
 	if (block != nullptr) {
-		StoreDispatcherPhiEdge(ctx, dispatcher, from, block);
-		if (ctx.other_half != nullptr) {
-			StoreDispatcherPhiEdge(*ctx.other_half, dispatcher, from, block);
+		for (uint32_t slice = 0; slice < ctx.state.lane_count; ++slice) {
+			StoreDispatcherPhiEdge(ctx.Lane(slice), dispatcher, from, block);
 		}
 	}
 }
@@ -236,8 +235,8 @@ void EmitDirectInstruction(ValueEmitContext& ctx, const IR::Inst& inst) {
 	if (ctx.half != 0 && (inst.GetOpcode() == IR::ValueOpcode::Ballot ||
 	                     inst.GetOpcode() == IR::ValueOpcode::ReadFirstLane ||
 	                     inst.GetOpcode() == IR::ValueOpcode::SubgroupUMinU32)) {
-		// These operations combine both emulated halves into one whole-wave result.
-		ctx.Define(inst, ctx.other_half->Result(inst));
+		// These operations combine all virtual slices into one whole-wave result.
+		ctx.Define(inst, ctx.Lane(0).Result(inst));
 		return;
 	}
 	switch (inst.GetOpcode()) {
@@ -303,7 +302,7 @@ void EmitBlock(ValueEmitContext& ctx, const IR::Block* block, EmitInstruction&& 
 			emitted_non_phi = true;
 		}
 		for (uint32_t half = 0; half < ctx.state.lane_count; half++) {
-			auto& lane          = half == 0 ? ctx : *ctx.other_half;
+			auto& lane          = ctx.Lane(half);
 			ctx.state.lane_half = half;
 			if (half == 0 || (inst.GetOpcode() != IR::ValueOpcode::Barrier &&
 			                  inst.GetOpcode() != IR::ValueOpcode::StoreCompletion &&
@@ -317,7 +316,7 @@ void EmitBlock(ValueEmitContext& ctx, const IR::Block* block, EmitInstruction&& 
 
 void PatchStructuredPhis(ValueEmitContext& ctx, StructuredFunctionState& structured) {
 	for (const auto& deferred: structured.deferred_phis) {
-		auto& lane = deferred.half == 0 ? ctx : *ctx.other_half;
+		auto& lane = ctx.Lane(deferred.half);
 		for (size_t index = 0; index < deferred.instruction->NumArgs(); index++) {
 			const auto* predecessor = deferred.instruction->PhiBlock(index);
 			const auto  found       = structured.block_exit_labels.find(predecessor);
@@ -464,28 +463,41 @@ uint32_t ValueEmitContext::Arg(const IR::Inst& inst, size_t index) {
 }
 
 uint32_t ValueEmitContext::HalfArg(const IR::Inst& inst, size_t index, uint32_t lane_half) {
-	return lane_half == half ? Arg(inst, index) : other_half->Arg(inst, index);
+	return Lane(lane_half).Arg(inst, index);
 }
 
 uint32_t ValueEmitContext::Ballot(IR::Value predicate) {
-	const auto ballot_type = TypeU32Vector(state, 4);
-	const auto scope       = ConstantU32(state, spv::ScopeSubgroup);
-	const auto low         = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpGroupNonUniformBallot, ballot_type, low, scope,
-	                          other_half == nullptr || half == 0 ? Def(predicate)
-	                                                             : other_half->Def(predicate));
-	if (other_half == nullptr) {
-		return low;
+	std::array<uint32_t, 4> predicates {};
+	for (uint32_t slice = 0; slice < state.lane_count; ++slice) {
+		predicates[slice] = Lane(slice).Def(predicate);
 	}
-	const auto high      = state.builder.AllocateId();
-	const auto low_word  = state.builder.AllocateId();
-	const auto high_word = state.builder.AllocateId();
-	const auto ballot    = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpGroupNonUniformBallot, ballot_type, high, scope,
-	                          half == 1 ? Def(predicate) : other_half->Def(predicate));
-	state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), low_word, low, 0);
-	state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), high_word, high, 0);
-	state.builder.AddFunction(spv::OpCompositeConstruct, ballot_type, ballot, low_word, high_word,
+	return BallotValues(predicates);
+}
+
+uint32_t ValueEmitContext::BallotValues(const std::array<uint32_t, 4>& predicates) {
+	const auto ballot_type = TypeU32Vector(state, 4);
+	const auto scope = ConstantU32(state, spv::ScopeSubgroup);
+	std::array<uint32_t, 2> words {ConstantU32(state, 0), ConstantU32(state, 0)};
+	for (uint32_t slice = 0; slice < state.lane_count; ++slice) {
+		const auto native = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpGroupNonUniformBallot, ballot_type, native, scope,
+		                          predicates[slice]);
+		if (state.lane_count == 1) return native;
+		const auto bits = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), bits, native, 0);
+		const auto bit_offset = slice * state.lane_width;
+		const auto word = bit_offset / 32u;
+		const auto shift = bit_offset % 32u;
+		if (shift == 0) {
+			words[word] = bits;
+		} else {
+			const auto shifted = EmitBinaryU32(state, spv::OpShiftLeftLogical, bits,
+			                                   ConstantU32(state, shift));
+			words[word] = EmitBinaryU32(state, spv::OpBitwiseOr, words[word], shifted);
+		}
+	}
+	const auto ballot = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpCompositeConstruct, ballot_type, ballot, words[0], words[1],
 	                          ConstantU32(state, 0), ConstantU32(state, 0));
 	return ballot;
 }
@@ -512,48 +524,63 @@ uint32_t ValueEmitContext::FirstLane(uint32_t ballot) {
 }
 
 uint32_t ValueEmitContext::Shuffle(const IR::Inst& inst, size_t index, uint32_t lane) {
-	const auto type  = TypeId(state, inst.Arg(index).GetType());
+	const auto type = TypeId(state, inst.Arg(index).GetType());
 	const auto scope = ConstantU32(state, spv::ScopeSubgroup);
-	const auto low   = state.builder.AllocateId();
-	if (other_half == nullptr) {
-		state.builder.AddFunction(spv::OpGroupNonUniformShuffle, type, low, scope, Arg(inst, index),
-		                          lane);
-		return low;
+	if (state.lane_count == 1) {
+		const auto value = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpGroupNonUniformShuffle, type, value, scope,
+		                          Arg(inst, index), lane);
+		return value;
 	}
-	const auto physical_lane =
-	    EmitBinaryU32(state, spv::OpBitwiseAnd, lane, ConstantU32(state, 31));
-	const auto high          = state.builder.AllocateId();
-	const auto in_high       = state.builder.AllocateId();
-	const auto value         = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpGroupNonUniformShuffle, type, low, scope,
-	                          HalfArg(inst, index, 0), physical_lane);
-	state.builder.AddFunction(spv::OpGroupNonUniformShuffle, type, high, scope,
-	                          HalfArg(inst, index, 1), physical_lane);
-	state.builder.AddFunction(spv::OpINotEqual, TypeBool(state), in_high,
-	                          EmitBinaryU32(state, spv::OpBitwiseAnd, lane, ConstantU32(state, 32)),
-	                          ConstantU32(state, 0));
-	state.builder.AddFunction(spv::OpSelect, type, value, in_high, high, low);
-	return value;
+	const auto physical_lane = EmitBinaryU32(
+	    state, spv::OpBitwiseAnd, lane, ConstantU32(state, state.lane_width - 1u));
+	const auto slice_index = EmitBinaryU32(
+	    state, spv::OpUDiv, lane, ConstantU32(state, state.lane_width));
+	uint32_t result = 0;
+	for (uint32_t slice = 0; slice < state.lane_count; ++slice) {
+		const auto value = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpGroupNonUniformShuffle, type, value, scope,
+		                          HalfArg(inst, index, slice), physical_lane);
+		if (slice == 0) {
+			result = value;
+		} else {
+			const auto selected = Binary(state, spv::OpIEqual, TypeBool(state), slice_index,
+			                             ConstantU32(state, slice));
+			result = Select(state, type, selected, value, result);
+		}
+	}
+	return result;
+}
+
+uint32_t ValueEmitContext::Definition(const IR::Inst& inst) const {
+	if (half < 2u) return inst.Definition(half);
+	const auto found = extra_definitions.find(&inst);
+	return found == extra_definitions.end() ? 0u : found->second;
+}
+
+void ValueEmitContext::SetDefinition(const IR::Inst& inst, uint32_t value) {
+	if (half < 2u) inst.SetDefinition(half, value);
+	else extra_definitions.insert_or_assign(&inst, value);
 }
 
 uint32_t ValueEmitContext::Result(const IR::Inst& inst) {
-	if (const auto id = inst.Definition(half); id != 0) {
+	if (const auto id = Definition(inst); id != 0) {
 		return id;
 	}
 	const auto id = state.builder.AllocateId();
-	inst.SetDefinition(half, id);
+	SetDefinition(inst, id);
 	return id;
 }
 
 uint32_t ValueEmitContext::Define(const IR::Inst& inst, uint32_t value) {
-	if (const auto id = inst.Definition(half); id != 0) {
+	if (const auto id = Definition(inst); id != 0) {
 		if (id != value) {
 			state.builder.AddFunction(spv::OpCopyObject, TypeId(state, inst.GetType()),
 			                          id, value);
 		}
 		return id;
 	}
-	inst.SetDefinition(half, value);
+	SetDefinition(inst, value);
 	return value;
 }
 
@@ -596,13 +623,14 @@ const IR::ExportInfo& ValueEmitContext::Export(const IR::Inst& inst) const {
 
 void EmitProgram(EmitterState& state) {
 	const auto&      program = state.program;
-	ValueEmitContext ctx(state);
-	ValueEmitContext high(state);
-	if (state.lane_count == 2) {
-		ctx.other_half  = &high;
-		high.other_half = &ctx;
-		high.half       = 1;
+	std::array<ValueEmitContext, 4> lanes {
+	    ValueEmitContext(state), ValueEmitContext(state),
+	    ValueEmitContext(state), ValueEmitContext(state)};
+	for (uint32_t slice = 0; slice < state.lane_count; ++slice) {
+		lanes[slice].lanes = lanes.data();
+		lanes[slice].half = slice;
 	}
+	auto& ctx = lanes[0];
 	std::optional<DispatcherFunctionState> dispatcher;
 	if (state.program.stage == ShaderType::Pixel && state.program.info.pixel_valid_mask) {
 		state.pixel_valid_mask_variable = state.builder.AllocateId();
@@ -663,11 +691,11 @@ void EmitProgram(EmitterState& state) {
 		dispatch.continue_label     = state.builder.AllocateId();
 		dispatch.merge_label        = state.builder.AllocateId();
 		ctx.dispatcher_spills       = &dispatch.spills[0];
-		if (state.lane_count == 2) {
+		for (uint32_t slice = 1; slice < state.lane_count; ++slice) {
 			for (const auto& [inst, id]: dispatch.spills[0]) {
-				dispatch.spills[1].emplace(inst, state.builder.AllocateId());
+				dispatch.spills[slice].emplace(inst, state.builder.AllocateId());
 			}
-			high.dispatcher_spills = &dispatch.spills[1];
+			lanes[slice].dispatcher_spills = &dispatch.spills[slice];
 		}
 	}
 	DefineGetBdaPointer(state);
@@ -675,9 +703,8 @@ void EmitProgram(EmitterState& state) {
 	DefineIndirectBufferFormats(ctx);
 	DefineBvhIntersect(state);
 	if (program.info.uses_swizzle) {
-		ctx.scratch_u32_variable = state.builder.AllocateId();
-		if (state.lane_count == 2) {
-			high.scratch_u32_variable = state.builder.AllocateId();
+		for (uint32_t slice = 0; slice < state.lane_count; ++slice) {
+			lanes[slice].scratch_u32_variable = state.builder.AllocateId();
 		}
 	}
 	state.builder.AddFunction(spv::OpFunction, TypeVoid(state),
@@ -704,7 +731,7 @@ void EmitProgram(EmitterState& state) {
 		                          state.pixel_valid_mask_variable, spv::StorageClassFunction);
 	}
 	for (uint32_t half = 0; half < state.lane_count; half++) {
-		auto& lane = half == 0 ? ctx : high;
+		auto& lane = lanes[half];
 		if (state.program.dispatcher_fallback) {
 			for (const auto* block: program.blocks) {
 				for (const auto& inst: *block) {

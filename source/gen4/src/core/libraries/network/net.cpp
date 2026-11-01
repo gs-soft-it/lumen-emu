@@ -20,6 +20,7 @@
 #include "core/libraries/error_codes.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/network/net.h"
+#include "android_epoll_wait.h"
 #include "net_epoll.h"
 #include "net_error.h"
 #include "net_resolver.h"
@@ -835,7 +836,10 @@ int PS4_SYSV_ABI sceNetEpollWait(OrbisNetId epollid, OrbisNetEpollEvent* events,
     std::vector<epoll_event> native_events{static_cast<size_t>(maxevents)};
     int result = ORBIS_OK;
     if (should_wait) {
-#ifdef __linux__
+#if defined(__ANDROID__)
+        result = Host::EpollWaitMicroseconds(epoll->epoll_fd, native_events.data(), maxevents,
+                                             timeout);
+#elif defined(__linux__)
         const timespec epoll_timeout{.tv_sec = timeout / 1000000,
                                      .tv_nsec = (timeout % 1000000) * 1000};
         result = epoll_pwait2(epoll->epoll_fd, native_events.data(), maxevents,

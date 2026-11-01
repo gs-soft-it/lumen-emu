@@ -60,6 +60,89 @@ Words Extension(const char* name) {
     return words;
 }
 
+void Malformed(const Words& words, const char* message);
+
+Words LayerInterface(uint32_t model, uint32_t storage, bool member = false) {
+    // Interface declarations isolate stage/storage/decoration requirements.
+    Words words {spv::MagicNumber, 0x00010500, 0, 32, 0,
+        (2u << 16) | spv::OpCapability, spv::CapabilityShader,
+        (3u << 16) | spv::OpMemoryModel, spv::AddressingModelLogical, spv::MemoryModelGLSL450,
+        (6u << 16) | spv::OpEntryPoint, model, 7, 0x6e69616d, 0, 6,
+        (2u << 16) | spv::OpTypeVoid, 1,
+        (4u << 16) | spv::OpTypeInt, 2, 32, 1,
+        (3u << 16) | spv::OpTypeStruct, 3, 2,
+        (4u << 16) | spv::OpTypePointer, 4, storage, member ? 3u : 2u,
+        (3u << 16) | spv::OpTypeFunction, 5, 1,
+        (4u << 16) | spv::OpVariable, 4, 6, storage,
+        (5u << 16) | spv::OpFunction, 1, 7, spv::FunctionControlMaskNone, 5,
+        (2u << 16) | spv::OpLabel, 8,
+        (1u << 16) | spv::OpReturn,
+        (1u << 16) | spv::OpFunctionEnd};
+    return words;
+}
+
+void LayerAdmission() {
+    const Libs::Graphics::SpirvOptionalFeatures disabled {true, true, false};
+    const auto check_required = [&](const Words& words, const char* message) {
+        const auto original = words;
+        Check(AdmitSpirvModule(words, true, disabled) == SpirvModuleAdmission::OutputLayerUnavailable,
+              message);
+        Check(AdmitSpirvModule(words, true) == SpirvModuleAdmission::Allowed,
+              "enabled output layer admits the unchanged module");
+        Check(words == original, "layer admission never rewrites guest semantics");
+    };
+    Check(AdmitSpirvModule(Module(), true, disabled) == SpirvModuleAdmission::Allowed,
+          "ordinary module needs no layer feature");
+    for (auto cap : {spv::CapabilityShaderLayer, spv::CapabilityShaderViewportIndexLayerEXT})
+        check_required(Prefix({(2u << 16) | spv::OpCapability, cap}),
+                       "layer capability cannot bypass admission without a decorated output");
+    const auto with_decoration = [](Words words, std::initializer_list<uint32_t> instruction) {
+        words.insert(words.begin() + 5, instruction);
+        return words;
+    };
+    for (auto model : {spv::ExecutionModelVertex, spv::ExecutionModelTessellationEvaluation,
+                       spv::ExecutionModelMeshEXT, spv::ExecutionModelMeshNV}) {
+        for (auto op : {spv::OpDecorate, spv::OpDecorateId})
+            check_required(with_decoration(LayerInterface(model, spv::StorageClassOutput),
+                {(4u << 16) | op, 6, spv::DecorationBuiltIn, spv::BuiltInLayer}),
+                "layer output decoration cannot bypass admission in a consuming stage");
+        check_required(with_decoration(LayerInterface(model, spv::StorageClassOutput, true),
+            {(5u << 16) | spv::OpMemberDecorate, 3, 0, spv::DecorationBuiltIn, spv::BuiltInLayer}),
+            "layer block member cannot bypass admission");
+        check_required(with_decoration(LayerInterface(model, spv::StorageClassOutput),
+            {(2u << 16) | spv::OpDecorationGroup, 20,
+             (4u << 16) | spv::OpDecorate, 20, spv::DecorationBuiltIn, spv::BuiltInLayer,
+             (3u << 16) | spv::OpGroupDecorate, 20, 6}),
+            "group-decorated layer output cannot bypass admission");
+        check_required(with_decoration(LayerInterface(model, spv::StorageClassOutput, true),
+            {(2u << 16) | spv::OpDecorationGroup, 20,
+             (4u << 16) | spv::OpDecorate, 20, spv::DecorationBuiltIn, spv::BuiltInLayer,
+             (4u << 16) | spv::OpGroupMemberDecorate, 20, 3, 0}),
+            "group-decorated layer block member cannot bypass admission");
+    }
+    for (auto model : {spv::ExecutionModelFragment, spv::ExecutionModelGeometry}) {
+        const auto storage = model == spv::ExecutionModelFragment
+            ? spv::StorageClassInput : spv::StorageClassOutput;
+        auto words = with_decoration(LayerInterface(model, storage),
+            {(4u << 16) | spv::OpDecorate, 6, spv::DecorationBuiltIn, spv::BuiltInLayer});
+        // A separate vertex entry does not consume this fragment/geometry interface.
+        words.insert(words.begin() + 5, {(5u << 16) | spv::OpEntryPoint,
+            spv::ExecutionModelVertex, 9, 0x6e69616d, 0});
+        Check(AdmitSpirvModule(words, true, disabled) == SpirvModuleAdmission::Allowed,
+              "fragment input and geometry output Layer keep their own feature semantics");
+    }
+    Malformed(Prefix({(3u << 16) | spv::OpEntryPoint, spv::ExecutionModelVertex, 9}),
+              "entry point name is required");
+    Malformed(Prefix({(4u << 16) | spv::OpEntryPoint, spv::ExecutionModelVertex, 9, 0x41414141}),
+              "entry point name must terminate within its instruction");
+    Malformed(Prefix({(3u << 16) | spv::OpGroupMemberDecorate, 20, 3}),
+              "group member decoration needs a complete type/member pair");
+    auto malformed = Prefix({(2u << 16) | spv::OpCapability, spv::CapabilityShaderLayer});
+    malformed.push_back(0);
+    Check(AdmitSpirvModule(malformed, true, disabled) == SpirvModuleAdmission::Malformed,
+          "malformed tail is checked before returning missing-layer failure");
+}
+
 void Required(const Words& words, const char* message) {
     const auto original = words;
     Check(AdmitSpirvModule(words, false) == SpirvModuleAdmission::FragmentBarycentricUnavailable,
@@ -67,6 +150,40 @@ void Required(const Words& words, const char* message) {
     Check(AdmitSpirvModule(words, true) == SpirvModuleAdmission::Allowed,
           "actual enabled feature admits a required module");
     Check(words == original, "admission must not rewrite final words");
+}
+
+void QuadControlAdmission() {
+    const Libs::Graphics::SpirvOptionalFeatures enabled {true, true, true, true};
+    const auto requires_quad = [&](const Words& words) {
+        const auto original = words;
+        Check(AdmitSpirvModule(words, true) == SpirvModuleAdmission::FragmentQuadControlUnavailable,
+              "quad control requires features enabled on the actual device");
+        Check(AdmitSpirvModule(words, true, enabled) == SpirvModuleAdmission::Allowed,
+              "enabled quad control contract admits its final consumers");
+        Check(words == original, "quad admission preserves the final module");
+    };
+    requires_quad(Prefix({(2u << 16) | spv::OpCapability, spv::CapabilityQuadControlKHR}));
+    for (const auto mode : {spv::ExecutionModeQuadDerivativesKHR,
+                           spv::ExecutionModeRequireFullQuadsKHR,
+                           spv::ExecutionModeMaximallyReconvergesKHR}) {
+        for (const auto op : {spv::OpExecutionMode, spv::OpExecutionModeId})
+            requires_quad(Prefix({(3u << 16) | op, 9, mode}));
+    }
+    for (const auto op : {spv::OpGroupNonUniformQuadAnyKHR, spv::OpGroupNonUniformQuadAllKHR})
+        requires_quad(Prefix({(4u << 16) | op, 2, 8, 7}));
+    requires_quad(Extension("SPV_KHR_quad_control"));
+    requires_quad(Extension("SPV_KHR_maximal_reconvergence"));
+    Check(AdmitSpirvModule(Module(), true) == SpirvModuleAdmission::Allowed,
+          "ordinary shaders remain supported without quad control");
+    auto malformed = Extension("SPV_KHR_quad_control");
+    malformed.push_back(0);
+    Check(AdmitSpirvModule(malformed, true, enabled) == SpirvModuleAdmission::Malformed,
+          "enabled quad control does not bypass malformed trailing instructions");
+    Check(AdmitSpirvModule(Prefix({(3u << 16) | spv::OpGroupNonUniformQuadAnyKHR, 2, 8}),
+                          true, enabled) == SpirvModuleAdmission::Malformed,
+          "quad vote operand cannot be omitted");
+    Check(AdmitSpirvModule(Prefix({(2u << 16) | spv::OpExecutionMode, 9}), true, enabled) ==
+              SpirvModuleAdmission::Malformed, "execution mode operand cannot be omitted");
 }
 
 void Malformed(const Words& words, const char* message) {
@@ -77,6 +194,8 @@ void Malformed(const Words& words, const char* message) {
 } // namespace
 
 int main() {
+    LayerAdmission();
+    QuadControlAdmission();
     // An older GPU can run shaders with 32-bit atomics or ordinary 64-bit
     // arithmetic. Shared atomics need the buffer feature only when LDS spills.
     for (bool enabled : {false, true}) {

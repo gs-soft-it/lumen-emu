@@ -4,6 +4,7 @@
 #import <TargetConditionals.h>
 
 #include <spirv_msl.hpp>
+#include <GLSL.std.450.h>
 
 #if defined(__cpp_exceptions) || defined(_CPPUNWIND)
 #error "Native Metal must be compiled with C++ exceptions disabled"
@@ -70,6 +71,98 @@ struct TessCompile
 
 #include "MetalTessellationCapture.inc"
 #include "MetalSoftwareTessellatorSource.inc"
+
+// The native Metal interface supports one center-interpolated barycentric
+// builtin. The pinned MSL translator cannot represent PerVertexKHR, both
+// coordinate modes in one shader, or explicit interpolation of barycentrics.
+// Reject those forms before its no-exception error handler can abort. This is
+// a bounded backend contract, not a claim of complete Vulkan extension support.
+VkResult AdmitMetalBarycentricModule(VkDevice device, const uint32_t* words, size_t wordCount)
+{
+	if (wordCount < 5 || words[0] != spv::MagicNumber) return VK_ERROR_INITIALIZATION_FAILED;
+	bool required = false, perVertex = false, memberBuiltin = false, groups = false, memberFragCoord = false;
+	bool otherStage = false, fragmentStage = false;
+	uint32_t coordinateModes = 0;
+	std::unordered_set<uint32_t> barycentricVariables, interpolationSets;
+	const auto stringEquals = [](const uint32_t* data, size_t count, const char* value) {
+		const size_t length = std::strlen(value) + 1;
+		return count * sizeof(uint32_t) >= length && std::memcmp(data, value, length) == 0;
+	};
+	const auto isBarycentric = [](uint32_t builtin) {
+		return builtin == spv::BuiltInBaryCoordKHR || builtin == spv::BuiltInBaryCoordNoPerspKHR;
+	};
+	for (size_t offset = 5; offset < wordCount;)
+	{
+		const uint32_t count = words[offset] >> 16;
+		const auto op = static_cast<spv::Op>(words[offset] & 0xffffu);
+		if (count == 0 || count > wordCount - offset) return VK_ERROR_INITIALIZATION_FAILED;
+		const auto* instruction = words + offset;
+		if (op == spv::OpCapability && count >= 2)
+			required |= instruction[1] == spv::CapabilityFragmentBarycentricKHR;
+		else if (op == spv::OpExtension && count >= 2)
+			required |= stringEquals(instruction + 1, count - 1, "SPV_KHR_fragment_shader_barycentric") ||
+			            stringEquals(instruction + 1, count - 1, "SPV_NV_fragment_shader_barycentric");
+		else if (op == spv::OpExtInstImport && count >= 3 &&
+		         stringEquals(instruction + 2, count - 2, "GLSL.std.450"))
+			interpolationSets.insert(instruction[1]);
+		else if (op == spv::OpEntryPoint && count >= 4)
+		{
+			fragmentStage |= instruction[1] == spv::ExecutionModelFragment;
+			otherStage |= instruction[1] != spv::ExecutionModelFragment;
+		}
+		else if ((op == spv::OpDecorate || op == spv::OpMemberDecorate) && count >= 3)
+		{
+			const uint32_t decorationIndex = op == spv::OpDecorate ? 2u : 3u;
+			if (count <= decorationIndex) return VK_ERROR_INITIALIZATION_FAILED;
+			const uint32_t decoration = instruction[decorationIndex];
+			perVertex |= decoration == spv::DecorationPerVertexKHR;
+			memberFragCoord |= op == spv::OpMemberDecorate && decoration == spv::DecorationBuiltIn &&
+			                   count > decorationIndex + 1 && instruction[decorationIndex + 1] == spv::BuiltInFragCoord;
+			if (decoration == spv::DecorationBuiltIn && count > decorationIndex + 1 &&
+			    isBarycentric(instruction[decorationIndex + 1]))
+			{
+				required = true;
+				memberBuiltin |= op == spv::OpMemberDecorate;
+				coordinateModes |= instruction[decorationIndex + 1] == spv::BuiltInBaryCoordKHR ? 1u : 2u;
+				barycentricVariables.insert(instruction[1]);
+			}
+		}
+		groups |= op == spv::OpDecorationGroup || op == spv::OpGroupDecorate || op == spv::OpGroupMemberDecorate;
+		offset += count;
+	}
+	required |= perVertex;
+	if (!required) return VK_SUCCESS;
+	const char* reason = nullptr;
+	if (!device->fragmentShaderBarycentricEnabled) reason = "feature-not-enabled";
+	else if (perVertex) reason = "PerVertexKHR";
+	else if (memberBuiltin || groups) reason = "structured-or-grouped-interface";
+	else if (memberFragCoord && (coordinateModes & 1u) != 0) reason = "structured-reciprocal-W-input";
+	else if (barycentricVariables.size() > 1 || coordinateModes == 3) reason = "multiple-coordinate-inputs";
+	else if (!fragmentStage || otherStage) reason = "non-fragment-entry-point";
+	for (size_t offset = 5; reason == nullptr && offset < wordCount; offset += words[offset] >> 16)
+	{
+		const uint32_t count = words[offset] >> 16;
+		const auto op = static_cast<spv::Op>(words[offset] & 0xffffu);
+		const auto* instruction = words + offset;
+		if (op == spv::OpDecorate && count >= 3 && barycentricVariables.count(instruction[1]) != 0)
+		{
+			const uint32_t decoration = instruction[2];
+			if (decoration == spv::DecorationCentroid || decoration == spv::DecorationSample ||
+			    decoration == spv::DecorationFlat || decoration == spv::DecorationNoPerspective)
+				reason = "coordinate-interpolation-decoration";
+		}
+		// Interpolation functions in a barycentric module remain outside this
+		// bounded contract; ordinary varying-only modules are unchanged.
+		if (op == spv::OpExtInst && count >= 6 && interpolationSets.count(instruction[3]) != 0 &&
+		    (instruction[4] == GLSLstd450InterpolateAtCentroid ||
+		     instruction[4] == GLSLstd450InterpolateAtSample ||
+		     instruction[4] == GLSLstd450InterpolateAtOffset))
+			reason = "explicit-interpolation";
+	}
+	if (reason == nullptr) return VK_SUCCESS;
+	std::fprintf(stderr, "[LUMEN_METAL] barycentric shader rejected: %s\n", reason);
+	return VK_ERROR_FEATURE_NOT_PRESENT;
+}
 
 MTLClearColor ToMTLClearColor(VkFormat format, const VkClearColorValue& value)
 {
@@ -145,6 +238,43 @@ public:
 	}
 
 protected:
+	uint32_t barycentricFragCoordId = 0;
+
+	void PrepareBarycentricReciprocalW()
+	{
+		if (get_execution_model() != spv::ExecutionModelFragment ||
+		    !active_input_builtins.get(spv::BuiltInBaryCoordKHR)) return;
+		if (barycentricFragCoordId == 0)
+		{
+			ir.for_each_typed_id<spirv_cross::SPIRVariable>([&](uint32_t id, const spirv_cross::SPIRVariable& var) {
+				if (var.storage == spv::StorageClassInput && interface_variable_exists_in_entry_point(id) &&
+				    has_decoration(id, spv::DecorationBuiltIn) &&
+				    get_decoration(id, spv::DecorationBuiltIn) == spv::BuiltInFragCoord)
+					barycentricFragCoordId = id;
+			});
+			if (barycentricFragCoordId == 0)
+			{
+				const uint32_t type = ir.increase_bound_by(3);
+				spirv_cross::SPIRType vector {spv::OpTypeVector};
+				vector.basetype = spirv_cross::SPIRType::Float;
+				vector.width = 32;
+				vector.vecsize = 4;
+				set<spirv_cross::SPIRType>(type, vector);
+				auto pointer = vector;
+				pointer.op = spv::OpTypePointer;
+				pointer.pointer = true;
+				pointer.pointer_depth = 1;
+				pointer.parent_type = type;
+				pointer.storage = spv::StorageClassInput;
+				set<spirv_cross::SPIRType>(type + 1, pointer).self = type;
+				barycentricFragCoordId = type + 2;
+				set<spirv_cross::SPIRVariable>(barycentricFragCoordId, type + 1, spv::StorageClassInput);
+				set_decoration(barycentricFragCoordId, spv::DecorationBuiltIn, spv::BuiltInFragCoord);
+			}
+		}
+		mark_implicit_builtin(spv::StorageClassInput, spv::BuiltInFragCoord, barycentricFragCoordId);
+	}
+
 	bool NeedsVertexSubgroupLane() const
 	{
 		return vertexSubgroupLane && get_execution_model() == spv::ExecutionModelVertex &&
@@ -154,6 +284,7 @@ protected:
 
 	void emit_function_prototype(spirv_cross::SPIRFunction& function, const spirv_cross::Bitset& flags) override
 	{
+		if (function.self == ir.default_entry_point) PrepareBarycentricReciprocalW();
 		// Metal supports SIMD operations in a raster vertex function, but not
 		// the thread_index_in_simdgroup argument. Omit only that argument;
 		// keep SPIRV-Cross's native subgroup operations and helper parameters.
@@ -166,6 +297,16 @@ protected:
 	void emit_entry_point_declarations() override
 	{
 		spirv_cross::CompilerMSL::emit_entry_point_declarations();
+		if (barycentricFragCoordId != 0)
+		{
+			// Metal can omit perspective normalization when only barycentrics
+			// and flat varyings are consumed. A real volatile read keeps the
+			// raster reciprocal-W input live without changing any guest value.
+			begin_scope();
+			statement("volatile float lumenBarycentricReciprocalW = ",
+			          to_expression(barycentricFragCoordId), ".w;");
+			end_scope();
+		}
 		if (!NeedsVertexSubgroupLane()) return;
 		const auto lane = builtin_to_glsl(spv::BuiltInSubgroupLocalInvocationId, spv::StorageClassInput);
 		statement("uint ", lane, ";");
@@ -494,12 +635,16 @@ constexpr MTLVertexFormat ToMTLVertexFormat(VkFormat format)
 #if !TARGET_OS_IPHONE
 		case VK_FORMAT_R8G8B8A8_SNORM: return MTLVertexFormatChar4Normalized;
 #endif
+		case VK_FORMAT_R16G16_UNORM: return MTLVertexFormatUShort2Normalized;
+		case VK_FORMAT_R16G16B16A16_SFLOAT: return MTLVertexFormatHalf4;
 		case VK_FORMAT_R16G16_SINT: return MTLVertexFormatShort2;
 		case VK_FORMAT_R16G16B16A16_SINT: return MTLVertexFormatShort4;
 		default: return MTLVertexFormatInvalid;
 	}
 }
 
+static_assert(ToMTLVertexFormat(VK_FORMAT_R16G16_UNORM) == MTLVertexFormatUShort2Normalized);
+static_assert(ToMTLVertexFormat(VK_FORMAT_R16G16B16A16_SFLOAT) == MTLVertexFormatHalf4);
 static_assert(ToMTLVertexFormat(VK_FORMAT_R16G16_SINT) == MTLVertexFormatShort2);
 static_assert(ToMTLVertexFormat(VK_FORMAT_R16G16B16A16_SINT) == MTLVertexFormatShort4);
 static_assert(ToMTLVertexFormat(VK_FORMAT_R16G16_SNORM) == MTLVertexFormatInvalid);
@@ -2020,7 +2165,7 @@ VkResult CompileMetalFunction(VkDevice device, VkShaderModule module, VkPipeline
 	                          bool negativeOneToOne = false, TessCompile* tess = nullptr)
 {
 	if (device == VK_NULL_HANDLE || module == VK_NULL_HANDLE || function == nullptr || bindings == nullptr ||
-	    !module->alive.load(std::memory_order_acquire) || stageInfo.pName == nullptr)
+	    !module->alive.load(std::memory_order_acquire) || module->device != device || stageInfo.pName == nullptr)
 	{
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
@@ -3489,11 +3634,17 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device, const VkSha
 {
 	if (device == VK_NULL_HANDLE || createInfo == nullptr || shaderModule == nullptr || allocator != nullptr ||
 	    createInfo->sType != VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO || createInfo->pCode == nullptr ||
-	    createInfo->codeSize == 0 || (createInfo->codeSize % sizeof(uint32_t)) != 0 ||
+	    createInfo->codeSize < 5 * sizeof(uint32_t) || (createInfo->codeSize % sizeof(uint32_t)) != 0 ||
 	    createInfo->pCode[0] != spv::MagicNumber)
 	{
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
+	*shaderModule = VK_NULL_HANDLE;
+	// Modules are immutable and tied to the device whose latched feature was
+	// checked here. CompileMetalFunction verifies that owner before cache use.
+	const auto admission = AdmitMetalBarycentricModule(device, createInfo->pCode,
+	                                                 createInfo->codeSize / sizeof(uint32_t));
+	if (admission != VK_SUCCESS) return admission;
 	auto created = std::unique_ptr<VkShaderModule_T>(new (std::nothrow) VkShaderModule_T);
 	if (!created) return VK_ERROR_OUT_OF_HOST_MEMORY;
 	created->device = device;

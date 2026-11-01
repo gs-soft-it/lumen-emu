@@ -5,10 +5,10 @@
 #include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_system.h>
 
-bool LumenAndroidPs5ConfigureVulkanDriver(const char* directory, const char* name) {
+bool LumenAndroidPs5ConfigureVulkanDriver(const char* directory, const char* name, const char* loader) {
     const LumenAndroidVulkanHost host {SDL_GetAndroidInternalStoragePath,
         SDL_GetAndroidJNIEnv, SDL_GetAndroidActivity};
-    if (LumenAndroidConfigureVulkanDriver("PS5", directory, name, host)) return true;
+    if (LumenAndroidConfigureVulkanDriver("PS5", directory, name, host, loader)) return true;
     return SDL_SetError("PS5 private Vulkan driver: %s", LumenAndroidVulkanDriverError());
 }
 

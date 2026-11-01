@@ -370,6 +370,11 @@ static void ShaderGetStaticInputInfoPS(
 	for (int i = 0; i < 8; i++) {
 		const auto slot = ShaderPixelExportTarget(ps_info.target_shader_mask, i);
 		ps_info.target_output_mode[i]    = sh.target_output_mode[i];
+		// Callers without render-target metadata retain the standalone shader
+		// contract. The renderer supplies the actual attachment class before caching.
+		ps_info.target_numeric_class[i] = sh.target_output_mode[i] == 7
+		                                     ? Prospero::TextureNumericClass::Uint
+		                                     : Prospero::TextureNumericClass::Float;
 		ps_info.target_export_mapping[i] = sh.target_output_mode[i] != 0 && slot < 8
 		                                       ? target_export_mapping[slot]
 		                                       : Prospero::ColorComponentMapping {};
@@ -504,6 +509,9 @@ void BuildStageStaticKey(const ShaderPixelInputInfo& info, std::vector<uint32_t>
 	key.push_back(static_cast<uint32_t>(info.mesh_barycentric_fallback));
 	key.push_back(static_cast<uint32_t>(info.alpha_blend_source));
 	key.insert(key.end(), std::begin(info.target_output_mode), std::end(info.target_output_mode));
+	for (const auto numeric_class: info.target_numeric_class) {
+		key.push_back(static_cast<uint32_t>(numeric_class));
+	}
 	key.push_back(info.target_packed_unorm_mask | (uint32_t {info.target_round_mode} << 8u));
 	const auto mask = info.target_shader_mask;
 	key.push_back((mask | (mask >> 1u) | (mask >> 2u) | (mask >> 3u)) & 0x11111111u);

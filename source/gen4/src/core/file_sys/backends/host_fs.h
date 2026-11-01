@@ -65,9 +65,13 @@ public:
 
     bool Next(DirEntry& out) override;
     void Rewind() override;
+    bool Valid() const { return m_valid; }
 
 private:
     std::filesystem::path m_root;
+    std::vector<std::filesystem::path> m_documents;
+    size_t m_document_index{};
+    bool m_valid{true};
     std::filesystem::directory_iterator m_it;
     std::filesystem::directory_iterator m_end;
 };

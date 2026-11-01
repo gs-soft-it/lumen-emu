@@ -2,6 +2,7 @@
 #define EMULATOR_INCLUDE_EMULATOR_GRAPHICS_HOST_GPU_RENDERER_IMAGE_TEXTURECOMMON_H_
 
 #include "graphics/guest_gpu/gpu_defs.h"
+#include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
 namespace Libs::Graphics {
@@ -22,6 +23,7 @@ struct SurfaceFormatInfo {
 vk::ComponentMapping   TextureGetComponentMapping(uint32_t                        swizzle,
                                                   Prospero::ColorComponentMapping host_to_storage);
 SurfaceFormatInfo      TextureGetSurfaceFormatInfo(Prospero::BufferFormat format);
+Prospero::TextureNumericClass TextureRenderTargetNumericClass(vk::Format format);
 RenderTargetFormatInfo TextureGetRenderTargetFormat(Prospero::ChannelLayout layout,
                                                     Prospero::ChannelType   type,
                                                     Prospero::ChannelOrder  order);

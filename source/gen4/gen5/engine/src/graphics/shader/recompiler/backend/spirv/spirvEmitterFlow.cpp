@@ -23,7 +23,7 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 	if (kind == IR::StageInputKind::LocalInvocationIndex) {
 		return EmitLocalInvocationIndex(state);
 	}
-	if (state.lane_count == 2 && (kind == IR::StageInputKind::LocalInvocationId ||
+	if (state.lane_count > 1 && (kind == IR::StageInputKind::LocalInvocationId ||
 	                              kind == IR::StageInputKind::GlobalInvocationId)) {
 		const auto* cs      = ShaderWorkgroupInput(state.program.stage, state.input_info);
 		uint32_t    divisor = 1;
@@ -273,9 +273,10 @@ uint32_t ExportRawComponent(ValueEmitContext& ctx, uint32_t vector, uint32_t com
 }
 
 uint32_t ExportVector(ValueEmitContext& ctx, uint32_t data, const IR::ExportInfo& exp,
-                      bool uint_output) {
+                      Prospero::TextureNumericClass numeric_class) {
 	auto& state = ctx.state;
-	if (exp.compr && !uint_output) {
+	const bool integer_output = numeric_class != Prospero::TextureNumericClass::Float;
+	if (exp.compr && !integer_output) {
 		auto unpack = GLSLstd450UnpackHalf2x16;
 		switch (MrtOutputMode(state, exp)) {
 			case 5: unpack = GLSLstd450UnpackUnorm2x16; break;
@@ -312,9 +313,11 @@ uint32_t ExportVector(ValueEmitContext& ctx, uint32_t data, const IR::ExportInfo
 		    ConstantU32(state, 0),
 		    ConstantU32(state, 0),
 		    ConstantU32(state, 0),
-		    ConstantU32(state, uint_output ? 1u : 0x3f800000u),
+		    ConstantU32(state, integer_output ? 1u : 0x3f800000u),
 		};
 		if (exp.compr) {
+			// EXP transports raw 16-bit integer components independently of the
+			// FP16, UNorm16 or SNorm16 transport selected by SPI_SHADER_COL_FORMAT.
 			for (uint32_t pair = 0; pair < 2u; pair++) {
 				if ((exp.en & (3u << (pair * 2u))) == 0u) {
 					continue;
@@ -329,6 +332,13 @@ uint32_t ExportVector(ValueEmitContext& ctx, uint32_t data, const IR::ExportInfo
 					state.builder.AddFunction(spv::OpBitFieldUExtract, TypeU32(state), raw[component],
 					                          packed, ConstantU32(state, lane * 16u),
 					                          ConstantU32(state, 16));
+					if (numeric_class == Prospero::TextureNumericClass::Sint) {
+						const auto bits = Unary(state, spv::OpBitcast, TypeI32(state), raw[component]);
+						const auto extended = state.builder.AllocateId();
+						state.builder.AddFunction(spv::OpBitFieldSExtract, TypeI32(state), extended,
+						                          bits, ConstantU32(state, 0), ConstantU32(state, 16));
+						raw[component] = Unary(state, spv::OpBitcast, TypeU32(state), extended);
+					}
 				}
 			}
 		} else {
@@ -342,11 +352,13 @@ uint32_t ExportVector(ValueEmitContext& ctx, uint32_t data, const IR::ExportInfo
 		state.builder.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(state, 4), data,
 		                          raw[0], raw[1], raw[2], raw[3]);
 	}
-	if (uint_output) {
+	if (numeric_class == Prospero::TextureNumericClass::Uint) {
 		return data;
 	}
 	const auto vector = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpBitcast, TypeF32Vector(state, 4), vector, data);
+	const auto type = numeric_class == Prospero::TextureNumericClass::Sint
+	                      ? TypeI32Vector(state, 4) : TypeF32Vector(state, 4);
+	state.builder.AddFunction(spv::OpBitcast, type, vector, data);
 	return vector;
 }
 
@@ -467,6 +479,29 @@ uint32_t EmitWqmU64(EmitterState& state, uint32_t value) {
 	return result;
 }
 
+Prospero::TextureNumericClass MrtOutputNumericClass(const EmitterState& state,
+                                                   const IR::ExportInfo& exp) {
+	if (state.program.stage != ShaderType::Pixel || exp.kind != IR::ExportTargetKind::Mrt) {
+		return Prospero::TextureNumericClass::Float;
+	}
+	EXIT_IF(exp.index >= state.input_info.pixel->target_numeric_class.size());
+	const auto type = (state.input_info.pixel->target_packed_unorm_mask & (1u << exp.index)) != 0u
+	                      ? Prospero::TextureNumericClass::Uint
+	                      : state.input_info.pixel->target_numeric_class[exp.index];
+	EXIT_IF(type != Prospero::TextureNumericClass::Float &&
+	        type != Prospero::TextureNumericClass::Uint &&
+	        type != Prospero::TextureNumericClass::Sint);
+	return type;
+}
+
+uint32_t ExportVectorType(EmitterState& state, const IR::ExportInfo& exp) {
+	switch (MrtOutputNumericClass(state, exp)) {
+		case Prospero::TextureNumericClass::Uint: return TypeU32Vector(state, 4);
+		case Prospero::TextureNumericClass::Sint: return TypeI32Vector(state, 4);
+		default: return TypeF32Vector(state, 4);
+	}
+}
+
 void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&       state = ctx.state;
 	const auto& exp   = ctx.Export(inst);
@@ -523,11 +558,17 @@ void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 		if (state.program.stage != ShaderType::Mesh && variable == 0) {
 			return;
 		}
-		const bool uint_output = MrtOutputMode(state, exp) == 7u;
-		const auto vector_type = uint_output ? TypeU32Vector(state, 4) : TypeF32Vector(state, 4);
-		auto       value       = ExportVector(ctx, data, exp, uint_output);
+		const bool packed_unorm = state.program.stage == ShaderType::Pixel &&
+		    exp.kind == IR::ExportTargetKind::Mrt &&
+		    (state.input_info.pixel->target_packed_unorm_mask & (1u << exp.index)) != 0u;
+		// Packed UNorm uses a float logical export and an integer backing. Keep
+		// its existing conversion after swizzling; ordinary integer MRTs keep raw bits.
+		const auto numeric_class = packed_unorm ? Prospero::TextureNumericClass::Float
+		                                        : MrtOutputNumericClass(state, exp);
+		const auto vector_type = packed_unorm ? TypeF32Vector(state, 4) : ExportVectorType(state, exp);
+		auto       value       = ExportVector(ctx, data, exp, numeric_class);
 		if (state.program.stage == ShaderType::Pixel && exp.kind == IR::ExportTargetKind::Mrt &&
-		    exp.index == 0 && !uint_output &&
+		    exp.index == 0 && numeric_class == Prospero::TextureNumericClass::Float &&
 		    state.input_info.pixel->alpha_blend_source != ShaderAlphaBlendSource::None) {
 			// Broadcast logical alpha before swizzling the primary output.
 			const auto blend_output =
@@ -717,6 +758,13 @@ uint32_t EmitUndefU1(EmitterState& state, const IR::Inst& inst) {
 uint32_t EmitDppMoveU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&      state    = ctx.state;
 	const auto flags    = inst.Flags<IR::DppMoveFlags>();
+	if (state.program.info.fragment_quad_partitioned) {
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpGroupNonUniformQuadBroadcast, TypeU32(state), result,
+		                          ConstantU32(state, spv::ScopeSubgroup), ctx.Arg(inst, 0),
+		                          ConstantU32(state, flags.control & 3u));
+		return result;
+	}
 	const auto target   = EmitDppTargetLane(state, flags);
 	const auto shuffled = ctx.Shuffle(inst, 0, target.lane);
 	if (flags.fetch_inactive) {
@@ -732,6 +780,8 @@ uint32_t EmitDppMoveU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 }
 
 uint32_t EmitDppUpdateU32(ValueEmitContext& ctx, const IR::Inst& inst) {
+	// The certificate requires a full row/bank mask and constant-true EXEC.
+	if (ctx.state.program.info.fragment_quad_partitioned) return ctx.Arg(inst, 0);
 	const auto flags = inst.Flags<IR::DppMoveFlags>();
 	const auto write = EmitDppWriteCondition(ctx, flags, ctx.Arg(inst, 2));
 	return EmitNative<spv::OpSelect, IR::Type::U32>(ctx.state, write, ctx.Arg(inst, 0),
@@ -740,16 +790,22 @@ uint32_t EmitDppUpdateU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 
 uint32_t EmitConditionRef(ValueEmitContext& ctx, const IR::Inst& inst) {
 	// Scalar branches include lanes disabled by EXEC, which the branch body may restore.
-	if (ctx.other_half != nullptr && ctx.half != 0) return ctx.other_half->Result(inst);
+	if (ctx.half != 0) return ctx.Lane(0).Result(inst);
 	const auto kind = inst.Flags<CFG::BranchCondition>();
 	if (kind == CFG::BranchCondition::ScalarInstruction) return ctx.Arg(inst, 0);
 	const bool zero = kind == CFG::BranchCondition::ExecZero ||
 	                  kind == CFG::BranchCondition::VccZero || kind == CFG::BranchCondition::SccZero;
 	// Zero-kind predicates are already inverted by translation.
 	auto predicate = ctx.Arg(inst, 0);
-	if (ctx.other_half != nullptr) {
+	if (ctx.state.program.info.fragment_quad_partitioned) {
+		const auto result = ctx.state.builder.AllocateId();
+		ctx.state.builder.AddFunction(zero ? spv::OpGroupNonUniformQuadAllKHR : spv::OpGroupNonUniformQuadAnyKHR,
+		                              TypeBool(ctx.state), result, predicate);
+		return result;
+	}
+	for (uint32_t slice = 1; slice < ctx.state.lane_count; ++slice) {
 		predicate = Binary(ctx.state, zero ? spv::OpLogicalAnd : spv::OpLogicalOr,
-		                   TypeBool(ctx.state), predicate, ctx.HalfArg(inst, 0, 1));
+		                   TypeBool(ctx.state), predicate, ctx.HalfArg(inst, 0, slice));
 	}
 	const auto result = ctx.state.builder.AllocateId();
 	ctx.state.builder.AddFunction(zero ? spv::OpGroupNonUniformAll : spv::OpGroupNonUniformAny,
@@ -775,8 +831,8 @@ uint32_t EmitReadLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 uint32_t EmitSubgroupUMinU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto& state = ctx.state;
 	auto value = ctx.Arg(inst, 0);
-	if (ctx.other_half != nullptr) {
-		value = EmitUMin32(state, ctx.HalfArg(inst, 0, 0), ctx.HalfArg(inst, 0, 1));
+	for (uint32_t slice = 1; slice < state.lane_count; ++slice) {
+		value = EmitUMin32(state, value, ctx.HalfArg(inst, 0, slice));
 	}
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpGroupNonUniformUMin, TypeU32(state), result,

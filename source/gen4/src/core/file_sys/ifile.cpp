@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include <fstream>
 #include <system_error>
 
@@ -15,7 +16,7 @@ namespace Core::FileSys {
 
 bool IsZArchiveFile(const std::filesystem::path& path) {
     std::error_code ec;
-    return path.extension() == ".zar" && std::filesystem::is_regular_file(path, ec) && !ec;
+    return path.extension() == ".zar" && Lumen::HostFileSystem::is_regular_file(path, ec) && !ec;
 }
 
 std::filesystem::path StripZArchiveExtension(const std::filesystem::path& path) {
@@ -64,7 +65,7 @@ std::optional<std::filesystem::path> ResolveGameFilePath(const std::filesystem::
     if (const auto host_root = backend->RootHostPath()) {
         const std::filesystem::path full_path = *host_root / rel_path;
         std::error_code ec;
-        if (std::filesystem::is_regular_file(full_path, ec) && !ec) {
+        if (Lumen::HostFileSystem::is_regular_file(full_path, ec) && !ec) {
             return full_path;
         }
         return std::nullopt;
@@ -78,7 +79,7 @@ std::optional<std::filesystem::path> ResolveGameFilePath(const std::filesystem::
 
     std::error_code ec;
     const auto archive_time = std::filesystem::last_write_time(backend->RootPath(), ec);
-    if (!ec && std::filesystem::is_regular_file(dest, ec) && !ec) {
+    if (!ec && Lumen::HostFileSystem::is_regular_file(dest, ec) && !ec) {
         const auto dest_time = std::filesystem::last_write_time(dest, ec);
         if (!ec && dest_time >= archive_time) {
             return dest;
@@ -115,7 +116,7 @@ u64 GetGameRootSize(const std::filesystem::path& game_root) {
         return ec ? 0ull : static_cast<u64>(size);
     }
 
-    if (!std::filesystem::is_directory(game_root, ec) || ec) {
+    if (!Lumen::HostFileSystem::is_directory(game_root, ec) || ec) {
         return 0ull;
     }
 

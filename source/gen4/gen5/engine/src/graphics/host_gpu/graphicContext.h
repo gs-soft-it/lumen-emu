@@ -36,6 +36,7 @@ struct GraphicContext {
 	bool                               null_descriptor_fallback_enabled      = false;
 	bool                               image_view_min_lod_enabled             = false;
 	bool                               shader_cull_distance_enabled           = false;
+	bool                               shader_output_layer_enabled            = false;
 	bool                               shader_image_gather_extended_enabled   = false;
 	bool                               multi_viewport_enabled                 = false;
 	bool                               large_points_enabled                   = false;
@@ -45,6 +46,9 @@ struct GraphicContext {
 	bool                               compute_subgroup_size_control_enabled = false;
 	bool                               mesh_subgroup_size_control_enabled    = false;
 	bool                               fragment_subgroup_size_control_enabled = false;
+	// True only after enabling quad control and maximal reconvergence on a
+	// device whose fragment stage supports native quad operations.
+	bool                               fragment_quad_control_enabled         = false;
 	bool                               sample_rate_shading_enabled           = false;
 	bool                               fragment_shader_barycentric_enabled   = false;
 	bool                               geometry_shader_enabled               = false;

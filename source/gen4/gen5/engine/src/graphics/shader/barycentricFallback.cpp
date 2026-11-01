@@ -21,6 +21,10 @@ namespace {
 constexpr uint32_t Absent = ~0u;
 constexpr size_t MaxWords = 4u * 1024u * 1024u;
 
+SpirvOptionalFeatures OptionalFeatures(const Limits& limits) {
+    return {.fragment_quad_control = limits.fragment_quad_control_enabled};
+}
+
 struct Decoration {
     uint32_t location = Absent;
     uint32_t builtin = Absent;
@@ -113,11 +117,16 @@ struct Module {
         return true;
     }
 
-    bool Parse(std::span<const uint32_t> input, spv::ExecutionModel expected) {
+    bool Parse(std::span<const uint32_t> input, spv::ExecutionModel expected,
+               const Limits& limits) {
         words = input;
-        if (input.size() > MaxWords ||
-            AdmitSpirvModule(input, true) != SpirvModuleAdmission::Allowed)
+        if (input.size() > MaxWords)
             return Fail("malformed or oversized SPIR-V");
+        const auto admission = AdmitSpirvModule(input, true, OptionalFeatures(limits));
+        if (admission == SpirvModuleAdmission::FragmentQuadControlUnavailable)
+            return Fail("fragment quad control is not enabled");
+        if (admission != SpirvModuleAdmission::Allowed)
+            return Fail("malformed or unsupported SPIR-V");
         bool in_function = false;
         bool entry_defined = false;
         uint32_t memory_models = 0;
@@ -499,12 +508,14 @@ private:
 } // namespace
 
 FragmentResult PrepareFragment(std::span<const uint32_t> words, const Limits& limits) {
-    const auto admission = AdmitSpirvModule(words, false);
+    const auto admission = AdmitSpirvModule(words, false, OptionalFeatures(limits));
     if (admission == SpirvModuleAdmission::Malformed) return FragmentFailure("malformed SPIR-V");
+    if (admission == SpirvModuleAdmission::FragmentQuadControlUnavailable)
+        return FragmentFailure("fragment quad control is not enabled");
     if (admission == SpirvModuleAdmission::Allowed)
         return {Status::NotNeeded, {}, {{words.begin(), words.end()}, {}}};
     Module fragment;
-    if (!fragment.Parse(words, spv::ExecutionModelFragment)) return FragmentFailure(fragment.reason);
+    if (!fragment.Parse(words, spv::ExecutionModelFragment, limits)) return FragmentFailure(fragment.reason);
     std::set<uint32_t> locations;
     std::set<uint32_t> source_locations;
     FragmentPlan plan;
@@ -596,7 +607,7 @@ FragmentResult PrepareFragment(std::span<const uint32_t> words, const Limits& li
         }
         cursor += count;
     }
-    if (AdmitSpirvModule(plan.spirv, false) != SpirvModuleAdmission::Allowed)
+    if (AdmitSpirvModule(plan.spirv, false, OptionalFeatures(limits)) != SpirvModuleAdmission::Allowed)
         return FragmentFailure("barycentric requirements remain after rewriting");
     return {Status::Ready, {}, std::move(plan)};
 }
@@ -607,8 +618,8 @@ MeshResult PrepareMeshFragment(const FragmentPlan& fragment, const Limits& limit
         return MeshResult{Status::Unsupported, std::move(reason), {}};
     };
     Module pixel;
-    if (!pixel.Parse(fragment.spirv, spv::ExecutionModelFragment)) return fail(pixel.reason);
-    if (AdmitSpirvModule(fragment.spirv, false) != SpirvModuleAdmission::Allowed)
+    if (!pixel.Parse(fragment.spirv, spv::ExecutionModelFragment, limits)) return fail(pixel.reason);
+    if (AdmitSpirvModule(fragment.spirv, false, OptionalFeatures(limits)) != SpirvModuleAdmission::Allowed)
         return fail("mesh fragment plan still requires native barycentrics");
     if ((fragment.barycentric_inputs.empty() && fragment.per_vertex_inputs.empty()) ||
         fragment.barycentric_inputs.size() > 2)
@@ -979,7 +990,7 @@ MeshResult PrepareMeshFragment(const FragmentPlan& fragment, const Limits& limit
     if (!annotations_inserted || !globals_inserted || output.size() > MaxWords)
         return fail("mesh fragment rewrite is incomplete or oversized");
     output[3] = next_id;
-    if (AdmitSpirvModule(output, false) != SpirvModuleAdmission::Allowed)
+    if (AdmitSpirvModule(output, false, OptionalFeatures(limits)) != SpirvModuleAdmission::Allowed)
         return fail("mesh fragment requirements remain after rewriting");
     return {Status::Ready, {}, std::move(plan)};
 }
@@ -997,9 +1008,9 @@ GeometryResult BuildGeometry(std::span<const uint32_t> vertex_spirv,
         return GeometryFailure("invalid fragment fallback plan");
     Module vertex;
     Module pixel;
-    if (!vertex.Parse(vertex_spirv, spv::ExecutionModelVertex)) return GeometryFailure(vertex.reason);
-    if (!pixel.Parse(fragment.spirv, spv::ExecutionModelFragment)) return GeometryFailure(pixel.reason);
-    if (AdmitSpirvModule(fragment.spirv, false) != SpirvModuleAdmission::Allowed)
+    if (!vertex.Parse(vertex_spirv, spv::ExecutionModelVertex, limits)) return GeometryFailure(vertex.reason);
+    if (!pixel.Parse(fragment.spirv, spv::ExecutionModelFragment, limits)) return GeometryFailure(pixel.reason);
+    if (AdmitSpirvModule(fragment.spirv, false, OptionalFeatures(limits)) != SpirvModuleAdmission::Allowed)
         return GeometryFailure("fragment plan still requires native barycentrics");
     std::map<uint32_t, uint32_t> bary_ids;
     std::set<uint32_t> bary_locations;

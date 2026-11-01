@@ -167,6 +167,19 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
     SDL_SetWindowFullscreen(window, EmulatorSettings.IsFullScreen());
     SDL_SyncWindow(window);
 
+    // The native surface may already differ from the requested window size,
+    // without another resize event after creation (notably on Android).
+    int pixel_width = 0;
+    int pixel_height = 0;
+    if (SDL_GetWindowSizeInPixels(window, &pixel_width, &pixel_height) && pixel_width > 0 &&
+        pixel_height > 0) {
+        width = pixel_width;
+        height = pixel_height;
+    } else {
+        LOG_WARNING(Frontend, "Window pixel size unavailable at creation; retaining {}x{}", width,
+                    height);
+    }
+
 #if !defined(ENABLE_LUMEN_HOST_RUNTIME) || defined(__ANDROID__)
     SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 #endif
@@ -293,6 +306,7 @@ void WindowSDL::WaitEvent() {
         Input::ReleaseKeyboardMouseInputs();
         break;
     case SDL_EVENT_WINDOW_RESIZED:
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
     case SDL_EVENT_WINDOW_MAXIMIZED:
     case SDL_EVENT_WINDOW_RESTORED:
         OnResize();

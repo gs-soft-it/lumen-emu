@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
@@ -135,7 +136,7 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
     // copy inside this ROM root may supply a system LLE implementation.
     if (index == 3) {
         const auto game_prx = mnt->GetHostPath("/app0/sce_module/libSceFios2.prx");
-        if (Lumen::Gen4::UseKnownSystemModules() && std::filesystem::exists(game_prx)) {
+        if (Lumen::Gen4::UseKnownSystemModules() && Lumen::HostFileSystem::exists(game_prx)) {
             const s32 handle = linker->LoadAndStartModule(game_prx, argc, argv, &start_result);
             if (handle < 0) return handle;
             mod.handle = handle;

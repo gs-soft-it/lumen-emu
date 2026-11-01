@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/common.h"
 #include "graphics/guest_gpu/gpu_defs.h"
+#include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/shader/recompiler/ir/ResourceSnapshot.h"
 #include "graphics/shader/shaderBindings.h"
 
@@ -201,6 +202,11 @@ struct ShaderPixelInputInfo {
 	uint32_t                                       ps_perspective_sample_vgpr   = UINT32_MAX;
 	uint32_t                                       ps_perspective_centroid_vgpr = UINT32_MAX;
 	uint8_t                                        target_output_mode[8]        = {};
+	std::array<Prospero::TextureNumericClass, 8> target_numeric_class = [] {
+		std::array<Prospero::TextureNumericClass, 8> classes;
+		classes.fill(Prospero::TextureNumericClass::Float);
+		return classes;
+	}();
 	uint32_t                                       target_shader_mask           = UINT32_MAX;
 	std::array<Prospero::ColorComponentMapping, 8> target_export_mapping        = {};
 	uint8_t                                        target_packed_unorm_mask      = 0;

@@ -38,22 +38,25 @@ constexpr bool kAarch64Host = true;
 constexpr char kAdmitted4KiBReceipt[] =
     "LUMEN_ANDROID_FEXCORE_LAB_ADMISSION_V1 admitted=1 "
     "lab=1 fullRuntime=1 build=" LUMEN_ANDROID_FEXCORE_BUILD_LABEL
-    " aarch64=1 api>=35 pageSize=4096 "
+    " aarch64=1 api>=33 pageSize=4096 "
     "backend=FEXCore linked=1 runtimeProbe=required";
 constexpr char kAdmitted16KiBReceipt[] =
     "LUMEN_ANDROID_FEXCORE_LAB_ADMISSION_V1 admitted=1 "
     "lab=1 fullRuntime=1 build=" LUMEN_ANDROID_FEXCORE_BUILD_LABEL
-    " aarch64=1 api>=35 pageSize=16384 "
+    " aarch64=1 api>=33 pageSize=16384 "
     "backend=FEXCore linked=1 runtimeProbe=required";
 constexpr char kDeniedReceipt[] =
     "LUMEN_ANDROID_FEXCORE_LAB_ADMISSION_V1 admitted=0 "
     "failClosed=1 backend=FEXCore linked=1 runtimeProbe=required";
 
-static_assert(!IsAdmissionAllowed({false, true, true, 35, 4096}));
-static_assert(!IsAdmissionAllowed({true, false, true, 35, 4096}));
-static_assert(!IsAdmissionAllowed({true, true, false, 35, 4096}));
-static_assert(!IsAdmissionAllowed({true, true, true, 34, 4096}));
-static_assert(!IsAdmissionAllowed({true, true, true, 35, 65536}));
+static_assert(!IsAdmissionAllowed({false, true, true, 33, 4096}));
+static_assert(!IsAdmissionAllowed({true, false, true, 33, 4096}));
+static_assert(!IsAdmissionAllowed({true, true, false, 33, 4096}));
+static_assert(!IsAdmissionAllowed({true, true, true, 32, 4096}));
+static_assert(!IsAdmissionAllowed({true, true, true, 33, 65536}));
+static_assert(IsAdmissionAllowed({true, true, true, 33, 4096}));
+static_assert(IsAdmissionAllowed({true, true, true, 33, 16384}));
+static_assert(IsAdmissionAllowed({true, true, true, 34, 4096}));
 static_assert(IsAdmissionAllowed({true, true, true, 35, 4096}));
 static_assert(IsAdmissionAllowed({true, true, true, 35, 16384}));
 

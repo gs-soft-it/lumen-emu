@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fmt/format.h>
 #include <limits>
+#include <locale>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -73,6 +74,28 @@ template <typename T>
 bool ParseNumber(std::string_view token, T& value) {
 	const auto result = std::from_chars(token.data(), token.data() + token.size(), value);
 	return result.ec == std::errc() && result.ptr == token.data() + token.size();
+}
+
+bool ParseNumber(std::string_view token, double& value) {
+	// Floating-point from_chars requires macOS 26 in libc++; preserve the
+	// locale-independent, whole-token grammar on the supported older hosts.
+	if (token.empty() || token.front() == '+') return false;
+	auto magnitude = token;
+	if (magnitude.front() == '-') magnitude.remove_prefix(1);
+	if (magnitude.starts_with("0x") || magnitude.starts_with("0X")) return false;
+	std::istringstream stream {std::string(token)};
+	stream.imbue(std::locale::classic());
+	double parsed = 0.0;
+	stream >> std::noskipws >> parsed;
+	if (stream.bad() || !stream.eof()) return false;
+	// num_get may flag ERANGE for a representable subnormal. Preserve that
+	// value, while rejecting overflow, malformed input and underflow to zero.
+	if (stream.fail() && !(std::isfinite(parsed) && parsed != 0.0 &&
+	                       std::abs(parsed) <= std::numeric_limits<double>::min())) return false;
+	const auto mantissa = token.substr(0, token.find_first_of("eE"));
+	if (parsed == 0.0 && mantissa.find_first_of("123456789") != std::string_view::npos) return false;
+	value = parsed;
+	return true;
 }
 
 bool ParseHash(std::string_view token, uint64_t& value) {

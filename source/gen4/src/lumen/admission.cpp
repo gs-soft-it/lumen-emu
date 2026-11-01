@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
+#include "host/DocumentFileSystem.h"
 #include "lumen/session.h"
 #include "common/sha256.h"
 #include "core/loader/elf_validation.h"
@@ -26,10 +27,10 @@ bool Dimension(const std::string& text, unsigned min, unsigned max, unsigned& va
     return status == std::errc{} && end == text.data() + text.size() && value >= min && value <= max;
 }
 bool Regular(const fs::path& file) {
-    return fs::is_regular_file(fs::symlink_status(file)) && fs::file_size(file) > 0;
+    return fs::is_regular_file(Lumen::HostFileSystem::symlink_status(file)) && Lumen::HostFileSystem::file_size(file) > 0;
 }
 std::string Hash(const fs::path& file) {
-    std::ifstream stream(file, std::ios::binary);
+    Lumen::HostFileSystem::InputStream stream(file, std::ios::binary);
     sha256::SHA256 hash;
     std::array<char, 65536> bytes;
     while (stream.read(bytes.data(), bytes.size()) || stream.gcount() > 0)
@@ -40,10 +41,10 @@ std::string Hash(const fs::path& file) {
 
 void ValidateExecutable(const fs::path& file) {
     using Core::Loader::ContainsFileRange;
-    const auto size = fs::file_size(file);
+    const auto size = Lumen::HostFileSystem::file_size(file);
     if (size > static_cast<u64>(std::numeric_limits<std::streamoff>::max()))
         throw std::runtime_error("Executable file is too large");
-    std::ifstream binary(file, std::ios::binary);
+    Lumen::HostFileSystem::InputStream binary(file, std::ios::binary);
     const auto read = [&](u64 offset, auto& value) {
         if (!ContainsFileRange(size, offset, sizeof(value)) ||
             !binary.seekg(static_cast<std::streamoff>(offset)) ||
@@ -194,7 +195,7 @@ bool ValidateEntry(const SessionOptions& options, const fs::path& entry, std::st
         auto file = options.root;
         for (const auto& part : entry) {
             file /= part;
-            if (fs::is_symlink(fs::symlink_status(file))) throw std::runtime_error("Linked executable path is not allowed");
+            if (fs::is_symlink(Lumen::HostFileSystem::symlink_status(file))) throw std::runtime_error("Linked executable path is not allowed");
         }
         if (!Regular(file)) throw std::runtime_error("Executable is missing");
         ValidateExecutable(file);
@@ -213,40 +214,40 @@ std::vector<std::string> ManagedArguments(const SessionOptions& options) {
 }
 bool ValidateContent(SessionOptions& options, std::string& error) {
     try {
-        if (!options.root.is_absolute() || !fs::is_directory(fs::symlink_status(options.root)))
+        if (!options.root.is_absolute() || !fs::is_directory(Lumen::HostFileSystem::symlink_status(options.root)))
             throw std::runtime_error("ROM root must be an absolute, existing directory without a symbolic link");
-        options.root = fs::canonical(options.root);
+        options.root = Lumen::HostFileSystem::canonical(options.root);
         if (!ValidateEntry(options, options.entry, error)) return false;
         const auto eboot = options.root / "eboot.bin";
         const auto sys = options.root / "sce_sys";
         const auto param = sys / "param.sfo";
-        if (!fs::is_directory(fs::symlink_status(sys)) || !Regular(eboot) || !Regular(param))
+        if (!fs::is_directory(Lumen::HostFileSystem::symlink_status(sys)) || !Regular(eboot) || !Regular(param))
             throw std::runtime_error("Missing or linked eboot.bin / sce_sys/param.sfo");
-        if (fs::exists(sys / "param.json")) throw std::runtime_error("PS5 content requires the separate PS5 runtime");
+        if (Lumen::HostFileSystem::exists(sys / "param.json")) throw std::runtime_error("PS5 content requires the separate PS5 runtime");
         if ((!options.eboot_digest.empty() && Hash(eboot) != options.eboot_digest) ||
             (!options.param_digest.empty() && Hash(param) != options.param_digest))
             throw std::runtime_error("Critical ROM files changed after dashboard validation");
         if (options.entry != fs::path{"eboot.bin"} && !ValidateEntry(options, "eboot.bin", error))
             return false;
         std::array<unsigned char, 20> header{};
-        std::ifstream metadata(param, std::ios::binary);
+        Lumen::HostFileSystem::InputStream metadata(param, std::ios::binary);
         if (!metadata.read(reinterpret_cast<char*>(header.data()), 20) ||
             header[0] != 0 || header[1] != 'P' || header[2] != 'S' || header[3] != 'F')
             throw std::runtime_error("Invalid PS4 param.sfo");
         options.startup_modules.clear();
         if (options.known_system) {
             const auto modules = options.root / "sce_module";
-            if (!fs::is_directory(fs::symlink_status(modules)))
+            if (!fs::is_directory(Lumen::HostFileSystem::symlink_status(modules)))
                 throw std::runtime_error("Missing or linked sce_module directory");
             for (const auto* name : {"libc.prx", "libSceFios2.prx"}) {
                 const auto path = modules / name;
-                if (fs::exists(path) && Regular(path)) options.startup_modules.push_back(path);
+                if (Lumen::HostFileSystem::exists(path) && Regular(path)) options.startup_modules.push_back(path);
             }
             if (options.startup_modules.empty()) throw std::runtime_error("No supported modules for known-system policy");
         }
-        if (!options.data.is_absolute() || !fs::is_directory(fs::symlink_status(options.data)))
+        if (!options.data.is_absolute() || !fs::is_directory(Lumen::HostFileSystem::symlink_status(options.data)))
             throw std::runtime_error("Runtime data must be an absolute existing directory without a symbolic link");
-        options.data = fs::canonical(options.data);
+        options.data = Lumen::HostFileSystem::canonical(options.data);
         if (options.data == options.root || options.data.string().starts_with(options.root.string() + fs::path::preferred_separator))
             throw std::runtime_error("Runtime data must be outside the ROM root");
         return true;

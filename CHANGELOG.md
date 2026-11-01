@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.1.6-spike-fexlab — Android version code 7
+
+1 November 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab)
+
+### Highlights
+
+- **Massive loading speedup, especially on PS5:** restored direct filesystem access to local ROM folders, shared by PS4 and PS5. The tested PS5 startup scenario showed substantially shorter initial loading delays.
+- **Preliminary PanVK support for compatible Mali GPUs:** the Android package includes JimVulkan PanVK r8 as an explicitly selectable experimental driver. The system driver remains the default on Mali.
+- **Android 13 support for the FEX package:** the minimum is now API 33 on ARM64, with target API 36. Builds containing the pinned QEMU backend still require API 35 or newer.
+
+### Loading and ROM folders
+
+Local ROM folders now use direct filesystem reads after the user grants Android's all-files access. Recognised Android filesystem-provider folders resolve to the real local path; other supported document providers continue to use the document bridge. The single active library, optional verified moves and existing ROM/save data are preserved.
+
+For document-backed libraries, the update reduces repeated provider acquisition, path-resolution and directory-enumeration work. Native document requests no longer hold a global lock while waiting on the provider, and certified read-only file handles can obtain their size directly without changing their read position. These changes reduce storage overhead without caching failed path lookups across guest filesystem calls.
+
+In the adopted Release baseline on the realme GT 8 Pro, Astro Bot showed its Sony logo within 22 seconds and reached the title prompt within 198 seconds; the preceding document-backed path was still black at 233 seconds. These are observed startup timings with the tested driver and library, not a controlled speedup ratio, an FPS measurement or a guarantee for every game/device.
+
+### Mali and graphics compatibility
+
+The **PanVK (Experimental for Mali)** option is available on detected compatible Mali/kbase devices and applies to both PS4 and PS5. Compatibility depends on the GPU, kernel interface, Vulkan features and game. The bundled driver is JimVulkan r8; private diagnostic driver variants are not part of this release.
+
+The initial Ulefone Note 16 Pro / Unisoc T606 / Mali-G57 MC1 tests reached the SUCCI menu with both System and PanVK, and completed a PanVK 3D benchmark in a Debug development build. This is preliminary device support, not general PS4/PS5 game compatibility on Mali. The core also adds targeted shader handling for smaller native GPU subgroups, capability checks for shaders that actually need optional features, and Android surface/landscape corrections.
+
+### Updated public core
+
+The public core snapshot is refreshed from source revision `b9cde237`, including the native document-filesystem bridge, current PS4/PS5 runtime and shader changes, Android API 33 FEX support, tests and provenance records. Existing public build adaptations and licence notices are preserved. Dashboard, Android Java/resources and application packaging remain outside the core repository; their changes are included in the APK.
+
+### Android package
+
+- File: `lumenemu-0.1.6-spike-fexlab-v7.apk`
+- Package: `it.gssoft.lumenemu`
+- Version: `0.1.6-spike-fexlab` (version code `7`)
+- Android 13 (API 33) or newer, ARM64 (`arm64-v8a`); target API 36.
+- Non-debuggable FEX Release build, signed with the existing GitHub publication certificate.
+
+SHA-256:
+
+```text
+7719a0ac2d7215f1d0a4e9343e25a32e49299a6d602d5ec7bd31427d3c0b780e
+```
+
+### Verification
+
+The signed Release build, package identity, signing continuity, 16 KiB ZIP alignment, bundled PanVK identity/notices and native PS4/PS5 packaging audit passed. The adopted source baseline had 30 passing JVM tests (3 existing skips) and 14 passing Android instrumentation tests; those results are reused here. The release rebuild changes version metadata, signing and native build identities, so its libraries are not claimed to be byte-identical to the tested local APK. No new installation, gameplay run or FPS benchmark was performed on this exact signed package. Alignment alone does not establish runtime compatibility with a 16 KiB-page Android device.
+
 ## 0.1.5-spike-fexlab — Android version code 6
 
 28 October 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.5-spike-fexlab)

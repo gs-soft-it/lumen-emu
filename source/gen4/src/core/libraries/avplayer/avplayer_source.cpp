@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include <cstdlib>
 #include <cstring>
 #include "common/alignment.h"
@@ -29,9 +30,43 @@ extern "C" {
 
 namespace Libraries::AvPlayer {
 
-static bool ShouldTraceCount(u64 count) {
-    return count <= 10 || (count & (count - 1)) == 0;
-}
+class DocumentFileStreamer final : public IDataStreamer {
+public:
+    ~DocumentFileStreamer() override {
+        if (context_) { av_freep(&context_->buffer); avio_context_free(&context_); }
+    }
+    bool Init(std::string_view path) override {
+        file_.Open(std::filesystem::path(path), Common::FS::FileAccessMode::Read);
+        if (!file_.IsOpen())
+            return false;
+        auto* buffer = static_cast<unsigned char*>(av_malloc(64 * 1024));
+        if (!buffer) return false;
+        context_ = avio_alloc_context(buffer, 64 * 1024, 0, this, Read, nullptr, Seek);
+        if (!context_) av_free(buffer);
+        return context_ != nullptr;
+    }
+    void Reset() override { file_.Seek(0); }
+    AVIOContext* GetContext() override { return context_; }
+private:
+    static int Read(void* opaque, uint8_t* buffer, int size) {
+        auto* self = static_cast<DocumentFileStreamer*>(opaque);
+        const auto count = self->file_.ReadRaw<uint8_t>(buffer, size);
+        return count == 0 ? AVERROR_EOF : static_cast<int>(count);
+    }
+    static int64_t Seek(void* opaque, int64_t offset, int whence) {
+        auto* self = static_cast<DocumentFileStreamer*>(opaque);
+        if (whence == AVSEEK_SIZE) return self->file_.GetSize();
+        whence &= ~AVSEEK_FORCE;
+        Common::FS::SeekOrigin origin;
+        if (whence == SEEK_SET) origin = Common::FS::SeekOrigin::SetOrigin;
+        else if (whence == SEEK_CUR) origin = Common::FS::SeekOrigin::CurrentPosition;
+        else if (whence == SEEK_END) origin = Common::FS::SeekOrigin::End;
+        else return AVERROR(EINVAL);
+        return self->file_.Seek(offset, origin) ? self->file_.Tell() : AVERROR(EIO);
+    }
+    Common::FS::IOFile file_;
+    AVIOContext* context_{};
+};
 
 static bool RequireDecoderCompletion() {
     static const bool enabled = [] {
@@ -71,8 +106,16 @@ bool AvPlayerSource::Init(const AvPlayerInitData& init_data, std::string_view pa
     } else {
         const auto mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
         const auto filepath = mnt->GetHostPath(path);
-        if (AVPLAYER_IS_ERROR(
-                avformat_open_input(&context, filepath.string().c_str(), nullptr, nullptr))) {
+        if (Lumen::Documents::IsMounted(filepath)) {
+            m_up_data_streamer = std::make_unique<DocumentFileStreamer>();
+            if (!m_up_data_streamer->Init(filepath.string())) {
+                avformat_free_context(context);
+                return false;
+            }
+            context->pb = m_up_data_streamer->GetContext();
+        }
+        if (AVPLAYER_IS_ERROR(avformat_open_input(&context,
+                context->pb ? nullptr : filepath.string().c_str(), nullptr, nullptr))) {
             LOG_ERROR(Lib_AvPlayer, "avformat_open_input failed for {}", filepath.string());
             return false;
         }
@@ -352,23 +395,12 @@ bool AvPlayerSource::Stop() {
     m_video_frames.Clear();
 
     m_last_audio_ts.reset();
-    m_atomic_last_audio_ts = 0;
     m_start_time.reset();
     m_pause_time = {};
     m_pause_duration = {};
 
     m_is_paused = false;
     m_is_eof = false;
-
-    m_trace_video_data_success_count = 0;
-    m_trace_video_data_inactive_count = 0;
-    m_trace_video_data_empty_count = 0;
-    m_trace_video_data_ahead_count = 0;
-    m_trace_audio_data_success_count = 0;
-    m_trace_audio_data_inactive_count = 0;
-    m_trace_audio_data_empty_count = 0;
-    m_trace_video_frame_queued_count = 0;
-    m_trace_demux_eof_count = 0;
 
     return true;
 }
@@ -399,22 +431,10 @@ bool AvPlayerSource::GetVideoData(AvPlayerFrameInfo& video_info) {
 
 bool AvPlayerSource::GetVideoData(AvPlayerFrameInfoEx& video_info) {
     if (!IsActive() || m_is_paused) {
-        const u64 count = ++m_trace_video_data_inactive_count;
-        if (ShouldTraceCount(count)) {
-            LOG_INFO(Lib_AvPlayer,
-                     "LUMEN_HOST_AVPLAYER_TRACE stage=get_video_data_inactive_paused count={} active={} paused={} eof={}",
-                     count, IsActive(), m_is_paused.load(), m_is_eof.load());
-        }
         return false;
     }
 
     if (m_video_frames.Size() == 0) {
-        const u64 count = ++m_trace_video_data_empty_count;
-        if (ShouldTraceCount(count)) {
-            LOG_INFO(Lib_AvPlayer,
-                     "LUMEN_HOST_AVPLAYER_TRACE stage=get_video_data_empty count={} eof={} last_audio_ts={}",
-                     count, m_is_eof.load(), m_atomic_last_audio_ts.load(std::memory_order_relaxed));
-        }
         return false;
     }
 
@@ -424,13 +444,6 @@ bool AvPlayerSource::GetVideoData(AvPlayerFrameInfoEx& video_info) {
             if (AvPlayerVideoBlockedByAudio(new_frame.info.timestamp,
                                             m_last_audio_ts.value_or(0), true, m_is_eof.load(),
                                             static_cast<u32>(m_audio_frames.Size()))) {
-                const u64 count = ++m_trace_video_data_ahead_count;
-                if (ShouldTraceCount(count)) {
-                    LOG_INFO(Lib_AvPlayer,
-                             "LUMEN_HOST_AVPLAYER_TRACE stage=get_video_data_ahead_of_audio count={} frame_ts={} last_audio_ts={} eof={}",
-                             count, new_frame.info.timestamp, m_atomic_last_audio_ts.load(std::memory_order_relaxed),
-                             m_is_eof.load());
-                }
                 return false;
             }
         } else {
@@ -457,14 +470,6 @@ bool AvPlayerSource::GetVideoData(AvPlayerFrameInfoEx& video_info) {
         m_video_buffers_cv.Notify();
     }
 
-    const u64 count = ++m_trace_video_data_success_count;
-    if (ShouldTraceCount(count)) {
-        LOG_INFO(Lib_AvPlayer,
-                 "LUMEN_HOST_AVPLAYER_TRACE stage=get_video_data_success count={} frame_ts={} last_audio_ts={} eof={}",
-                 count, video_info.timestamp, m_atomic_last_audio_ts.load(std::memory_order_relaxed),
-                 m_is_eof.load());
-    }
-
     return true;
 }
 
@@ -477,28 +482,15 @@ bool AvPlayerSource::GetAudioData(AvPlayerFrameInfo& audio_info) {
     }
 
     if (!IsActive() || m_is_paused) {
-        const u64 count = ++m_trace_audio_data_inactive_count;
-        if (ShouldTraceCount(count)) {
-            LOG_INFO(Lib_AvPlayer,
-                     "LUMEN_HOST_AVPLAYER_TRACE stage=get_audio_data_inactive_paused count={} active={} paused={} eof={}",
-                     count, IsActive(), m_is_paused.load(), m_is_eof.load());
-        }
         return false;
     }
 
     if (m_audio_frames.Size() == 0) {
-        const u64 count = ++m_trace_audio_data_empty_count;
-        if (ShouldTraceCount(count)) {
-            LOG_INFO(Lib_AvPlayer,
-                     "LUMEN_HOST_AVPLAYER_TRACE stage=get_audio_data_empty count={} eof={} last_audio_ts={}",
-                     count, m_is_eof.load(), m_atomic_last_audio_ts.load(std::memory_order_relaxed));
-        }
         return false;
     }
 
     auto frame = m_audio_frames.Pop();
     m_last_audio_ts = frame->info.timestamp;
-    m_atomic_last_audio_ts.store(frame->info.timestamp, std::memory_order_relaxed);
 
     audio_info = {};
     audio_info.timestamp = frame->info.timestamp;
@@ -507,14 +499,6 @@ bool AvPlayerSource::GetAudioData(AvPlayerFrameInfo& audio_info) {
     audio_info.details.audio.size = frame->info.details.audio.size;
     audio_info.details.audio.channel_count = frame->info.details.audio.channel_count;
     m_current_audio_frame = std::move(frame);
-
-    const u64 count = ++m_trace_audio_data_success_count;
-    if (ShouldTraceCount(count)) {
-        LOG_INFO(Lib_AvPlayer,
-                 "LUMEN_HOST_AVPLAYER_TRACE stage=get_audio_data_success count={} frame_ts={} last_audio_ts={} eof={}",
-                 count, audio_info.timestamp, m_atomic_last_audio_ts.load(std::memory_order_relaxed),
-                 m_is_eof.load());
-    }
 
     return true;
 }
@@ -693,13 +677,6 @@ void AvPlayerSource::DemuxerThread(std::stop_token stop) {
     }
 
     m_is_eof = true;
-
-    const u64 count = ++m_trace_demux_eof_count;
-    if (ShouldTraceCount(count)) {
-        LOG_INFO(Lib_AvPlayer,
-                 "LUMEN_HOST_AVPLAYER_TRACE stage=demux_eof count={} eof={} last_audio_ts={}",
-                 count, m_is_eof.load(), m_atomic_last_audio_ts.load(std::memory_order_relaxed));
-    }
 
     m_video_packets_cv.Notify();
     m_audio_packets_cv.Notify();
@@ -896,26 +873,10 @@ void AvPlayerSource::VideoDecoderThread(std::stop_token stop) {
                         return;
                     }
                     auto prep_frame = PrepareVideoFrame(std::move(buffer.value()), *nv12_frame);
-                    const u64 frame_ts = prep_frame.info.timestamp;
                     m_video_frames.Push(std::move(prep_frame));
-                    const u64 count = ++m_trace_video_frame_queued_count;
-                    if (ShouldTraceCount(count)) {
-                        LOG_INFO(Lib_AvPlayer,
-                                 "LUMEN_HOST_AVPLAYER_TRACE stage=video_frame_queued count={} frame_ts={} last_audio_ts={} eof={}",
-                                 count, frame_ts, m_atomic_last_audio_ts.load(std::memory_order_relaxed),
-                                 m_is_eof.load());
-                    }
                 } else {
                     auto prep_frame = PrepareVideoFrame(std::move(buffer.value()), *up_frame);
-                    const u64 frame_ts = prep_frame.info.timestamp;
                     m_video_frames.Push(std::move(prep_frame));
-                    const u64 count = ++m_trace_video_frame_queued_count;
-                    if (ShouldTraceCount(count)) {
-                        LOG_INFO(Lib_AvPlayer,
-                                 "LUMEN_HOST_AVPLAYER_TRACE stage=video_frame_queued count={} frame_ts={} last_audio_ts={} eof={}",
-                                 count, frame_ts, m_atomic_last_audio_ts.load(std::memory_order_relaxed),
-                                 m_is_eof.load());
-                    }
                 }
                 m_video_frames_cv.Notify();
             }

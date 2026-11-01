@@ -11,9 +11,14 @@ if(NOT ANDROID_ABI STREQUAL "arm64-v8a")
     message(FATAL_ERROR "LumenAndroidSpike supports only arm64-v8a, not ${ANDROID_ABI}")
 endif()
 
-if(NOT DEFINED ANDROID_PLATFORM_LEVEL OR ANDROID_PLATFORM_LEVEL LESS 35)
+if(NOT DEFINED ANDROID_PLATFORM_LEVEL OR ANDROID_PLATFORM_LEVEL LESS 33)
     message(FATAL_ERROR
-        "The Android runtime requires API 35+ for both FEX and QEMU, including native TLS")
+        "The Android FEX runtime requires API 33+ with native ELF TLS")
+endif()
+if(DEFINED LUMEN_QEMU_TCG_LIBRARY AND NOT LUMEN_QEMU_TCG_LIBRARY STREQUAL ""
+   AND ANDROID_PLATFORM_LEVEL LESS 35)
+    message(FATAL_ERROR
+        "The pinned Android QEMU dependency closure still requires API 35+")
 endif()
 
 option(LUMEN_ANDROID_FULL_RUNTIME
@@ -478,6 +483,12 @@ if(LUMEN_ANDROID_FULL_RUNTIME)
     endif()
 endif()
 
+add_library(lumen_android_documents SHARED AndroidDocumentFileSystem.cpp)
+target_include_directories(lumen_android_documents PUBLIC "${LUMEN_SOURCE_ROOT}")
+target_compile_features(lumen_android_documents PRIVATE cxx_std_20)
+target_link_options(lumen_android_documents PRIVATE
+    "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
+
 add_library(lumen_android_spike SHARED
     AndroidBootstrap.cpp
     AndroidGamePreflight.cpp
@@ -645,6 +656,7 @@ if(LUMEN_ANDROID_FEXCORE_LAB)
     # Gen5 has its own process/SDL3 DSO. Its JNI frontend never links the PS4
     # engine or its SDL2 instance into that process.
     target_sources(lumen_android_ps5 PRIVATE AndroidPs5Main.cpp AndroidPs5RuntimeUi.cpp)
+    target_link_libraries(lumen_android_ps5 PRIVATE lumen_android_documents)
     target_include_directories(lumen_android_ps5 PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
     lumen_ps5_attach_vulkan_driver(lumen_android_ps5)
 endif()
@@ -793,6 +805,8 @@ if(LUMEN_ANDROID_FEXCORE_LAB)
     endforeach()
 endif()
 
+target_link_libraries(lumen_android_spike PRIVATE lumen_android_documents)
+
 set(LUMEN_GEN4_DEPS_DIR "${LUMEN_REPOSITORY_ROOT}/../lumen-deps/gen4/sources" CACHE PATH
     "Pinned PS4 dependencies")
 set(LUMEN_GEN4_ANDROID_STAGE_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen4-stage" CACHE PATH
@@ -810,5 +824,5 @@ add_custom_target(lumen_android_gen4_build
         --stage "${LUMEN_GEN4_ANDROID_STAGE_DIR}" --jobs "${LUMEN_GEN4_BUILD_JOBS}"
         --configuration "${LUMEN_GEN4_BUILD_TYPE}"
     BYPRODUCTS "${LUMEN_GEN4_ANDROID_STAGE_DIR}/arm64-v8a/liblumen_android_gen4.so"
-    DEPENDS lumen_android_fexcore_runtime lumen_android_fexcore_lab_admission
+    DEPENDS lumen_android_fexcore_runtime lumen_android_fexcore_lab_admission lumen_android_documents
     USES_TERMINAL VERBATIM)

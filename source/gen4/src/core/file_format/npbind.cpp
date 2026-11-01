@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadLauncher4 Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -11,7 +12,7 @@
 bool NPBindFile::Load(const std::string& path) {
     Clear(); // Clear any existing data
 
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    Lumen::HostFileSystem::InputStream f(path, std::ios::binary | std::ios::ate);
     if (!f)
         return false;
 

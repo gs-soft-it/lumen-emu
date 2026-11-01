@@ -488,7 +488,7 @@ void DefineInputs(EmitterState& state) {
 		add_builtin(IR::StageInputKind::WorkgroupId, 3, "gl_WorkGroupID");
 		add_builtin(IR::StageInputKind::NumWorkgroups, 3, "gl_NumWorkGroups");
 	}
-	if (state.lane_count == 2) {
+	if (state.lane_count > 1) {
 		add_builtin(IR::StageInputKind::LocalInvocationIndex, 1, "gl_LocalInvocationIndex");
 		if (std::ranges::any_of(state.inputs, [](const InputBinding& input) {
 			    return input.kind == IR::StageInputKind::GlobalInvocationId;
@@ -576,7 +576,7 @@ void DefineInputs(EmitterState& state) {
 			                            builtin);
 		}
 	}
-	if (state.program.info.subgroup_local_invocation_id) {
+	if (state.program.info.subgroup_local_invocation_id && !state.program.info.fragment_quad_partitioned) {
 		const auto variable = DefineInterfaceVariable(state, TypeU32(state), spv::StorageClassInput,
 		                                              "gl_SubgroupInvocationID");
 		state.subgroup_local_invocation_id_variable = variable;
@@ -672,13 +672,10 @@ void DefineOutputs(EmitterState& state) {
 				break;
 			case IR::StageOutputKind::Parameter:
 			case IR::StageOutputKind::Mrt: {
-				const bool uint_output =
-				    binding.kind == IR::StageOutputKind::Mrt &&
-				    state.program.stage == ShaderType::Pixel &&
-				    binding.index < std::size(state.input_info.pixel->target_output_mode) &&
-				    (state.input_info.pixel->target_output_mode[binding.index] == 7u ||
-				     (state.input_info.pixel->target_packed_unorm_mask & (1u << binding.index)) != 0u);
-				const auto type = uint_output ? TypeU32Vector(state, 4) : TypeF32Vector(state, 4);
+				const auto type = ExportVectorType(state,
+				    {.kind = binding.kind == IR::StageOutputKind::Mrt ? IR::ExportTargetKind::Mrt
+				                                                    : IR::ExportTargetKind::Parameter,
+				     .index = binding.index});
 				binding.variable_id = DefineInterfaceVariable(state, type, spv::StorageClassOutput,
 				                                              binding.debug_name.c_str());
 				const bool dual_source = binding.kind == IR::StageOutputKind::Mrt &&
@@ -777,23 +774,33 @@ void DefineModule(EmitterState& state) {
 	if (state.program.info.image_gather_extended) {
 		state.builder.RequireCapability(spv::CapabilityImageGatherExtended);
 	}
-	if (state.lane_count == 2 || state.program.info.subgroup_barrier ||
+	if (state.lane_count > 1 || state.program.info.subgroup_barrier ||
 	    state.program.info.subgroup_ballot || state.program.info.subgroup_vote ||
 	    state.program.info.subgroup_shuffle ||
 	    state.program.info.subgroup_arithmetic || state.program.info.subgroup_local_invocation_id) {
 		state.builder.RequireCapability(spv::CapabilityGroupNonUniform);
 	}
-	if (state.lane_count == 2 || state.program.info.subgroup_ballot) {
+	if (!state.program.info.fragment_quad_partitioned && (state.lane_count > 1 || state.program.info.subgroup_ballot)) {
 		state.builder.RequireCapability(spv::CapabilityGroupNonUniformBallot);
 	}
-	if (state.program.info.subgroup_vote) {
+	if (state.program.info.subgroup_vote && !state.program.info.fragment_quad_partitioned) {
 		state.builder.RequireCapability(spv::CapabilityGroupNonUniformVote);
 	}
-	if (state.program.info.subgroup_shuffle) {
+	if (state.program.info.subgroup_shuffle && !state.program.info.fragment_quad_partitioned) {
 		state.builder.RequireCapability(spv::CapabilityGroupNonUniformShuffle);
 	}
 	if (state.program.info.subgroup_arithmetic) {
 		state.builder.RequireCapability(spv::CapabilityGroupNonUniformArithmetic);
+	}
+	if (state.program.info.fragment_quad_partitioned) {
+		state.builder.RequireVersion(0x00010300u);
+		state.builder.RequireCapability(spv::CapabilityGroupNonUniformQuad);
+		state.builder.RequireCapability(spv::CapabilityQuadControlKHR);
+		state.builder.RequireExtension("SPV_KHR_quad_control");
+		state.builder.RequireExtension("SPV_KHR_maximal_reconvergence");
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeQuadDerivativesKHR);
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeRequireFullQuadsKHR);
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeMaximallyReconvergesKHR);
 	}
 	if (state.program.info.compute_derivatives && state.program.stage == ShaderType::Compute) {
 		state.builder.RequireCapability(spv::CapabilityComputeDerivativeGroupQuadsKHR);
@@ -836,8 +843,9 @@ void DefineModule(EmitterState& state) {
 		local_x             = cs->threads_num[0] != 0u ? cs->threads_num[0] : local_x;
 		local_y             = cs->threads_num[1] != 0u ? cs->threads_num[1] : local_y;
 		local_z             = cs->threads_num[2] != 0u ? cs->threads_num[2] : local_z;
-		if (state.lane_count == 2) {
-			local_x = ((local_x * local_y * local_z + 63u) / 64u) * 32u;
+		if (state.lane_count > 1) {
+			local_x = ((local_x * local_y * local_z + state.program.wave_size - 1u) /
+			           state.program.wave_size) * state.lane_width;
 			local_y = local_z = 1u;
 			if (state.program.info.compute_derivatives) {
 				local_y = local_x / 2u;

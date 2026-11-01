@@ -245,6 +245,7 @@ struct VkDevice_T
 {
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 	__strong id<MTLDevice> metalDevice = nil;
+	bool fragmentShaderBarycentricEnabled = false;
 	std::mutex mutex;
 	// Waiters hold this mutex while inspecting fences and entering the wait.
 	// SignalFence releases its fence mutex before taking it, so notification

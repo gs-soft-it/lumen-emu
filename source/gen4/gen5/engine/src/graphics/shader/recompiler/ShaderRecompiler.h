@@ -27,6 +27,8 @@ struct CompileOptions {
 	std::span<const uint32_t>   user_data;
 	std::span<const uint32_t>   back_code;
 	ShaderStageInputInfo        input_info;
+	// Request only: final IR must independently earn the partition certificate.
+	bool                       fragment_quad_control_enabled = false;
 };
 
 struct TranslateResult {

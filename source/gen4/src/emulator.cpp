@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -107,15 +108,15 @@ std::map<s32, std::string> ExtractTrophies(const std::filesystem::path& npbind_p
         return trophy_index_map;
     }
 
-    if (!std::filesystem::exists(trophy_dir)) {
+    if (!Lumen::HostFileSystem::exists(trophy_dir)) {
         LOG_WARNING(Common_Filesystem, "Game does not contain a trophy directory");
         return trophy_index_map;
     }
 
     std::string pattern = "trophy";
-    for (const auto& entry : std::filesystem::directory_iterator(trophy_dir)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".trp") {
-            std::string filename = entry.path().stem().string(); // "trophy00", "trophy01", etc.
+    for (const auto& entry : Lumen::HostFileSystem::directory_paths(trophy_dir)) {
+        if (Lumen::HostFileSystem::is_regular_file(entry) && entry.extension() == ".trp") {
+            std::string filename = entry.stem().string(); // "trophy00", "trophy01", etc.
 
             // Check if filename starts with "trophy"
             if (filename.find(pattern) != 0) {
@@ -175,7 +176,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         Debugger::WaitForDebuggerAttach();
     }
 
-    if (std::filesystem::is_directory(file)) {
+    if (Lumen::HostFileSystem::is_directory(file)) {
         file /= "eboot.bin";
     }
     std::filesystem::path game_folder;
@@ -186,7 +187,8 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
     }
 
-    std::filesystem::path eboot_name = std::filesystem::relative(file, game_folder);
+    std::filesystem::path eboot_name = Lumen::Documents::IsMounted(file)
+        ? file.lexically_relative(game_folder) : std::filesystem::relative(file, game_folder);
 
     // Applications expect to be run from /app0 so mount the file's parent path as app0.
     auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
@@ -195,7 +197,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     mnt->Mount(game_folder, "/hostapp", true);
 
     const auto param_sfo_path = mnt->GetHostPath("/app0/sce_sys/param.sfo");
-    const auto param_sfo_exists = std::filesystem::exists(param_sfo_path);
+    const auto param_sfo_exists = Lumen::HostFileSystem::exists(param_sfo_path);
 
     // Load param.sfo details if it exists
     std::string id;
@@ -271,7 +273,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
     game_info.game_folder = game_folder;
 
-    if (!std::filesystem::exists(file)) {
+    if (!Lumen::HostFileSystem::exists(file)) {
         LOG_CRITICAL(Loader, "eboot.bin does not exist: {}",
                      std::filesystem::absolute(file).string());
         std::quick_exit(3);

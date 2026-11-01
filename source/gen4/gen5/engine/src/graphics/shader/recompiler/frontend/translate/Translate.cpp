@@ -1,5 +1,6 @@
 #include "common/assert.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
+#include "graphics/shader/recompiler/ir/passes/NggVertexEligibility.h"
 #include "graphics/shader/shader.h"
 
 #include <algorithm>
@@ -1155,8 +1156,10 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			total_threads = std::max(workgroup->threads_num[0], 1u) *
 			                std::max(workgroup->threads_num[1], 1u) *
 			                std::max(workgroup->threads_num[2], 1u);
-			if (options.wave_size == 64u && workgroup->host_subgroup_size == 32u &&
-			    total_threads % 64u != 0u) {
+			if (((options.wave_size == 64u && workgroup->host_subgroup_size == 32u) ||
+			     (options.stage == ShaderType::Compute && workgroup->host_subgroup_size == 16u &&
+			      (options.wave_size == 32u || options.wave_size == 64u))) &&
+			    total_threads % options.wave_size != 0u) {
 				initial_exec = entry_ir.ULessThan(builtin(IR::StageInputKind::LocalInvocationIndex),
 				                                  IR::U32(IR::Value(total_threads)));
 			}
@@ -1172,7 +1175,8 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			}
 		}
 		entry_ir.SetExec(initial_exec);
-		const auto initial_mask = entry_ir.Emit(IR::ValueOpcode::Ballot, {initial_exec});
+		const auto initial_mask = entry_ir.Emit(IR::ValueOpcode::Ballot, {initial_exec},
+		    options.stage == ShaderType::Vertex ? IR::NggVertexEntryBallotFlag : 0u);
 		const auto initial_lo = entry_ir.CompositeExtract(initial_mask, 0);
 		const auto initial_hi = options.wave_size == 64u ? entry_ir.CompositeExtract(initial_mask, 1)
 		                                               : IR::U32(IR::Value(0u));

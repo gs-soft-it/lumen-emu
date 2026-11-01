@@ -1,3 +1,4 @@
+#include "host/DocumentFileSystem.h"
 #include "common/common.h"
 
 #if KYTY_PLATFORM != KYTY_PLATFORM_LINUX
@@ -38,6 +39,9 @@ struct sys_file_mem_buf_t {
 // NOLINTNEXTLINE(readability-identifier-naming)
 struct sys_file_t {
 	sys_file_type_t type;
+	// Buffered opens retain the legacy size path; only an explicitly
+	// unbuffered read-only open may certify this capability.
+	bool size_from_descriptor = false;
 	union {
 		FILE*               f;
 		sys_file_mem_buf_t* buf;
@@ -158,7 +162,7 @@ sys_file_t* SysFileCreate(const std::filesystem::path& file_name) {
 	auto real_name     = get_internal_name(file_name);
 	auto real_name_str = real_name.string();
 
-	ret->f = fopen(real_name_str.c_str(), "w+");
+	ret->f = Lumen::HostFileSystem::fopen(real_name, "w+");
 
 	if (ret->f == nullptr) {
 		printf("can't create file: %s\n", real_name_str.c_str());
@@ -177,7 +181,7 @@ sys_file_t* SysFileOpenR(const std::filesystem::path& file_name, sys_file_cache_
 	auto internal_name     = get_internal_name(file_name);
 	auto internal_name_str = internal_name.string();
 
-	FILE* f = fopen(internal_name_str.c_str(), "r");
+	FILE* f = Lumen::HostFileSystem::fopen(internal_name, "r");
 
 	if (f == nullptr) {
 		ret->type = SYS_FILE_ERROR;
@@ -220,7 +224,7 @@ sys_file_t* SysFileOpenW(const std::filesystem::path& file_name, sys_file_cache_
 	auto real_name     = get_internal_name(file_name);
 	auto real_name_str = real_name.string();
 
-	FILE* f = fopen(real_name_str.c_str(), "r+");
+	FILE* f = Lumen::HostFileSystem::fopen(real_name, "r+");
 
 	if (f == nullptr) {
 		ret->type = SYS_FILE_ERROR;
@@ -242,7 +246,7 @@ sys_file_t* SysFileOpenRw(const std::filesystem::path& file_name,
 	auto real_name     = get_internal_name(file_name);
 	auto real_name_str = real_name.string();
 
-	FILE* f = fopen(real_name_str.c_str(), "r+");
+	FILE* f = Lumen::HostFileSystem::fopen(real_name, "r+");
 
 	if (f == nullptr) {
 		ret->type = SYS_FILE_ERROR;
@@ -277,6 +281,15 @@ uint64_t SysFileSize(sys_file_t& f) {
 	[[maybe_unused]] int result = 0;
 
 	if (f.type == SYS_FILE_FILE) {
+		// Only unbuffered read-only streams can skip stdio's flush/discard
+		// effects. Preserve its EOF/error handling through the legacy path.
+		if (f.size_from_descriptor && !feof(f.f) && !ferror(f.f)) {
+			struct stat info {};
+			if (::fstat(fileno(f.f), &info) != 0) return 0;
+			if (S_ISREG(info.st_mode)) {
+				return info.st_size < 0 ? 0 : static_cast<uint64_t>(info.st_size);
+			}
+		}
 		// Preserve sizes above 4 GiB.
 		const off_t pos = ftello(f.f);
 		if (pos < 0) {
@@ -300,7 +313,7 @@ uint64_t SysFileSize(sys_file_t& f) {
 bool SysFileGetInfo(const std::filesystem::path& name, bool* is_file, uint64_t* size) {
 	const auto path = get_internal_name(name);
 	struct stat info {};
-	if (stat(path.c_str(), &info) != 0) {
+	if (!Lumen::HostFileSystem::stat(path, info)) {
 		return false;
 	}
 	*is_file = !S_ISDIR(info.st_mode);
@@ -376,6 +389,7 @@ bool SysFileIsFileExisting(const std::filesystem::path& name) {
 }
 
 bool SysFileCreateDirectory(const std::filesystem::path& path) {
+    if (Lumen::Documents::IsMounted(path)) { errno = EROFS; return false; }
 	auto real_name     = get_internal_name(path);
 	auto real_name_str = real_name.string();
 
@@ -399,6 +413,7 @@ bool SysFileCreateDirectory(const std::filesystem::path& path) {
 }
 
 bool SysFileDeleteDirectory(const std::filesystem::path& path) {
+    if (Lumen::Documents::IsMounted(path)) { errno = EROFS; return false; }
 	auto real_name     = get_internal_name(path);
 	auto real_name_str = real_name.string();
 
@@ -406,6 +421,7 @@ bool SysFileDeleteDirectory(const std::filesystem::path& path) {
 }
 
 bool SysFileDeleteFile(const std::filesystem::path& name) {
+    if (Lumen::Documents::IsMounted(name)) { errno = EROFS; return false; }
 	auto real_name     = get_internal_name(name);
 	auto real_name_str = real_name.string();
 
@@ -428,7 +444,7 @@ SysFileTimeStruct SysFileGetLastAccessTimeUtc(const std::filesystem::path& name)
 
 	struct stat s {};
 
-	if (0 != stat(real_name_str.c_str(), &s)) {
+	if (!Lumen::HostFileSystem::stat(real_name, s)) {
 		r.is_invalid = true;
 	} else {
 		r.is_invalid = false;
@@ -447,7 +463,7 @@ SysFileTimeStruct SysFileGetLastWriteTimeUtc(const std::filesystem::path& name) 
 
 	struct stat s {};
 
-	if (0 != stat(real_name_str.c_str(), &s)) {
+	if (!Lumen::HostFileSystem::stat(real_name, s)) {
 		r.is_invalid = true;
 	} else {
 		r.is_invalid = false;
@@ -465,7 +481,7 @@ void SysFileGetLastAccessAndWriteTimeUtc(const std::filesystem::path& name, SysF
 
 	struct stat s {};
 
-	if (0 != stat(real_name_str.c_str(), &s)) {
+	if (!Lumen::HostFileSystem::stat(real_name, s)) {
 		a.is_invalid = true;
 		w.is_invalid = true;
 	} else {
@@ -505,6 +521,7 @@ void SysFileGetLastAccessAndWriteTimeUtc(sys_file_t& f, SysFileTimeStruct& a,
 }
 
 bool SysFileSetLastAccessTimeUtc(const std::filesystem::path& name, SysFileTimeStruct& access) {
+    if (Lumen::Documents::IsMounted(name)) { errno = EROFS; return false; }
 	if (access.is_invalid) {
 		return false;
 	}
@@ -514,7 +531,7 @@ bool SysFileSetLastAccessTimeUtc(const std::filesystem::path& name, SysFileTimeS
 
 	struct stat s {};
 
-	if (0 != stat(real_name_str.c_str(), &s)) {
+	if (!Lumen::HostFileSystem::stat(real_name, s)) {
 		return false;
 	}
 
@@ -539,6 +556,7 @@ bool SysFileSetLastAccessTimeUtc(const std::filesystem::path& name, SysFileTimeS
 }
 
 bool SysFileSetLastWriteTimeUtc(const std::filesystem::path& name, SysFileTimeStruct& write) {
+    if (Lumen::Documents::IsMounted(name)) { errno = EROFS; return false; }
 	if (write.is_invalid) {
 		return false;
 	}
@@ -548,7 +566,7 @@ bool SysFileSetLastWriteTimeUtc(const std::filesystem::path& name, SysFileTimeSt
 
 	struct stat s {};
 
-	if (0 != stat(real_name_str.c_str(), &s)) {
+	if (!Lumen::HostFileSystem::stat(real_name, s)) {
 		return false;
 	}
 
@@ -574,6 +592,7 @@ bool SysFileSetLastWriteTimeUtc(const std::filesystem::path& name, SysFileTimeSt
 
 bool SysFileSetLastAccessAndWriteTimeUtc(const std::filesystem::path& name,
                                          SysFileTimeStruct& access, SysFileTimeStruct& write) {
+    if (Lumen::Documents::IsMounted(name)) { errno = EROFS; return false; }
 	if (access.is_invalid || write.is_invalid) {
 		return false;
 	}
@@ -583,7 +602,7 @@ bool SysFileSetLastAccessAndWriteTimeUtc(const std::filesystem::path& name,
 
 	struct stat s {};
 
-	if (0 != stat(real_name_str.c_str(), &s)) {
+	if (!Lumen::HostFileSystem::stat(real_name, s)) {
 		return false;
 	}
 
@@ -609,6 +628,19 @@ bool SysFileSetLastAccessAndWriteTimeUtc(const std::filesystem::path& name,
 
 // Keep "." and ".." to match FindFirstFileW.
 void SysFileGetDents(const std::filesystem::path& path, std::vector<sys_dir_entry_t>& out) {
+#if defined(__ANDROID__)
+    if (Lumen::Documents::IsMounted(path)) {
+        std::error_code error;
+        const auto children = Lumen::Documents::ListEntries(path, error);
+        if (error) return;
+        out.push_back({".", false});
+        out.push_back({"..", false});
+        for (const auto& child : children)
+            out.push_back({child.name, child.is_file});
+        return;
+    }
+#endif
+
 	auto real_path = get_internal_name(path);
 
 	DIR* dir = opendir(real_path.string().c_str());
@@ -636,6 +668,7 @@ void SysFileGetDents(const std::filesystem::path& path, std::vector<sys_dir_entr
 }
 
 bool SysFileCopyFile(const std::filesystem::path& src, const std::filesystem::path& dst) {
+    if (Lumen::Documents::IsMounted(src) || Lumen::Documents::IsMounted(dst)) { errno = EROFS; return false; }
 	std::error_code error;
 	return std::filesystem::copy_file(get_internal_name(src), get_internal_name(dst),
 	                                  std::filesystem::copy_options::overwrite_existing, error) &&
@@ -643,6 +676,7 @@ bool SysFileCopyFile(const std::filesystem::path& src, const std::filesystem::pa
 }
 
 bool SysFileRenameFile(const std::filesystem::path& src, const std::filesystem::path& dst) {
+    if (Lumen::Documents::IsMounted(src) || Lumen::Documents::IsMounted(dst)) { errno = EROFS; return false; }
 	auto real_src = get_internal_name(src);
 	auto real_dst = get_internal_name(dst);
 
@@ -656,12 +690,13 @@ bool SysFileRenameFile(const std::filesystem::path& src, const std::filesystem::
 }
 
 void SysFileRemoveReadonly(const std::filesystem::path& name) {
+    if (Lumen::Documents::IsMounted(name)) return;
 	auto real_name     = get_internal_name(name);
 	auto real_name_str = real_name.string();
 
 	struct stat s {};
 
-	if (0 != stat(real_name_str.c_str(), &s)) {
+	if (!Lumen::HostFileSystem::stat(real_name, s)) {
 		return;
 	}
 

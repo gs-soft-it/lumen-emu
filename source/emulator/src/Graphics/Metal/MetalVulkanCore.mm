@@ -72,7 +72,16 @@ bool InstanceExtensionSupported(const char* name)
 #endif
 }
 
-bool DeviceExtensionSupported(const char* name)
+bool SupportsFragmentBarycentric(id<MTLDevice> device)
+{
+#if TARGET_OS_IPHONE
+	return false;
+#else
+	return device != nil && device.supportsShaderBarycentricCoordinates;
+#endif
+}
+
+bool DeviceExtensionSupported(const char* name, id<MTLDevice> device)
 {
 	return name != nullptr &&
 	       (std::strcmp(name, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0 ||
@@ -83,7 +92,9 @@ bool DeviceExtensionSupported(const char* name)
 	        std::strcmp(name, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) == 0 ||
 	        std::strcmp(name, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME) == 0 ||
 	        std::strcmp(name, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME) == 0 ||
-	        std::strcmp(name, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME) == 0);
+	        std::strcmp(name, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME) == 0 ||
+	        (std::strcmp(name, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME) == 0 &&
+	         SupportsFragmentBarycentric(device)));
 }
 
 VkDeviceSize AlignUp(VkDeviceSize value, VkDeviceSize alignment)
@@ -430,7 +441,7 @@ std::vector<VkExtensionProperties> InstanceExtensions()
 	return extensions;
 }
 
-std::vector<VkExtensionProperties> DeviceExtensions()
+std::vector<VkExtensionProperties> DeviceExtensions(id<MTLDevice> device)
 {
 	std::vector<VkExtensionProperties> extensions;
 	for (const auto* name: {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_MAINTENANCE1_EXTENSION_NAME,
@@ -443,6 +454,14 @@ std::vector<VkExtensionProperties> DeviceExtensions()
 		VkExtensionProperties extension {};
 		std::strncpy(extension.extensionName, name, sizeof(extension.extensionName) - 1);
 		extension.specVersion = 1;
+		extensions.push_back(extension);
+	}
+	if (SupportsFragmentBarycentric(device))
+	{
+		VkExtensionProperties extension {};
+		std::strncpy(extension.extensionName, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME,
+		             sizeof(extension.extensionName) - 1);
+		extension.specVersion = VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_SPEC_VERSION;
 		extensions.push_back(extension);
 	}
 	return extensions;
@@ -884,12 +903,16 @@ constexpr bool IsVertexBufferFormat(VkFormat format)
 #if !TARGET_OS_IPHONE
 		case VK_FORMAT_R8G8B8A8_SNORM:
 #endif
+		case VK_FORMAT_R16G16_UNORM:
+		case VK_FORMAT_R16G16B16A16_SFLOAT:
 		case VK_FORMAT_R16G16_SINT: return true;
 		case VK_FORMAT_R16G16B16A16_SINT: return true;
 		default: return false;
 	}
 }
 
+static_assert(IsVertexBufferFormat(VK_FORMAT_R16G16_UNORM));
+static_assert(IsVertexBufferFormat(VK_FORMAT_R16G16B16A16_SFLOAT));
 static_assert(IsVertexBufferFormat(VK_FORMAT_R16G16_SINT));
 static_assert(IsVertexBufferFormat(VK_FORMAT_R16G16B16A16_SINT));
 static_assert(IsVertexBufferFormat(VK_FORMAT_R32G32B32_SFLOAT));
@@ -1354,6 +1377,9 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physica
 				// are discarded. This does not imply robust buffer pointer access.
 				feature->robustImageAccess = [physicalDevice->metalDevice supportsFamily:MTLGPUFamilyApple1];
 			}
+			else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR)
+				reinterpret_cast<VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR*>(next)->fragmentShaderBarycentric =
+				    SupportsFragmentBarycentric(physicalDevice->metalDevice);
 			else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_ROBUSTNESS_FEATURES)
 				reinterpret_cast<VkPhysicalDeviceImageRobustnessFeatures*>(next)->robustImageAccess =
 				    [physicalDevice->metalDevice supportsFamily:MTLGPUFamilyApple1];
@@ -1611,6 +1637,8 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties2(VkPhysicalDevice physi
 			reinterpret_cast<VkPhysicalDeviceTimelineSemaphoreProperties*>(next)->maxTimelineSemaphoreValueDifference = UINT64_MAX;
 		else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR)
 			reinterpret_cast<VkPhysicalDevicePushDescriptorPropertiesKHR*>(next)->maxPushDescriptors = 128;
+		else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_PROPERTIES_KHR)
+			reinterpret_cast<VkPhysicalDeviceFragmentShaderBarycentricPropertiesKHR*>(next)->triStripVertexOrderIndependentOfProvokingVertex = VK_FALSE;
 		else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES) {
 			auto* extended = reinterpret_cast<VkPhysicalDeviceVulkan11Properties*>(next);
 			extended->subgroupSize = subgroupSize;
@@ -1686,7 +1714,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateDeviceExtensionProperties(VkPhysicalDe
 		}
 		return VK_ERROR_LAYER_NOT_PRESENT;
 	}
-	return Lumen::MetalVulkan::CopyEnumeration(DeviceExtensions(), propertyCount, properties);
+	return Lumen::MetalVulkan::CopyEnumeration(DeviceExtensions(physicalDevice->metalDevice), propertyCount, properties);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* createInfo,
@@ -1702,13 +1730,16 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, c
 	{
 		return VK_ERROR_LAYER_NOT_PRESENT;
 	}
+	bool fragmentBarycentricExtensionEnabled = false;
 	for (uint32_t index = 0; index < createInfo->enabledExtensionCount; ++index)
 	{
 		if (createInfo->ppEnabledExtensionNames == nullptr ||
-		    !DeviceExtensionSupported(createInfo->ppEnabledExtensionNames[index]))
+		    !DeviceExtensionSupported(createInfo->ppEnabledExtensionNames[index], physicalDevice->metalDevice))
 		{
 			return VK_ERROR_EXTENSION_NOT_PRESENT;
 		}
+		fragmentBarycentricExtensionEnabled |=
+		    std::strcmp(createInfo->ppEnabledExtensionNames[index], VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME) == 0;
 	}
 	if (!RequestedFeaturesSupported(createInfo->pEnabledFeatures, physicalDevice->metalDevice) ||
 	    createInfo->queueCreateInfoCount == 0 ||
@@ -1717,6 +1748,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, c
 		return VK_ERROR_FEATURE_NOT_PRESENT;
 	}
 
+	bool fragmentShaderBarycentricEnabled = false;
     for (auto* next = static_cast<const VkBaseInStructure*>(createInfo->pNext); next != nullptr; next = next->pNext) {
         if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
             if (!RequestedFeaturesSupported(&reinterpret_cast<const VkPhysicalDeviceFeatures2*>(next)->features,
@@ -1742,6 +1774,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, c
         } else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT) {
             const auto* requested = reinterpret_cast<const VkPhysicalDeviceExtendedDynamicState2FeaturesEXT*>(next);
             if (requested->extendedDynamicState2LogicOp || requested->extendedDynamicState2PatchControlPoints) return VK_ERROR_FEATURE_NOT_PRESENT;
+		} else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR) {
+			const auto* requested = reinterpret_cast<const VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR*>(next);
+			if (requested->fragmentShaderBarycentric &&
+			    (!fragmentBarycentricExtensionEnabled || !SupportsFragmentBarycentric(physicalDevice->metalDevice)))
+				return VK_ERROR_FEATURE_NOT_PRESENT;
+			fragmentShaderBarycentricEnabled = requested->fragmentShaderBarycentric != VK_FALSE;
 		} else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_ROBUSTNESS_FEATURES) {
 			const auto* requested = reinterpret_cast<const VkPhysicalDeviceImageRobustnessFeatures*>(next);
 			if (requested->robustImageAccess && ![physicalDevice->metalDevice supportsFamily:MTLGPUFamilyApple1])
@@ -1777,6 +1815,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, c
 	}
 	created->physicalDevice = physicalDevice;
 	created->metalDevice = physicalDevice->metalDevice;
+	created->fragmentShaderBarycentricEnabled = fragmentShaderBarycentricEnabled;
 	for (uint32_t index = 0; index < queueCount; ++index)
 	{
 		auto queue = std::unique_ptr<VkQueue_T>(new (std::nothrow) VkQueue_T);

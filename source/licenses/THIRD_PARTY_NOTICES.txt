@@ -119,6 +119,16 @@ the packaged license texts and toolchain notices are under
 Legal/Vulkan/turnip-mojo-bionic. No driver binary is stored in Git. The
 driver retains its own component licences and is not relicensed by Lumen.
 
+Optional Android Mali support also packages the unmodified PanVK Mali r8
+prebuilt release v1.4.0 from JimVulkan/mali-panvk, declared source commit
+d896b0a9c10b92f0f9d53ef3373006b79ed709e8. The pinned package checksum and
+complete upstream component notices are preserved in
+android/gpu-drivers/panvk/source-lock.json and NOTICE.txt. The verified
+package preparer is android/scripts/prepare-panvk.py; it places binaries
+outside the repository. APKs retain source-lock.json, NOTICE.txt and package
+metadata under Legal/Vulkan/panvk. The component terms remain applicable;
+these records do not certify reproduction of the upstream prebuilt binary.
+
 These notices do not resolve the GPL-2.0-only / Apache-2.0 issue in the PS5
 SPIRV-Tools linkage or the Gen4 FDK AAC licence compatibility issue.
 Complete corresponding source and applicable relinking/component materials

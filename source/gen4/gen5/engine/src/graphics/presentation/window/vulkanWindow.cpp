@@ -68,7 +68,6 @@ vk::PhysicalDeviceVulkan12Features WindowContext::RequiredVulkan12Features() noe
 	vk::PhysicalDeviceVulkan12Features features {};
 	features.samplerMirrorClampToEdge  = VK_TRUE;
 	features.timelineSemaphore         = VK_TRUE;
-	features.shaderOutputLayer         = VK_TRUE;
 	features.shaderOutputViewportIndex = VK_TRUE;
 	features.bufferDeviceAddress       = VK_TRUE;
 	features.storageBuffer8BitAccess   = VK_TRUE;
@@ -496,6 +495,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.fragment_shader_barycentric_enabled = false;
 	graphics.geometry_shader_enabled             = false;
 	graphics.barycentric_fallback_enabled         = false;
+	graphics.fragment_quad_control_enabled        = false;
 	EXIT_IF(physical_device == nullptr);
 	EXIT_IF(queue_family == static_cast<uint32_t>(-1));
 
@@ -587,6 +587,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		supported_min_lod.pNext = supported_features2.pNext;
 		supported_features2.pNext = &supported_min_lod;
 	}
+	const bool quad_control_extensions =
+	    HasExtension(device_extensions, VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME) &&
+	    HasExtension(device_extensions, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME);
+	vk::PhysicalDeviceShaderQuadControlFeaturesKHR supported_quad_control {};
+	vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR supported_maximal_reconvergence {};
+	if (quad_control_extensions) {
+		supported_quad_control.pNext = supported_features2.pNext;
+		supported_maximal_reconvergence.pNext = &supported_quad_control;
+		supported_features2.pNext = &supported_maximal_reconvergence;
+	}
 	physical_device.getFeatures2(&supported_features2);
 	image_view_min_lod.minLod = supported_min_lod.minLod;
 	graphics.image_view_min_lod_enabled = image_view_min_lod.minLod;
@@ -606,6 +616,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.shader_image_int64_atomics_enabled = image_atomic_int64.shaderImageInt64Atomics;
 
 	auto features12 = WindowContext::RequiredVulkan12Features();
+	// Layer export is needed only by modules that actually declare/use it.
+	features12.shaderOutputLayer = supported_features12.shaderOutputLayer;
+	graphics.shader_output_layer_enabled = features12.shaderOutputLayer == VK_TRUE;
 	// Buffer atomics are required by particular shaders, not by every game.
 	// Preserve native 64-bit atomic semantics only when the device supports them.
 	features12.shaderBufferInt64Atomics = supported_features12.shaderBufferInt64Atomics;
@@ -644,6 +657,11 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	physical_device.getProperties2(&properties2);
 	EXIT_NOT_IMPLEMENTED(!(properties11.subgroupSupportedOperations & vk::SubgroupFeatureFlagBits::eVote));
 
+	const bool enable_fragment_quad_control = quad_control_extensions &&
+	    supported_quad_control.shaderQuadControl == VK_TRUE &&
+	    supported_maximal_reconvergence.shaderMaximalReconvergence == VK_TRUE &&
+	    bool(properties11.subgroupSupportedStages & vk::ShaderStageFlagBits::eFragment) &&
+	    bool(properties11.subgroupSupportedOperations & vk::SubgroupFeatureFlagBits::eQuad);
 	graphics.subgroup_size                 = properties11.subgroupSize;
 	graphics.min_subgroup_size             = subgroup_size_control.minSubgroupSize;
 	graphics.max_subgroup_size             = subgroup_size_control.maxSubgroupSize;
@@ -734,9 +752,6 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	// }
 
 	vk::PhysicalDeviceRobustness2FeaturesEXT robustness2 {};
-#if defined(__APPLE__)
-	robustness2.pNext = &features12;
-#else
 	vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR fragment_barycentric {};
 	if (barycentric_supported) {
 		fragment_barycentric.pNext                     = &features12;
@@ -745,7 +760,6 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	} else {
 		robustness2.pNext = &features12;
 	}
-#endif
 	robustness2.robustBufferAccess2 = supported_robustness2.robustBufferAccess2;
 	robustness2.robustImageAccess2  = supported_robustness2.robustImageAccess2;
 	robustness2.nullDescriptor = HasExtension(device_extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)
@@ -806,6 +820,15 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		maintenance8.pNext = const_cast<void*>(create_info.pNext);
 		create_info.pNext = &maintenance8;
 	}
+	vk::PhysicalDeviceShaderQuadControlFeaturesKHR quad_control {};
+	vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR maximal_reconvergence {};
+	if (enable_fragment_quad_control) {
+		quad_control.shaderQuadControl = VK_TRUE;
+		maximal_reconvergence.shaderMaximalReconvergence = VK_TRUE;
+		quad_control.pNext = const_cast<void*>(create_info.pNext);
+		maximal_reconvergence.pNext = &quad_control;
+		create_info.pNext = &maximal_reconvergence;
+	}
 	create_info.pQueueCreateInfos       = &queue_create_info;
 	create_info.queueCreateInfoCount    = 1;
 	create_info.enabledExtensionCount   = static_cast<uint32_t>(device_extensions.size());
@@ -820,10 +843,11 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		return nullptr;
 	}
 	// Record the feature actually enabled in the successful device-create chain.
+	graphics.fragment_quad_control_enabled = enable_fragment_quad_control;
+	LOGF("Vulkan fragment quad control and maximal reconvergence: %s\n",
+	     graphics.fragment_quad_control_enabled ? "enabled" : "unavailable");
 	graphics.shader_buffer_int64_atomics_enabled = features12.shaderBufferInt64Atomics == VK_TRUE;
-#if !defined(__APPLE__)
 	graphics.fragment_shader_barycentric_enabled = barycentric_supported;
-#endif
 	graphics.geometry_shader_enabled = device_features.geometryShader == VK_TRUE;
 #if defined(__ANDROID__) && defined(LUMEN_PS5_DIRECT_FEX)
 	graphics.barycentric_fallback_enabled = enable_barycentric_fallback;
@@ -1252,6 +1276,14 @@ void WindowContext::CreateVulkan() {
 			if (HasExtension(available_extensions, extension)) {
 				device_extensions.push_back(extension);
 			}
+		}
+		// Both dependencies are required. Vulkan 1.2 supplies the memory-model
+		// extension dependency; the shader memory-model feature itself is not used.
+		if (device_properties.apiVersion >= VK_API_VERSION_1_2 &&
+		    HasExtension(available_extensions, VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME) &&
+		    HasExtension(available_extensions, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME)) {
+			device_extensions.push_back(VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME);
+			device_extensions.push_back(VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME);
 		}
 		if (HasExtension(available_extensions, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
 		    HasExtension(available_extensions, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME)) {

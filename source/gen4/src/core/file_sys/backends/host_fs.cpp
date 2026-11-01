@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include <chrono>
 #include <fstream>
 #include <system_error>
@@ -65,11 +66,32 @@ bool HostFile::IsOpen() const {
 }
 
 void HostFile::Stat(FileStat& out) {
+#if defined(__ANDROID__)
+    if (Lumen::Documents::IsMounted(m_path)) {
+        // The provider has already admitted this descriptor. fstat must describe
+        // that open file, without walking its document path again for timestamps.
+        out = {};
+        struct stat st{};
+        if (::fstat(m_file.GetNativeDescriptor(), &st) != 0 ||
+            !S_ISREG(st.st_mode) || st.st_size < 0) {
+            return;
+        }
+        out.size = static_cast<u64>(st.st_size);
+        out.is_directory = false;
+        out.mtime_sec = static_cast<s64>(st.st_mtim.tv_sec);
+        out.mtime_nsec = static_cast<s64>(st.st_mtim.tv_nsec);
+        out.atime_sec = static_cast<s64>(st.st_atim.tv_sec);
+        out.atime_nsec = static_cast<s64>(st.st_atim.tv_nsec);
+        out.ctime_sec = static_cast<s64>(st.st_ctim.tv_sec);
+        out.ctime_nsec = static_cast<s64>(st.st_ctim.tv_nsec);
+        return;
+    }
+#endif
     out.size = Size();
     out.is_directory = false;
 #if defined(__linux__) || defined(__FreeBSD__)
     struct stat st = {};
-    if (::stat(m_path.string().c_str(), &st) == 0) {
+    if (Lumen::HostFileSystem::stat(m_path, st)) {
         out.mtime_sec = static_cast<s64>(st.st_mtim.tv_sec);
         out.mtime_nsec = static_cast<s64>(st.st_mtim.tv_nsec);
         out.atime_sec = static_cast<s64>(st.st_atim.tv_sec);
@@ -106,12 +128,27 @@ void HostFile::Stat(FileStat& out) {
 }
 
 HostDirectory::HostDirectory(const std::filesystem::path& root) : m_root(root) {
+    if (Lumen::Documents::IsMounted(root)) {
+        std::error_code error;
+        m_documents = Lumen::HostFileSystem::directory_paths(root, error);
+        m_valid = !error;
+        return;
+    }
     std::error_code ec;
     m_it = std::filesystem::directory_iterator(m_root, ec);
     m_end = std::filesystem::directory_iterator{};
 }
 
 bool HostDirectory::Next(DirEntry& out) {
+    if (Lumen::Documents::IsMounted(m_root)) {
+        if (m_document_index >= m_documents.size()) return false;
+        const auto& path = m_documents[m_document_index++];
+        std::error_code error;
+        out.name = path.filename().string();
+        out.is_directory = Lumen::HostFileSystem::is_directory(path, error);
+        out.size = out.is_directory ? 0 : Lumen::HostFileSystem::file_size(path, error);
+        return !error;
+    }
     if (m_it == m_end) {
         return false;
     }
@@ -127,6 +164,7 @@ bool HostDirectory::Next(DirEntry& out) {
 }
 
 void HostDirectory::Rewind() {
+    if (Lumen::Documents::IsMounted(m_root)) { m_document_index = 0; return; }
     std::error_code ec;
     m_it = std::filesystem::directory_iterator(m_root, ec);
 }
@@ -140,11 +178,12 @@ std::filesystem::path HostFsBackend::Resolve(std::string_view rel_path) const {
     }
     std::filesystem::path direct = m_root;
     direct /= rel_path;
+    if (Lumen::Documents::IsMounted(m_root)) return direct;
     if constexpr (!NeedsCaseInsensitiveSearch) {
         return direct;
     } else {
         std::error_code ec;
-        if (std::filesystem::exists(direct, ec)) {
+        if (Lumen::HostFileSystem::exists(direct, ec)) {
             return direct;
         }
         return ResolveCaseInsensitive(rel_path).value_or(std::move(direct));
@@ -175,7 +214,7 @@ std::optional<std::filesystem::path> HostFsBackend::ResolveCaseInsensitive(
         }
 
         if (std::filesystem::path candidate = current / part_str;
-            std::filesystem::exists(candidate, ec)) {
+            Lumen::HostFileSystem::exists(candidate, ec)) {
             current = std::move(candidate);
             m_case_cache.emplace(prefix, current);
             continue;
@@ -202,12 +241,12 @@ std::optional<std::filesystem::path> HostFsBackend::ResolveCaseInsensitive(
 
 bool HostFsBackend::Exists(std::string_view rel_path) {
     std::error_code ec;
-    return std::filesystem::exists(Resolve(rel_path), ec);
+    return Lumen::HostFileSystem::exists(Resolve(rel_path), ec);
 }
 
 bool HostFsBackend::IsDirectory(std::string_view rel_path) {
     std::error_code ec;
-    return std::filesystem::is_directory(Resolve(rel_path), ec);
+    return Lumen::HostFileSystem::is_directory(Resolve(rel_path), ec);
 }
 
 std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
@@ -218,7 +257,7 @@ std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
     }
     const auto path = Resolve(rel_path);
     std::error_code ec;
-    if (mode != Common::FS::FileAccessMode::Create && !std::filesystem::is_regular_file(path, ec)) {
+    if (mode != Common::FS::FileAccessMode::Create && !Lumen::HostFileSystem::is_regular_file(path, ec)) {
         return nullptr;
     }
     auto handle = std::make_unique<HostFile>(path, mode, m_read_only || !writable);
@@ -231,20 +270,21 @@ std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
 std::unique_ptr<IDirectory> HostFsBackend::OpenDir(std::string_view rel_path) {
     const auto path = Resolve(rel_path);
     std::error_code ec;
-    if (!std::filesystem::is_directory(path, ec)) {
+    if (!Lumen::HostFileSystem::is_directory(path, ec)) {
         return nullptr;
     }
-    return std::make_unique<HostDirectory>(path);
+    auto directory = std::make_unique<HostDirectory>(path);
+    return directory->Valid() ? std::move(directory) : nullptr;
 }
 
 std::optional<std::vector<u8>> HostFsBackend::ReadFile(std::string_view rel_path) const {
     const std::filesystem::path full_path = m_root / rel_path;
     std::error_code ec;
-    if (!std::filesystem::is_regular_file(full_path, ec) || ec) {
+    if (!Lumen::HostFileSystem::is_regular_file(full_path, ec) || ec) {
         return std::nullopt;
     }
 
-    std::ifstream in(full_path, std::ios::binary | std::ios::ate);
+    Lumen::HostFileSystem::InputStream in(full_path, std::ios::binary | std::ios::ate);
     if (!in.is_open()) {
         return std::nullopt;
     }

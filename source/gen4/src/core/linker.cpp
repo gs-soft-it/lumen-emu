@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include "common/alignment.h"
 #include "common/arch.h"
 #include "common/assert.h"
@@ -776,7 +777,7 @@ s32 Linker::LoadModuleLocked(const std::filesystem::path& elf_name, bool is_dyna
         handle = mnt->Open(as_guest, /*writable=*/false);
     }
     if (!handle) {
-        if (!std::filesystem::exists(elf_name)) {
+        if (!Lumen::HostFileSystem::exists(elf_name)) {
             LOG_ERROR(Core_Linker, "Provided file {} does not exist", elf_name.string());
             return -1;
         }
@@ -790,7 +791,7 @@ s32 Linker::LoadModuleLocked(const std::filesystem::path& elf_name, bool is_dyna
     }
     auto module = std::make_unique<Module>(memory, elf_name, std::move(handle), max_tls_index);
 #else
-    if (!std::filesystem::exists(elf_name)) {
+    if (!Lumen::HostFileSystem::exists(elf_name)) {
         LOG_ERROR(Core_Linker, "Provided file {} does not exist", elf_name.string());
         return -1;
     }

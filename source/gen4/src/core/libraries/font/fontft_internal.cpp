@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "host/DocumentFileSystem.h"
 #include "core/libraries/font/fontft_internal.h"
 
 #include "core/guest_cpu/guest_callback.h"
@@ -3101,12 +3102,35 @@ s32 PS4_SYSV_ABI LibraryOpenFontMemoryStub(void* library, u32 mode, const void* 
                 continue;
             }
 
-            if (!std::filesystem::exists(cand_path, ec) || ec) {
+            if (!Lumen::HostFileSystem::exists(cand_path, ec) || ec) {
                 continue;
             }
             attempted_open = true;
-            ft_err =
-                FT_New_Face(ctx->ft_lib, cand.c_str(), static_cast<FT_Long>(subFontIndex), &face);
+            if (Lumen::Documents::IsMounted(cand_path)) {
+                auto bytes = std::make_shared<std::vector<unsigned char>>();
+                Lumen::HostFileSystem::InputStream input(cand_path, std::ios::binary | std::ios::ate);
+                const auto length = input.tellg();
+                if (!input || length <= 0 || length > std::numeric_limits<u32>::max()) {
+                    last_ft_err = FT_Err_Cannot_Open_Resource;
+                    continue;
+                }
+                bytes->resize(static_cast<size_t>(length));
+                input.seekg(0);
+                if (!input.read(reinterpret_cast<char*>(bytes->data()), length)) {
+                    last_ft_err = FT_Err_Cannot_Open_Resource;
+                    continue;
+                }
+                ft_err = FT_New_Memory_Face(ctx->ft_lib, bytes->data(),
+                                            static_cast<FT_Long>(bytes->size()),
+                                            static_cast<FT_Long>(subFontIndex), &face);
+                if (!ft_err && face) {
+                    shared_data = bytes;
+                    data = bytes->data();
+                    size = static_cast<u32>(bytes->size());
+                }
+            } else {
+                ft_err = FT_New_Face(ctx->ft_lib, cand.c_str(), static_cast<FT_Long>(subFontIndex), &face);
+            }
             last_ft_err = ft_err;
             if (ft_err == 0 && face) {
                 break;

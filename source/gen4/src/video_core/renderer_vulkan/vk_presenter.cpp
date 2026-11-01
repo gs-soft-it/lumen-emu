@@ -1218,34 +1218,6 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 }
 
 bool Presenter::Present(Frame* frame, bool is_reusing_frame) {
-    static std::atomic_uint32_t present_traces{};
-    const u32 trace_id = present_traces.fetch_add(1, std::memory_order_relaxed);
-
-    // LumenHost diagnostics: dump the guest output buffer every N presents when
-    // the file <UserDir>/auto_shot_every exists (device black-screen triage;
-    // env vars cannot be injected into the app-spawned runtime).
-    static const u32 shot_every = [] {
-        std::error_code ec;
-        const auto shot_flag =
-            Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "auto_shot_every";
-        if (std::filesystem::exists(shot_flag, ec)) {
-            Common::FS::IOFile f(shot_flag, Common::FS::FileAccessMode::Read);
-            std::array<char, 16> buf{};
-            const auto n = f.ReadRaw<char>(buf.data(), buf.size() - 1);
-            buf[n] = '\0';
-            const u32 v = std::strtoul(buf.data(), nullptr, 10);
-            LOG_INFO(Render_Vulkan, "LUMEN_HOST_AUTO_SHOT every={} presents", v);
-            return v;
-        }
-        return 0u;
-    }();
-    if (shot_every > 0 && trace_id > 0 && trace_id % shot_every == 0) {
-        VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);
-        VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::WithOverlays);
-    }
-    // Log first 64, then every 16th, always around suspected 32-present boundary.
-    const bool trace = trace_id < 64 || (trace_id % 16u) == 0u ||
-                       (trace_id >= 28 && trace_id <= 40);
     // Free the frame for reuse
     const auto free_frame = [&] {
         if (!is_reusing_frame) {
@@ -1274,28 +1246,12 @@ bool Presenter::Present(Frame* frame, bool is_reusing_frame) {
             return false;
         }
     }
-    if (trace) {
-        LOG_INFO(Render_Vulkan, "LUMEN_HOST_PRESENT_TRACE id={} stage=acquire_done", trace_id);
-        LOG_INFO(Render_Vulkan,
-                 "FRAME_SLOT_ACQUIRE presentId={} slot={} frameW={} frameH={} "
-                 "swapchainFrameIndex={} swapchainImageCount={} readyTick={}",
-                 trace_id, frame ? int(frame->id) : -1, frame ? frame->width : 0,
-                 frame ? frame->height : 0, swapchain.GetFrameIndex(), swapchain.GetImageCount(),
-                 frame ? frame->ready_tick : 0);
-    }
-
     // Reset fence for queue submission. Do it here instead of GetRenderFrame() because we may
     // skip frame because of slow swapchain recreation. If a frame skip occurs, we skip signal
     // the frame's present fence and future GetRenderFrame() call will hang waiting for this frame.
     const auto reset_result = instance.GetDevice().resetFences(frame->present_done);
     if (reset_result == vk::Result::eErrorDeviceLost) {
         LOG_CRITICAL(Render_Vulkan, "Device lost while resetting present done fence");
-        static std::atomic<bool> device_lost_snapshot_logged{false};
-        if (!device_lost_snapshot_logged.exchange(true)) {
-            LOG_CRITICAL(Render_Vulkan,
-                         "DEVICE_LOST_SNAPSHOT where=resetPresentFence presentId={} slot={}",
-                         trace_id, frame ? int(frame->id) : -1);
-        }
         free_frame();
         return false;
     }
@@ -1506,20 +1462,12 @@ bool Presenter::Present(Frame* frame, bool is_reusing_frame) {
     info.AddSignal(swapchain.GetPresentReadySemaphore());
     info.AddSignal(frame->present_done);
     scheduler.Flush(info);
-    if (trace) {
-        LOG_INFO(Render_Vulkan, "LUMEN_HOST_PRESENT_TRACE id={} stage=flush_done", trace_id);
-    }
-
     // Present to swapchain. Only an accepted present can count as a benchmark
     // frame; callers that redraw a cached frame do not feed the benchmark.
     bool presented = false;
     {
         std::scoped_lock submit_lock{Scheduler::submit_mutex};
         presented = swapchain.Present();
-        if (trace) {
-            LOG_INFO(Render_Vulkan, "LUMEN_HOST_PRESENT_TRACE id={} stage=present_done ok={}", trace_id,
-                     presented);
-        }
         if (!presented) {
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
         }
@@ -1555,16 +1503,6 @@ Frame* Presenter::GetRenderFrame() {
 
     const vk::Device device = instance.GetDevice();
     vk::Result result{};
-
-    static std::atomic_uint32_t get_frame_traces{};
-    const u32 get_id = get_frame_traces.fetch_add(1, std::memory_order_relaxed);
-    if (get_id < 64 || (get_id % 16u) == 0u || (get_id >= 28 && get_id <= 40)) {
-        LOG_INFO(Render_Vulkan,
-                 "GET_RENDER_FRAME_WAIT frameGetId={} slot={} poolSize={} freeRemaining={} "
-                 "readyTick={} (before waitForFences)",
-                 get_id, frame ? int(frame->id) : -1, present_frames.size(), free_queue.size(),
-                 frame ? frame->ready_tick : 0);
-    }
 
     const u64 timeout_ns = AmdGpu::PresentFenceTimeoutNs(
         liverpool && liverpool->IsGpuThread(), liverpool && liverpool->InGfxTask());

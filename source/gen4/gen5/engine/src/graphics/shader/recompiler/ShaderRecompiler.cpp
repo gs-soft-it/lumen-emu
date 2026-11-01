@@ -12,6 +12,9 @@
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
 #include "graphics/shader/recompiler/ir/passes/ReadLaneElimination.h"
+#include "graphics/shader/recompiler/ir/passes/NggVertexEligibility.h"
+#include "graphics/shader/recompiler/ir/passes/UniformConditionRef.h"
+#include "graphics/shader/recompiler/ir/passes/RasterQuadPartition.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
 #include "graphics/shader/recompiler/ir/passes/ShaderInfoCollection.h"
@@ -873,8 +876,14 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	ir.value_storage.clear();
 	IR::RemoveIdentities(ir);
 	IR::EliminateDeadCode(ir.blocks);
+	IR::LowerNggVertexEligibility(ir);
+	IR::FoldUniformConditionRefs(ir);
 
 	IR::CollectShaderInfo(ir, options.input_info);
+	ir.info.fragment_quad_partitioned = false;
+	if (options.fragment_quad_control_enabled) {
+		ir.info.fragment_quad_partitioned = IR::AnalyzeRasterQuadPartition(ir).admitted;
+	}
 	std::string ir_dump;
 	if (options.dump_ir) {
 		ir_dump = MakeIrDump(translated.cfg_dump, ir);

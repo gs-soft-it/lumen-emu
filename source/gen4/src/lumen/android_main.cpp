@@ -16,8 +16,16 @@
 
 extern "C" __attribute__((visibility("default"))) int LumenAndroidGen4MainV1(int argc, char** argv) {
     try {
-        if ((argc != 10 && argc != 11) || !argv) throw std::runtime_error("Invalid Android PS4 launch arguments");
+        if ((argc != 10 && argc != 11 && argc != 12) || !argv)
+            throw std::runtime_error("Invalid Android PS4 launch arguments");
         for (int i = 1; i < argc; ++i) if (!argv[i]) throw std::runtime_error("Missing Android PS4 launch argument");
+        // Legacy benchmark callers append only the marker. New callers append
+        // the explicit driver route, then the marker when running the benchmark.
+        const bool legacy_benchmark = argc == 11 && std::strcmp(argv[10], "succi-demo-v2") == 0;
+        const bool benchmark = legacy_benchmark || argc == 12;
+        const char* loader = argc >= 11 && !legacy_benchmark ? argv[10] : "";
+        if (argc == 12 && std::strcmp(argv[11], "succi-demo-v2") != 0)
+            throw std::runtime_error("Invalid Android PS4 benchmark mode");
         Lumen::Gen4::SessionOptions options;
         options.root = argv[1]; options.data = argv[2];
         const auto dimension = [](const char* text, unsigned& number, unsigned minimum, unsigned maximum) {
@@ -32,17 +40,20 @@ extern "C" __attribute__((visibility("default"))) int LumenAndroidGen4MainV1(int
         if (std::strcmp(argv[7], "eboot-only") && std::strcmp(argv[7], "known-system"))
             throw std::runtime_error("Invalid PS4 module policy");
         options.known_system = std::strcmp(argv[7], "known-system") == 0;
+#ifdef NDEBUG
+        constexpr bool diagnostics = false;
+#else
         const bool diagnostics = std::strcmp(argv[5], "1") == 0;
+#endif
         Vulkan::DrawDiagnostic::Configure(diagnostics);
         options.shader_dump = diagnostics;
-        if (argc == 11) {
-            if (std::strcmp(argv[10], "succi-demo-v2") != 0)
-                throw std::runtime_error("Invalid Android PS4 benchmark mode");
+        if (benchmark) {
             const char* storage = SDL_GetAndroidInternalStoragePath();
             Lumen::Gen4::SucciBenchmark::ValidateLaunch(options, storage ? storage : "");
         }
         std::string error;
         if (!Lumen::Gen4::ValidateContent(options, error)) throw std::runtime_error(error);
+#ifndef NDEBUG
         if (const auto* enabled = std::getenv("LUMEN_HOST_CRASH_REGISTERS");
             enabled && std::strcmp(enabled, "1") == 0) {
             const auto path = options.data / "android-runtime-crash.log";
@@ -57,8 +68,9 @@ extern "C" __attribute__((visibility("default"))) int LumenAndroidGen4MainV1(int
             std::setvbuf(stderr, nullptr, _IONBF, 0);
             __android_log_print(ANDROID_LOG_INFO, "LumenGen4", "Crash diagnostics: %s", path.c_str());
         }
+#endif
         const LumenAndroidVulkanHost host{SDL_GetAndroidInternalStoragePath, SDL_GetAndroidJNIEnv, SDL_GetAndroidActivity};
-        if (!LumenAndroidConfigureVulkanDriver("PS4", argv[8], argv[9], host))
+        if (!LumenAndroidConfigureVulkanDriver("PS4", argv[8], argv[9], host, loader))
             throw std::runtime_error(LumenAndroidVulkanDriverError());
         return Lumen::Gen4::RunSession(options);
     } catch (const std::exception& error) {

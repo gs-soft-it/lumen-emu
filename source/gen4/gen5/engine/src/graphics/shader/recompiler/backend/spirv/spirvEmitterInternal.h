@@ -110,6 +110,7 @@ struct EmitterState {
 	uint32_t                                         tess_patch_base     = 0;
 
 	uint32_t                                         lane_count              = 1;
+	uint32_t                                         lane_width              = 32;
 	uint32_t                                         lane_half               = 0;
 	std::array<BufferDefinition, 4>                  storage_buffers {};
 	std::vector<uint32_t>                           memory_byte_offsets;
@@ -129,7 +130,7 @@ struct EmitterState {
 	uint32_t                                         lds_base_dwords         = 0;
 	uint32_t                                         lds_variable            = 0;
 	uint32_t                                         lds_u64_variable        = 0;
-	std::array<uint32_t, 2>                          scratch_variable {};
+	std::array<uint32_t, 4>                          scratch_variable {};
 	std::array<ImageDefinition, IR::ImageBindingCount> images {};
 	uint32_t                   sampler_variable                      = 0;
 	uint32_t                   sampler_type                          = 0;
@@ -250,9 +251,13 @@ struct ValueEmitContext {
 	uint32_t              Arg(const IR::Inst& inst, size_t index);
 	uint32_t              HalfArg(const IR::Inst& inst, size_t index, uint32_t half);
 	uint32_t              Ballot(IR::Value predicate);
+	uint32_t              BallotValues(const std::array<uint32_t, 4>& predicates);
+	ValueEmitContext&     Lane(uint32_t index) { return lanes[index]; }
 	uint32_t              FirstLane(uint32_t ballot);
 	uint32_t              Shuffle(const IR::Inst& inst, size_t index, uint32_t lane);
 	uint32_t              Result(const IR::Inst& inst);
+	uint32_t              Definition(const IR::Inst& inst) const;
+	void                  SetDefinition(const IR::Inst& inst, uint32_t value);
 	uint32_t              Define(const IR::Inst& inst, uint32_t value);
 	uint32_t              ResourceIndex(IR::Value value, IR::ValueOpcode opcode);
 	const IR::Inst*       ImageAddress(IR::Value value);
@@ -264,8 +269,11 @@ struct ValueEmitContext {
 	EmitterState&                                                      state;
 	const std::unordered_map<const IR::Inst*, uint32_t>*               dispatcher_spills = nullptr;
 	std::unordered_map<const IR::Inst*, std::pair<uint32_t, uint32_t>> dispatcher_block_loads;
+	// Only subgroup16 wave64 needs extra SSA IDs. Keep the common IR::Inst
+	// layout and allocation cost unchanged for existing native32/64 paths.
+	std::unordered_map<const IR::Inst*, uint32_t>                      extra_definitions;
 	uint32_t                                                           scratch_u32_variable = 0;
-	ValueEmitContext*                                                  other_half = nullptr;
+	ValueEmitContext*                                                  lanes      = nullptr;
 	uint32_t                                                           half       = 0;
 };
 
@@ -308,6 +316,9 @@ uint32_t VertexParameterScalarType(EmitterState& state, VertexInputScalarKind ki
 
 
 uint32_t OutputVariableForExport(const EmitterState& state, const IR::ExportInfo& exp);
+Prospero::TextureNumericClass MrtOutputNumericClass(const EmitterState& state,
+                                                   const IR::ExportInfo& exp);
+uint32_t ExportVectorType(EmitterState& state, const IR::ExportInfo& exp);
 
 uint32_t ConstantU32(EmitterState& state, uint32_t value);
 

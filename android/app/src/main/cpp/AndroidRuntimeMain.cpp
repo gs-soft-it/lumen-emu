@@ -401,7 +401,7 @@ int LumenAndroidSdlMainV1(int argc, char** argv)
         "LUMEN_ANDROID_RUNTIME_CPU_V1 jit=%u guestNative=disabled",
         runtimeCapabilities.jitEnabled);
 #endif
-    if (argc != 10 || argv == nullptr)
+    if ((argc != 10 && argc != 11) || argv == nullptr)
     {
         __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
                             "LUMEN_ANDROID_RUNTIME_LAUNCH_V1 FAIL argc=%d",
@@ -419,7 +419,7 @@ int LumenAndroidSdlMainV1(int argc, char** argv)
         }
     }
 
-    if (!LumenAndroidPs4ConfigureVulkanDriver(argv[8], argv[9]))
+    if (!LumenAndroidPs4ConfigureVulkanDriver(argv[8], argv[9], argc == 11 ? argv[10] : ""))
     {
         __android_log_write(ANDROID_LOG_ERROR, LOG_TAG,
             "LUMEN_ANDROID_RUNTIME_LAUNCH_V1 FAIL vulkan-driver fallback=denied");

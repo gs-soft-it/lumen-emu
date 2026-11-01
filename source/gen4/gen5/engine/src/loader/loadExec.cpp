@@ -19,6 +19,10 @@
 #elif defined(__linux__)
 #include <linux/close_range.h>
 #include <unistd.h>
+#if defined(__ANDROID__)
+#include <android/api-level.h>
+#include <sys/syscall.h>
+#endif
 #endif
 
 namespace Emulator {
@@ -178,7 +182,21 @@ int LoadExec(const char* path, const char* const argv[]) {
 	}
 	environment.push_back(relaunched_entry.data());
 	environment.push_back(nullptr);
-	if (close_range(3, ~0u, CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) == 0) {
+#if defined(__ANDROID__)
+	// API33 cannot import close_range (added in API34), and its app seccomp
+	// policy may reject the raw syscall. Preserve the failure path there; an
+	// fd-by-fd fallback cannot reproduce atomic UNSHARE/CLOEXEC safely.
+	int close_result = -1;
+	if (android_get_device_api_level() >= 34) {
+		close_result = static_cast<int>(
+		    syscall(SYS_close_range, 3u, ~0u, CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC));
+	} else {
+		errno = ENOSYS;
+	}
+#else
+	const int close_result = close_range(3, ~0u, CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC);
+#endif
+	if (close_result == 0) {
 		execvpe(host_argv[0], host_argv.data(), environment.data());
 	}
 	LOGF("LoadExec failed: %s\n", std::strerror(errno));

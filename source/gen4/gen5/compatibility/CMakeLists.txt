@@ -1,3 +1,4 @@
+include_directories("${CMAKE_CURRENT_LIST_DIR}/../../..")
 # Lumen modifications, 2026-10-02: isolated native ARM64/FEX integration.
 cmake_minimum_required(VERSION 3.18...4.3)
 
