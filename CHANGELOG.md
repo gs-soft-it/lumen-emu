@@ -4,6 +4,10 @@
 
 1 November 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab)
 
+### Package update — 1 November 2026
+
+Fixed a bug with the controller.
+
 ### Highlights
 
 - **Massive loading speedup, especially on PS5:** restored direct filesystem access to local ROM folders, shared by PS4 and PS5. The tested PS5 startup scenario showed substantially shorter initial loading delays.
@@ -27,7 +31,7 @@ The initial Ulefone Note 16 Pro / Unisoc T606 / Mali-G57 MC1 tests reached the S
 
 ### Updated public core
 
-The public core snapshot is refreshed from source revision `b9cde237`, including the native document-filesystem bridge, current PS4/PS5 runtime and shader changes, Android API 33 FEX support, tests and provenance records. Existing public build adaptations and licence notices are preserved. Dashboard, Android Java/resources and application packaging remain outside the core repository; their changes are included in the APK.
+The original 0.1.6 public core snapshot was refreshed from source revision `b9cde237`, including the native document-filesystem bridge, current PS4/PS5 runtime and shader changes, Android API 33 FEX support, tests and provenance records. Existing public build adaptations and licence notices are preserved. Dashboard, Android Java/resources and application packaging remain outside the core repository; their changes are included in the APK. The later controller package update does not change this native source snapshot.
 
 ### Android package
 
@@ -41,19 +45,19 @@ The public core snapshot is refreshed from source revision `b9cde237`, including
 SHA-256:
 
 ```text
-a09143884c7a2ee53b6dd49ecf9bb81e82ea8586f7f3aff8b838ded97208c105
+ea30e363fd205d7bac7c35d94125b5f83e09a197158d6bc3913f20315a0ae7fb
 ```
 
 ### Verification
 
 The signed APK and AAB Release builds passed identity, signing-continuity and packaging checks, including bundletool validation and 16 KiB native alignment. Both contain the same native libraries, all three pinned graphics drivers and all 45 expected licence/provenance files. The native PS4/PS5 APK audit and 25 JVM Release tests for hardware detection, driver choices, defaults and preserved preferences passed.
 
-The earlier adopted source baseline had 30 passing JVM tests (3 existing skips) and 14 passing Android instrumentation tests; those results are reused for the unchanged paths. This release adds the driver-selection and packaging changes described above. No new installation, gameplay run or FPS benchmark was performed on the exact signed packages, and the new Mali defaults were not tested on a connected Mali device. Alignment alone does not establish runtime compatibility with a 16 KiB-page Android device.
+The earlier adopted source baseline had 30 passing JVM tests (3 existing skips) and 14 passing Android instrumentation tests; those results are reused for the unchanged paths. The updated packages passed the current signing and native-packaging checks. No new FPS benchmark or connected-Mali validation is claimed. Alignment alone does not establish runtime compatibility with a 16 KiB-page Android device.
 
 AAB SHA-256:
 
 ```text
-8a466c425b719b80ea07da654999e57d91fe5e7ec587ec5e5e8e8c14158b7f02
+0095c9c5d3abf6e85ed0260f68af07cf3e86c5ace58513e5d56eb7873ac470ad
 ```
 
 

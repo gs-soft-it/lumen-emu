@@ -462,17 +462,17 @@
     "version_name": "0.1.6-spike-fexlab",
     "version_code": 7,
     "file": "lumenemu-0.1.6-spike-fexlab-v7.apk",
-    "sha256": "a09143884c7a2ee53b6dd49ecf9bb81e82ea8586f7f3aff8b838ded97208c105",
-    "bytes": 59490392,
+    "sha256": "ea30e363fd205d7bac7c35d94125b5f83e09a197158d6bc3913f20315a0ae7fb",
+    "bytes": 59491816,
     "minimum_android_api": 33,
     "release_url": "https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab",
-    "rebuilt_for_publication": true,
+    "rebuilt_for_publication": false,
     "application_sources_included": false,
-    "artifact_status": "Verified final APK and AAB with packaged Banners, Mojo/Bionic and PanVK; corresponding application sources remain excluded from this core-only export.",
+    "artifact_status": "Updated verified APK and AAB with a controller fix; signed for GitHub distribution. The native source snapshot is unchanged and does not include this later fix. Application sources remain excluded.",
     "bundle": {
       "file": "lumenemu-0.1.6-spike-fexlab-v7.aab",
-      "sha256": "8a466c425b719b80ea07da654999e57d91fe5e7ec587ec5e5e8e8c14158b7f02",
-      "bytes": 106210783
+      "sha256": "0095c9c5d3abf6e85ed0260f68af07cf3e86c5ace58513e5d56eb7873ac470ad",
+      "bytes": 106212766
     },
     "packaged_vulkan_drivers": {
       "turnip-mojo-bionic": "db643e03427f253b9e74304a8b71c4279a2c27fcce85e0adcee51a47c7e9c577",
@@ -480,7 +480,15 @@
       "panvk": "5150d3234b5ff24dae40888eae6347c9e193483fbfabe063649fd6d21d5de624"
     },
     "apk_bundle_driver_assets_identical": true,
-    "verification": "Release build, APK native/signature/alignment audit, AAB bundletool/signature checks and 25 JVM driver selection tests passed. No new device installation or gameplay validation was performed."
+    "verification": "Existing Release APK/AAB build, signing, native packaging, bundletool and alignment checks passed.",
+    "package_update": {
+      "date": "2026-11-01",
+      "notes": "Fixed a bug with the controller.",
+      "replaces_previous_assets": true,
+      "version_code_unchanged": true,
+      "native_source_snapshot_commit": "861f18209a7122d0b80b82847247eb7bd178b684",
+      "native_source_snapshot_includes_this_fix": false
+    }
   },
   "merged_public_adaptation_paths": [
     "android/app/src/main/cpp/CMakeLists.txt",

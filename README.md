@@ -143,16 +143,16 @@ The Lumen dashboard, game-library UI, Android Java/resources/Gradle application,
 
 ## Android download
 
-**Latest update — 0.1.6-spike-fexlab (version code 7), 1 November 2026:** Massively reduced loading delays in the tested PS5 startup path, direct local-ROM access for both PS4 and PS5, and preliminary PanVK support for Mali GPUs. See the [changelog](CHANGELOG.md) for details and the scope of the observations.
+**Latest update — 0.1.6-spike-fexlab (version code 7), 1 November 2026:** Fixed a bug with the controller. See the [changelog](CHANGELOG.md).
 
 **[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.6-spike-fexlab/lumenemu-0.1.6-spike-fexlab-v7.apk)** ([experimental release 0.1.6-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab)). Requires **Android 13/API 33 or newer** and an ARM64 device (`arm64-v8a`); target API 36. This FEX Release package uses the existing publication signing certificate. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
 
-Both the APK and public core snapshot are updated for this release. The public snapshot contains the native/runtime changes; application storage and driver-selection UI changes are delivered in the APK. The PS5 startup observations in the changelog used Turnip Banners `20261018-r3-astro`; the same pinned driver is now bundled and used by the recommended PS5 configuration on supported Snapdragon/Adreno 8xx devices. Other Snapdragon devices retain Mojo/Bionic. The release also includes a signed Android App Bundle (AAB); use the APK for direct installation.
+The APK and AAB include the later controller package update. The public native source snapshot remains the original 0.1.6 export at `861f182`; it does not include this later fix or reconstruct the complete app. Application storage and driver-selection UI changes are delivered in the APK. The PS5 startup observations in the changelog used Turnip Banners `20261018-r3-astro`; the same pinned driver is now bundled and used by the recommended PS5 configuration on supported Snapdragon/Adreno 8xx devices. Other Snapdragon devices retain Mojo/Bionic. The release also includes a signed Android App Bundle (AAB); use the APK for direct installation.
 
 The APK has the same signing certificate as the previous GitHub download. Its SHA-256 is:
 
 ```text
-a09143884c7a2ee53b6dd49ecf9bb81e82ea8586f7f3aff8b838ded97208c105
+ea30e363fd205d7bac7c35d94125b5f83e09a197158d6bc3913f20315a0ae7fb
 ```
 
 ## Prepare the source
