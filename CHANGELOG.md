@@ -16,7 +16,7 @@ Local ROM folders now use direct filesystem reads after the user grants Android'
 
 For document-backed libraries, the update reduces repeated provider acquisition, path-resolution and directory-enumeration work. Native document requests no longer hold a global lock while waiting on the provider, and certified read-only file handles can obtain their size directly without changing their read position. These changes reduce storage overhead without caching failed path lookups across guest filesystem calls.
 
-In the adopted Release baseline on the realme GT 8 Pro, Astro Bot showed its Sony logo within 22 seconds and reached the title prompt within 198 seconds; the preceding document-backed path was still black at 233 seconds. These are observed startup timings with the tested driver and library, not a controlled speedup ratio, an FPS measurement or a guarantee for every game/device.
+In the adopted Release baseline on the realme GT 8 Pro, using a separately configured Turnip Banners `20261018-r3-astro` driver, Astro Bot showed its Sony logo within 22 seconds and reached the title prompt within 198 seconds; the preceding document-backed path was still black at 233 seconds. These are observed startup timings with the tested driver and library, not a controlled speedup ratio, an FPS measurement or a guarantee for every game/device. Banners is not bundled in this APK: it includes Mojo/Bionic and PanVK, with Mojo/Bionic as the default on a fresh Snapdragon installation.
 
 ### Mali and graphics compatibility
 

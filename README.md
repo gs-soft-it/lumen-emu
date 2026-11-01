@@ -147,7 +147,7 @@ The Lumen dashboard, game-library UI, Android Java/resources/Gradle application,
 
 **[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.6-spike-fexlab/lumenemu-0.1.6-spike-fexlab-v7.apk)** ([experimental release 0.1.6-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab)). Requires **Android 13/API 33 or newer** and an ARM64 device (`arm64-v8a`); target API 36. This FEX Release package uses the existing publication signing certificate. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
 
-Both the APK and public core snapshot are updated for this release. The public snapshot contains the native/runtime changes; application storage and driver-selection UI changes are delivered in the APK.
+Both the APK and public core snapshot are updated for this release. The public snapshot contains the native/runtime changes; application storage and driver-selection UI changes are delivered in the APK. The PS5 startup observations in the changelog used a separately configured Turnip Banners driver. This APK bundles Mojo/Bionic and PanVK; Banners is not included, and a fresh Snapdragon installation defaults to Mojo/Bionic.
 
 The APK has the same signing certificate as the previous GitHub download. Its SHA-256 is:
 
