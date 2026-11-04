@@ -10,7 +10,7 @@ Experimental **PS4 and PS5 emulation for Android**, with a **macOS (Apple Silico
 
 <p align="center">
   <a href="https://lumen-emu.com"><strong>Official website</strong></a> ·
-  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.6-spike-fexlab/lumenemu-0.1.6-spike-fexlab-v7.apk"><strong>Download Android APK</strong></a> ·
+  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.7-spike-fexlab/lumenemu-0.1.7-spike-fexlab-v10-github.apk"><strong>Download Android APK</strong></a> ·
   <a href="https://lumen-emu.com/support/"><strong>Support development</strong></a> ·
   <a href="#compatibility"><strong>Compatibility list</strong></a> ·
   <a href="#prepare-the-source"><strong>Build the cores</strong></a>
@@ -67,9 +67,11 @@ The Android package includes **SUCCI** to test the phone's performance. Its indi
 
 The application reads **already-extracted ROMs**; it does not open, extract or install PKG files. Prepare content you are legally authorised to use before selecting its library folder. No commercial games, firmware, BIOS files or keys are provided. See the [content requirements and responsible-use information](https://lumen-emu.com/legal/).
 
-Version **0.1.6** restores **direct filesystem reads for local ROM folders**, shared by the PS4 and PS5 runtimes, to avoid repeated document-provider overhead during loading. Grant Android's **all-files access** when prompted for a local folder. The system folder picker remains available: recognised Android filesystem-provider selections resolve to the real local folder, while other supported providers continue through the document bridge. The selected folder remains the single active library, without a mandatory private copy.
+The **GitHub 0.1.7 APK** uses **direct filesystem reads for local game folders**, shared by the PS4 and PS5 runtimes. Grant Android's **all-files access**, then use Lumen's quick folder browser to select the parent folder containing your extracted games. Files are used in place, without a mandatory private copy. The selected folder, settings and saves from earlier direct-access GitHub releases are preserved.
 
-When changing folders, you can move existing games from the previous folder to the new one or leave them in the previous location. Transfers are verified before originals are removed, and files are not silently overwritten. The active folder is marked in grey and cannot be selected again in Lumen's confirmation. Keep the selected storage available while using it; a missing permission or unavailable root does not silently switch to another library.
+The **Google Play channel** uses a separate storage flow: choose a source with Android's folder picker, select the games to add, then copy or move them into the app's private library. Content verification and source deletion are separate options, initially off. Existing games are not overwritten. Keep a backup: uninstalling the app removes games stored in its private space. The GitHub APK linked here uses direct folder access.
+
+Keep the selected storage available while using it; a missing permission or unavailable root does not silently switch to another library.
 
 Use a suitably powerful device with adequate cooling, and stop if it becomes excessively hot or shows a temperature warning. Android gaming consoles have not yet been tested. See the [hardware guidance](https://lumen-emu.com/legal/#hardware-safety).
 
@@ -85,32 +87,44 @@ Use a suitably powerful device with adequate cooling, and stop if it becomes exc
 
 Initial development tests on the Mali-G57 device, using a Debug build, reached the SUCCI menu with both the system driver and the selected bundled PanVK driver; a PanVK 3D benchmark run also completed. These results are separate from verification of the release APK and do not establish broad PS4/PS5 game playability. PanVK requires a compatible Mali/kernel interface; a Mali model name alone does not guarantee that a custom driver will load. Shader and Vulkan feature support remain game-specific. The PS5 shader work also improves handling of supported subgroup sizes and checks optional GPU capabilities only where needed.
 
-### Historical game reports
+### Game reports
 
-**Historical reports: 8 games · 4 playable · 2 almost playable · 2 boots only**
+**18 reported games · 14 playable · 2 almost playable · 2 boots only**
 
-The table below preserves the previously published tests of version 0.1.0. It is not a new compatibility claim for version 0.1.6 or for Mali devices.
+Updated 4 November 2026. This table includes all 17 games in the [official compatibility list](https://lumen-emu.com/compatibility/) and adds our developer report for West of Dead, game version `01.00`, tested on the realme GT 8 Pro (RMX5210). These reports cover different Lumen versions and devices; they are not a complete retest of version 0.1.7.
 
-[Open the full compatibility list and report form](https://lumen-emu.com/compatibility/).
+| Game | Platform | Game version | Title ID | Reported status | Test device | Tested Lumen version | Report source |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Anglerfish | PS5 | `02.000.000` | `PPSA19779` | 🟢 Playable | OnePlus Ace 3 Pro | `0.1.6-spike-fexlab` · code 7 | Community |
+| Astro Bot | PS5 | `01.018.000` | `PPSA21564` | 🔴 Boots only | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
+| Balatro | PS5 | `01.015.000` | `PPSA21402` | 🟢 Playable | OnePlus Ace 3 Pro | `0.1.6-spike-fexlab` · code 7 | Community |
+| BALL x PIT | PS5 | `01.301.000` | `PPSA31872` | 🟢 Playable | OnePlus Ace 3 Pro | `0.1.6-spike-fexlab` · code 7 | Community |
+| Bloodborne | PS4 | `01.00` | `CUSA03173` | 🟡 Almost playable | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
+| Brotato | PS4 | `1.02` | Not reported | 🟢 Playable | OnePlus Ace 3 Pro | `0.1.6-spike-fexlab` | Community |
+| Cat Quest III | PS5 | `01.000.001` | `PPSA15065` | 🟡 Almost playable | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
+| Dreaming Sarah | PS5 | `01.000.000` | `PPSA02929` | 🟢 Playable | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
+| God of War Sons of Sparta | PS5 | Not reported | Not reported | 🟢 Playable | realme GT 8 Pro (RMX5210) | `0.1.6-spike-fexlab` · code 7 | Developer |
+| Greak: Memories of Azur | PS5 | `01.003` | `PPSA02849` | 🟢 Playable | OnePlus Ace 3 Pro | `0.1.6-spike-fexlab` · code 7 | Community |
+| Hollow Knight Silksong | PS5 | `0.1.000.010` | `PPSA12544` | 🟢 Playable | OnePlus Ace 3 Pro | `0.1.6-spike-fexlab` · code 7 | Community |
+| Hollow Knight Voidheart Edition | PS5 | `01.000.002` | `PPSA34971` | 🟢 Playable | OnePlus Ace 3 Pro | `0.1.6-spike-fexlab` · code 7 | Community |
+| Hotline Miami 2: Wrong Number | PS4 | `1.0` | `CUSA00368` | 🟢 Playable | OnePlus Ace 3 Pro | `0.1.6-spike-fexlab` · code 7 | Community |
+| Minecraft | PS5 | `01.044.000` | `PPSA17221` | 🔴 Boots only | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
+| Minecraft: PlayStation 4 Edition | PS4 | `01.00` | `CUSA00265` | 🟢 Playable | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
+| Super Meat Boy | PS4 | `01.02` | `CUSA03454` | 🟢 Playable | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
+| West of Dead | PS4 | `01.00` | `CUSA16142` | 🟢 Playable | realme GT 8 Pro (RMX5210) | Not specified in latest report | Developer · 4 November 2026 |
+| Worms W.M.D. | PS4 | `01.11` | `CUSA04022` | 🟢 Playable | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
 
-These are developer-reported application results, updated **23 October 2026**, on a **realme GT 8 Pro 5G, Snapdragon 8 Elite Gen 5, 16 GB RAM / 512 GB storage, Android 16**. All eight reports were tested with **Lumen Emu `0.1.0-spike-fexlab` (Android version code `1`)**, the first compiled version.
+The original eight developer reports use Lumen `0.1.0-spike-fexlab` (version code 1), on a realme GT 8 Pro 5G with Snapdragon 8 Elite Gen 5, 16 GB RAM / 512 GB storage and Android 16. The historical report date is 23 October 2026; the tested emulator build was confirmed on 24 October.
 
-| Game | Platform | Game version | Title ID | Reported status |
-| --- | --- | --- | --- | --- |
-| Astro Bot | PS5 | `01.018.000` | `PPSA21564` | 🔴 Boots only |
-| Bloodborne | PS4 | `01.00` | `CUSA03173` | 🟡 Almost playable |
-| Cat Quest III | PS5 | `01.000.001` | `PPSA15065` | 🟡 Almost playable |
-| Dreaming Sarah | PS5 | `01.000.000` | `PPSA02929` | 🟢 Playable |
-| Minecraft | PS5 | `01.044.000` | `PPSA17221` | 🔴 Boots only |
-| Minecraft: PlayStation 4 Edition | PS4 | `01.00` | `CUSA00265` | 🟢 Playable |
-| Super Meat Boy | PS4 | `01.02` | `CUSA03454` | 🟢 Playable |
-| Worms W.M.D. | PS4 | `01.11` | `CUSA04022` | 🟢 Playable |
+The seven community reports added on 4 November use a OnePlus Ace 3 Pro with Snapdragon 8 Gen 3 and Lumen `0.1.6-spike-fexlab` (version code 7). Brotato is an earlier community report on the same phone model with Android 16; its emulator version code and title ID were not supplied. God of War Sons of Sparta is a developer report on the realme GT 8 Pro (RMX5210), Android 16, with Lumen `0.1.6-spike-fexlab` (version code 7); its exact game version and title ID were not supplied. [Watch the God of War test](https://youtu.be/V7MtZf0P_Dw).
 
-- **Playable:** reported playable in the developer's test; issues may remain and completion is not guaranteed.
-- **Almost playable:** runs with noticeable slowdown.
-- **Boots only:** starts, but severe slowdown prevents normal play.
+West of Dead is developer-reported playable on the realme GT 8 Pro (RMX5210), Android 16, as confirmed on 4 November 2026. The latest playability report does not identify an exact emulator build.
 
-The initial reports did not record measured FPS or completion coverage. They are developer reports, not independent certification. Results apply to the emulator version stated above and can change with device, driver, game version, settings and emulator build. The SUCCI thresholds are separate from these qualitative game reports.
+- **Playable:** reported playable in the submitted test. Issues may remain; completion and flawless performance are not guaranteed.
+- **Almost playable:** runs with noticeable slowdown and is not yet comfortably playable.
+- **Boots only:** starts, but performance is too low for normal play.
+
+These are developer and community reports, not independent certification. The initial reports do not provide measured FPS or completion coverage. Results can change with device, driver, game version, settings and emulator build. SUCCI benchmark thresholds are separate from these game reports.
 
 To contribute a report, use the [website report form](https://lumen-emu.com/compatibility/#report) or email [info@lumen-emu.com](mailto:info@lumen-emu.com). Include the game and exact version, device and Android version, emulator build, observed behaviour and reproduction steps. Screenshots and crash logs are useful; remove personal information and do not send game files or keys.
 
@@ -124,7 +138,7 @@ A contribution does not guarantee a requested feature, game or device compatibil
 
 ## Public source scope
 
-The emulator-core sources are public at [gs-soft-it/lumen-emu](https://github.com/gs-soft-it/lumen-emu), starting from a snapshot exported on 23 October 2026 without the original project's Git history, and updated on **1 November 2026** from source revision `b9cde237`, with the Banners provenance and verification additions recorded in `SOURCE_SNAPSHOT.json`. **Documenting and showing the full application above does not include its dashboard or application-shell sources in this repository.**
+The emulator-core sources are public at [gs-soft-it/lumen-emu](https://github.com/gs-soft-it/lumen-emu), starting from a snapshot exported on 23 October 2026 without the original project's Git history, and updated on **4 November 2026** from source revision `81861cfa` plus the current NGS2 audio changes recorded in `SOURCE_SNAPSHOT.json`. **Documenting and showing the full application above does not include its dashboard or application-shell sources in this repository.**
 
 Included: emulator engines, CPU translation and virtual memory, rendering, native host bridges, build scripts, dependency locks, local patches, tests and licence records. Runtime input, IME and in-game guest dialogs remain part of the core.
 
@@ -143,16 +157,18 @@ The Lumen dashboard, game-library UI, Android Java/resources/Gradle application,
 
 ## Android download
 
-**Latest update — 0.1.6-spike-fexlab (version code 7), 1 November 2026:** Massively reduced loading delays in the tested PS5 startup path, direct local-ROM access for both PS4 and PS5, and preliminary PanVK support for Mali GPUs. Fixed a bug with the controller. See the [changelog](CHANGELOG.md) for details and the scope of the observations.
+**Latest update — 0.1.7-spike-fexlab (version code 10), 4 November 2026:** Quick direct folder selection for GitHub, preservation of existing library settings, PS4 audio fixes, an English dashboard and updated core sources. The compatibility table now includes all 17 website reports plus West of Dead 01.00, reported playable by the developer on realme GT 8 Pro. See the [changelog](CHANGELOG.md) for details and verification limits.
 
-**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.6-spike-fexlab/lumenemu-0.1.6-spike-fexlab-v7.apk)** ([experimental release 0.1.6-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab)). Requires **Android 13/API 33 or newer** and an ARM64 device (`arm64-v8a`); target API 36. This FEX Release package uses the existing publication signing certificate. It is separate from this core snapshot: dashboard and application-shell sources are excluded, so the instructions below do not rebuild the complete APK.
+**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.7-spike-fexlab/lumenemu-0.1.7-spike-fexlab-v10-github.apk)** ([experimental release 0.1.7-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.7-spike-fexlab)). Requires **Android 13/API 33 or newer** and an ARM64 device (`arm64-v8a`); target API 36. This non-debuggable FEX Release package uses the existing public signing certificate and can update earlier public GitHub APKs. The latest native-runtime, signing and packaging checks passed, with 84 passing JVM tests and 3 existing skips. A new gameplay or device-upgrade trial was not run on this exact APK.
 
-The APK and AAB include the later controller package update. The public native source snapshot remains the original 0.1.6 export at `861f182`; it does not include this later fix or reconstruct the complete app. Application storage and driver-selection UI changes are delivered in the APK. The PS5 startup observations in the changelog used Turnip Banners `20261018-r3-astro`; the same pinned driver is now bundled and used by the recommended PS5 configuration on supported Snapdragon/Adreno 8xx devices. Other Snapdragon devices retain Mojo/Bionic. The release also includes a signed Android App Bundle (AAB); use the APK for direct installation.
+The package includes Mojo/Bionic, Turnip Banners `20261018-r3-astro` and experimental PanVK, with the established driver selection. It includes the full application, while this repository publishes the updated emulator cores and native integration only: the instructions below do not reconstruct the complete APK. The separate Google Play AAB is not part of this GitHub release.
 
-The APK has the same signing certificate as the previous GitHub download. Its SHA-256 is:
+[Complete changelog](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.7-spike-fexlab/CHANGELOG.txt) · [Download checksums](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.7-spike-fexlab/SHA256SUMS.txt)
+
+APK SHA-256:
 
 ```text
-ea30e363fd205d7bac7c35d94125b5f83e09a197158d6bc3913f20315a0ae7fb
+0dc2aa834c03458a63474b8713717386e2a30bc3c4042edb52a17e2263da5e15
 ```
 
 ## Prepare the source
@@ -251,7 +267,7 @@ The example uses POSIX line continuation; in PowerShell put the configure comman
 
 ## Validation and limitations
 
-The initial export recorded CMake parsing, the native Metal build graph, source-manifest paths and dependency-bootstrap checks. The 1 November update preserves the core-only adaptations and records its source-selection and integrity checks in [SOURCE_SNAPSHOT.json](SOURCE_SNAPSHOT.json). A full clean compilation and game execution were **not** repeated for this public source export. The separately built Android package has its own checks and limitations in the [changelog](CHANGELOG.md). Platform support, runtime correctness and individual game compatibility need separate validation on the target hardware.
+The initial export recorded CMake parsing, the native Metal build graph, source-manifest paths and dependency-bootstrap checks. The 4 November update preserves the core-only adaptations and records its source-selection and integrity checks in [SOURCE_SNAPSHOT.json](SOURCE_SNAPSHOT.json). A full clean compilation and game execution were **not** repeated for this public source export. The separately built Android package has its own checks and limitations in the [changelog](CHANGELOG.md). Platform support, runtime correctness and individual game compatibility need separate validation on the target hardware.
 
 [CONTENTS.sha256](CONTENTS.sha256) records exported file bytes. Check it with `sha256sum -c CONTENTS.sha256` where available, or `shasum -a 256 -c CONTENTS.sha256` on macOS. This is an integrity check, not a build test; line-ending conversion or local edits can change hashes. The separately downloaded sources are checked by the dependency bootstrap.
 

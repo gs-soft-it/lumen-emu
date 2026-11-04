@@ -381,6 +381,24 @@ void TestInvariantIndirectImageMaterialization() {
              "noncontiguous descriptor DWORDs entered the table plan");
   Check(!malformed->program.resource_tracking_complete && malformed->program.descriptor_sources.empty(),
         "malformed image table tracking was not transactional");
+  // A second live read sharing the metadata index must prevent the descriptor
+  // from becoming planning-only, regardless of which descriptor word is aliased.
+  for (uint32_t word : {0u, 7u}) {
+    auto aliased = MakeIndirectImageFixture(false, 48u, 0u, 16u, true);
+    const auto image = std::ranges::find_if(*aliased->block, [](const Inst &inst) {
+      return inst.GetOpcode() == ValueOpcode::GetImageResource;
+    });
+    const auto *read = image->Arg(word).Resolve().TryInstruction();
+    Check(read != nullptr && read->GetOpcode() == ValueOpcode::ReadConstBuffer,
+          "aliased descriptor fixture must retain a scalar read");
+    aliased->Emit(ValueOpcode::ReferenceU32,
+                  {aliased->Emit(ValueOpcode::ReadConstBuffer, {read->Arg(0), read->Arg(1)},
+                                 read->Flags<uint64_t>())});
+    CheckFatal([&] { aliased->PlanAndTrack(); }, "not a valid runtime value",
+               "a descriptor read sharing its memory index entered the table plan");
+    Check(!aliased->program.resource_tracking_complete && aliased->program.descriptor_sources.empty(),
+          "aliased image table tracking was not transactional");
+  }
 }
 
 void TestBoundedImageViewEligibility() {

@@ -22,6 +22,7 @@ constexpr const char* LOG_TAG = "LumenAndroidPs5";
 std::mutex gUiMutex;
 jweak      gRuntimeActivity = nullptr;
 uint64_t   gRuntimeActivityRevision = 0;
+bool       gPhysicalControllerConnected = false; // Guarded by gUiMutex.
 // Only the SDL event thread publishes snapshots. Replacing the Activity forces
 // publication even if the guest editor generation has not changed.
 uint64_t gPublishedGeneration = 0;
@@ -83,6 +84,23 @@ bool IsRuntimeActivity(JNIEnv* environment, jobject activity)
     return IsRuntimeActivityLocked(environment, activity);
 }
 
+void CallControllerState(JNIEnv* environment, jobject activity, bool connected, bool notify)
+{
+    if (environment == nullptr || activity == nullptr) return;
+    jclass activity_class = environment->GetObjectClass(activity);
+    jmethodID callback = activity_class != nullptr
+        ? environment->GetMethodID(activity_class, "onNativeControllerState", "(ZZ)V")
+        : nullptr;
+    if (callback != nullptr && !environment->ExceptionCheck())
+    {
+        environment->CallVoidMethod(activity, callback,
+                                    connected ? JNI_TRUE : JNI_FALSE,
+                                    notify ? JNI_TRUE : JNI_FALSE);
+    }
+    ClearPendingJavaException(environment, "controller-state");
+    if (activity_class != nullptr) environment->DeleteLocalRef(activity_class);
+}
+
 bool ReadImeText(JNIEnv* environment, jstring value, jint cursor, std::u16string* text)
 {
     if (environment == nullptr || value == nullptr || text == nullptr || cursor < 0 ||
@@ -118,6 +136,27 @@ bool ReadImeText(JNIEnv* environment, jstring value, jint cursor, std::u16string
 } // namespace
 
 namespace Libs::Graphics {
+
+void AndroidPhysicalControllerStateChanged(bool connected)
+{
+    {
+        std::lock_guard<std::mutex> lock(gUiMutex);
+        if (gPhysicalControllerConnected == connected) return;
+        gPhysicalControllerConnected = connected;
+        // Release only the touch source. A held physical button must survive
+        // the transition, including the asynchronous Java overlay update.
+        if (connected) Controller::ResetVirtualInputState();
+    }
+    auto* environment = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    uint64_t activity_revision = 0;
+    jobject activity = AcquireRuntimeActivity(environment, &activity_revision);
+    if (activity != nullptr)
+    {
+        CallControllerState(environment, activity, connected, connected);
+        environment->DeleteLocalRef(activity);
+    }
+    ClearPendingJavaException(environment, "controller-activity-ref");
+}
 
 void SyncAndroidImeDialogUi(const ImeCommon::HostSnapshot* snapshot)
 {
@@ -204,11 +243,18 @@ Java_it_gssoft_lumenemu_spike_Ps5RuntimeActivity_nativeAttachImeUi(JNIEnv* envir
         ClearPendingJavaException(environment, "attach");
         return JNI_FALSE;
     }
-    std::lock_guard<std::mutex> lock(gUiMutex);
-    Libs::Controller::ResetVirtualInputState();
-    if (gRuntimeActivity != nullptr) environment->DeleteWeakGlobalRef(gRuntimeActivity);
-    gRuntimeActivity = replacement;
-    ++gRuntimeActivityRevision;
+    bool connected = false;
+    {
+        std::lock_guard<std::mutex> lock(gUiMutex);
+        Libs::Controller::ResetVirtualInputState();
+        if (gRuntimeActivity != nullptr) environment->DeleteWeakGlobalRef(gRuntimeActivity);
+        gRuntimeActivity = replacement;
+        ++gRuntimeActivityRevision;
+        connected = gPhysicalControllerConnected;
+    }
+    // SDL can open a preconnected gamepad before the Activity attaches. Replay
+    // its state without a second connection toast, and never call Java locked.
+    CallControllerState(environment, activity, connected, false);
     return JNI_TRUE;
 }
 
@@ -235,7 +281,7 @@ Java_it_gssoft_lumenemu_spike_Ps5RuntimeActivity_nativeVirtualButton(
 {
     if (button < 0 || static_cast<size_t>(button) >= VIRTUAL_BUTTONS.size()) return;
     std::lock_guard<std::mutex> lock(gUiMutex);
-    if (IsRuntimeActivityLocked(environment, activity))
+    if (IsRuntimeActivityLocked(environment, activity) && !gPhysicalControllerConnected)
     {
         Libs::Controller::SetVirtualButton(VIRTUAL_BUTTONS[button], pressed == JNI_TRUE);
     }
@@ -247,7 +293,7 @@ Java_it_gssoft_lumenemu_spike_Ps5RuntimeActivity_nativeVirtualAxis(
 {
     if (axis < 0 || static_cast<size_t>(axis) >= VIRTUAL_AXES.size() || value < 0 || value > 255) return;
     std::lock_guard<std::mutex> lock(gUiMutex);
-    if (IsRuntimeActivityLocked(environment, activity))
+    if (IsRuntimeActivityLocked(environment, activity) && !gPhysicalControllerConnected)
     {
         Libs::Controller::SetVirtualAxis(VIRTUAL_AXES[axis], value);
     }

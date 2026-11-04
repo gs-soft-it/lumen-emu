@@ -1544,7 +1544,7 @@ if(APPLE OR ANDROID)
     set(gen4_native_contracts page_fault_watch resource_tracking_contract
          image_binding_contract srt_flatten_contract msgdialog_network_notice_contract
          png_codec_contract ngs2_mixer avplayer_frame_lifetime_contract
-         avplayer_decoder_completion_contract detile_source_contract)
+         avplayer_decoder_completion_contract detile_source_contract controller_delivery)
     if(APPLE)
         list(APPEND gen4_native_contracts rect_list_contract desktop_input_contract)
         if(NOT ENABLE_FEX_GUEST_CPU)

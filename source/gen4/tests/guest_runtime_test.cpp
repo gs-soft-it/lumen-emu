@@ -120,6 +120,17 @@ double Scale(double input) { return input*2.0; }
 Fex::GuestEngine* engine{};
 std::uintptr_t callback{};
 std::uintptr_t signal_callback{};
+#ifdef LUMEN_GEN4_DIRECT_FEX
+bool signal_state_queue_on_return{};
+double signal_state_input{};
+double SignalStateScale(double input) {
+    signal_state_input = input;
+    if (signal_state_queue_on_return)
+        CHECK(Fex::DeliverGuestOrbisSignal(30, nullptr, nullptr, signal_callback));
+    return input * 2.0;
+}
+#endif
+
 void NativeSignal(int, siginfo_t* info, void* context) {
     Core::Fex::DeliverGuestOrbisSignal(30, info, context, signal_callback);
 }
@@ -259,7 +270,10 @@ int main() {
 #ifdef LUMEN_GEN4_DIRECT_FEX
     auto signalWait = registry->Register(GuestCpu::MakeHleCallAdapter(AwaitSignal), "signal-wait");
     CHECK(signalWait);
-    constexpr unsigned firstEntry = 9;
+    auto signalStateScale = registry->Register(
+        GuestCpu::MakeHleCallAdapter(SignalStateScale), "signal-state-scale");
+    CHECK(signalStateScale);
+    constexpr unsigned firstEntry = 10;
 #else
     constexpr unsigned firstEntry = 8;
 #endif
@@ -299,6 +313,7 @@ int main() {
     const auto publicationVeneer=makeVeneer(publication);
 #ifdef LUMEN_GEN4_DIRECT_FEX
     const auto signalWaitVeneer = makeVeneer(signalWait);
+    const auto signalStateVeneer = makeVeneer(signalStateScale);
 #endif
     fixture.ranges=veneers.GetExecutableRanges();
     Mapping code,stack,tls;
@@ -380,6 +395,80 @@ int main() {
     std::vector<unsigned char> floatCode{0x48,0x83,0xec,8}; Call(floatCode,scaleVeneer);
     floatCode.insert(floatCode.end(),{0x48,0x83,0xc4,8,0xc3});
     const auto floatResult=run(floatCode,0,1.5); double number{}; std::memcpy(&number,floatResult.Xmm[0].data(),8); CHECK(number==3.0);
+#ifdef LUMEN_GEN4_DIRECT_FEX
+    // Signals can run on either HLE boundary. Their caller-saved registers are
+    // still part of the interrupted instruction's arguments/result. Exercise
+    // real guest XMM, x87, DF and rounding state, not a copied-state mock.
+    signal_callback = code.Address() + 256;
+    std::vector<unsigned char> signalStateCode{0x48,0x83,0xec,0x08,0x48,0xb8};
+    Append64(signalStateCode, tls.Address());
+    signalStateCode.insert(signalStateCode.end(), {
+        0x0f,0xae,0x50,0x20, // ldmxcsr [tls+32]: round nearest
+        0xdb,0xe3,0xd9,0xe8  // fninit; fld1
+    });
+    Call(signalStateCode, signalStateVeneer);
+    signalStateCode.insert(signalStateCode.end(), {0x9c,0x5a,0x48,0xb8}); // save RFLAGS
+    Append64(signalStateCode, tls.Address());
+    signalStateCode.insert(signalStateCode.end(), {
+        0x48,0x89,0x50,0x18,       // [tls+24] = RFLAGS
+        0x0f,0xae,0x58,0x08,       // stmxcsr [tls+8]
+        0xd9,0x78,0x0c,            // fnstcw [tls+12]
+        0xdd,0x78,0x0e,            // fnstsw [tls+14]
+        0xdd,0x58,0x10,            // fstp double [tls+16]
+        0xf2,0x0f,0x10,0x48,0x30,  // xmm1 = [tls+48] = 1.5
+        0xf2,0x48,0x0f,0x2d,0xd1,  // cvtsd2si rdx,xmm1: uses live host FPCR
+        0x48,0x89,0x50,0x38,       // [tls+56] = rounded value
+        0x48,0x83,0xc4,0x08,0xc3
+    });
+    signalStateCode.resize(256, 0xcc);
+    signalStateCode.insert(signalStateCode.end(), {0x48,0xb8});
+    Append64(signalStateCode, tls.Address());
+    signalStateCode.insert(signalStateCode.end(), {
+        0x48,0xff,0x00,            // ++delivered
+        0x66,0x0f,0xef,0xc0,       // pxor xmm0,xmm0
+        0x0f,0xae,0x50,0x28,       // ldmxcsr [tls+40]: round down
+        0xd9,0x68,0x24,            // fldcw [tls+36]: x87 round down
+        0xd9,0xee,0xfd,0xc3        // fldz; std; ret
+    });
+    for (unsigned boundary = 0; boundary < 3; ++boundary) {
+        std::memset(tls.base, 0, tls.size);
+        const u32 nearest = 0x1f80, down = 0x3f80;
+        const u16 x87Down = 0x077f;
+        const double value = 1.5;
+        std::memcpy(tls.base + 32, &nearest, 4);
+        std::memcpy(tls.base + 36, &x87Down, 2);
+        std::memcpy(tls.base + 40, &down, 4);
+        std::memcpy(tls.base + 48, &value, 8);
+        signal_state_input = -1;
+        signal_state_queue_on_return = boundary == 2;
+        // Queue before Run so the pending signal is delivered by the first
+        // real HLE entry. The return case queues from the HLE implementation.
+        if (boundary == 1)
+            CHECK(Fex::DeliverGuestOrbisSignal(30, nullptr, nullptr, signal_callback));
+        const auto signalStateResult = run(signalStateCode, 0, value);
+        double returned{}, x87Value{};
+        u64 delivered{}, flags{}, rounded{};
+        u32 mxcsr{};
+        u16 fcw{}, fsw{};
+        std::memcpy(&returned, signalStateResult.Xmm[0].data(), 8);
+        std::memcpy(&delivered, tls.base, 8);
+        std::memcpy(&mxcsr, tls.base + 8, 4);
+        std::memcpy(&fcw, tls.base + 12, 2);
+        std::memcpy(&fsw, tls.base + 14, 2);
+        std::memcpy(&x87Value, tls.base + 16, 8);
+        std::memcpy(&flags, tls.base + 24, 8);
+        std::memcpy(&rounded, tls.base + 56, 8);
+        CHECK(delivered == (boundary ? 1u : 0u));
+        CHECK(signalStateResult.Gpr[12] == 0xfedcba9876543210ULL);
+        CHECK(signal_state_input == value && returned == 3.0);
+        CHECK(mxcsr == nearest && fcw == 0x037f);
+        CHECK(((fsw >> 11) & 7) == 7 && x87Value == 1.0);
+        CHECK((flags & (1u << 10)) == 0 && rounded == 2);
+    }
+    signal_state_queue_on_return = false;
+    std::memset(tls.base, 0, tls.size);
+    std::puts("signal-state=PASS entry return XMM x87 FCW MXCSR DF native-rounding");
+#endif
     // A callback with seven INTEGER arguments reads its final output pointer
     // from [rsp+8], while the first six remain in the SysV argument registers.
     auto* stackOutputWords = reinterpret_cast<std::uint64_t*>(tls.base + 64);

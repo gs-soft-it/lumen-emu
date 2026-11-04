@@ -7,6 +7,9 @@
 #include <fmt/std.h>
 #include <spdlog/sinks/async_sink.h>
 #include <spdlog/sinks/dup_filter_sink.h>
+#ifdef __ANDROID__
+#include <spdlog/sinks/android_sink.h>
+#endif
 #ifdef _WIN32
 #include <Windows.h>
 #endif
@@ -271,10 +274,20 @@ void UpdateSinks() {
             std::chrono::milliseconds(EmulatorSettings.GetLogMaxSkipDuration()),
             EmulatorSettings.IsLogSync() ? sinks : async_sink)};
 
+#ifdef __ANDROID__
+    // A fatal trap can stop the process before the asynchronous sink drains.
+    auto critical_sink = std::make_shared<spdlog::sinks::android_sink_mt>("LumenGen4");
+    critical_sink->set_pattern("%v");
+    critical_sink->set_level(spdlog::level::critical);
+#endif
+
     for (auto& [name, logger] : ALL_LOGGERS) {
         logger->sinks() = EmulatorSettings.IsLogSkipDuplicate()
                               ? dup_filter
                               : (EmulatorSettings.IsLogSync() ? sinks : async_sink);
+#ifdef __ANDROID__
+        logger->sinks().push_back(critical_sink);
+#endif
     }
 }
 

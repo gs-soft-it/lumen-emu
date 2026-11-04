@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -148,7 +149,8 @@ public:
 
     /// Retrieves the sampler that matches the provided S# descriptor.
     [[nodiscard]] vk::Sampler GetSampler(const AmdGpu::Sampler& sampler,
-                                         AmdGpu::BorderColorBuffer border_color_base);
+                                         AmdGpu::BorderColorBuffer border_color_base,
+                                         bool is_compare);
 
     /// Retrieves the image with the specified id.
     [[nodiscard]] Image& GetImage(ImageId id) {
@@ -333,7 +335,8 @@ private:
     TileManager tile_manager;
     Common::SlotVector<Image> slot_images;
     Common::SlotVector<ImageView> slot_image_views;
-    tsl::robin_map<u64, Sampler> samplers;
+    // One guest S# can serve both ordinary and comparison instructions.
+    std::array<tsl::robin_map<u64, Sampler>, 2> samplers;
     tsl::robin_map<vk::Format, ImageId> null_images;
     std::unordered_set<ImageId> download_images;
     u64 total_used_memory = 0;

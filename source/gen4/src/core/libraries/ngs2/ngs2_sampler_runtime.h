@@ -23,18 +23,62 @@ struct SamplerPacket {
 struct DecodedBlock {
     std::shared_ptr<const std::vector<float>> pcm;
     u64 identity{}, user{};
+    u32 dataSize{};
+    u64 dataAddress{};
 };
 struct SamplerRuntime {
     std::deque<DecodedBlock> blocks;
     size_t cursor{}, retained{};
+    u32 source_sample_rate{48000}, source_channels{}, waveform_type{}, phase{};
+    bool final_completion_reported{};
     // History is immutable once committed. Candidate appends clone it, so a
     // late malformed frame cannot corrupt the previously accepted FIFO.
     std::shared_ptr<void> history;
     bool AtEnd(u32 channels) const {
         return channels && blocks.size()==1 && cursor==blocks.front().pcm->size()/channels;
     }
+    bool AppendPcm(const OrbisNgs2WaveformFormat& format, const SamplerPacket& packet) {
+        if (format.waveformType != 0x12 || !format.numChannels || format.numChannels > 8 ||
+            (format.sampleRate != 44100 && format.sampleRate != 48000) || format.configData ||
+            format.frameOffset || format.frameMargin || packet.encoded.empty() ||
+            packet.encoded.size() > MaxEncodedBytes || !packet.playable) return false;
+        if (!blocks.empty() && (waveform_type != format.waveformType ||
+            source_sample_rate != format.sampleRate || source_channels != format.numChannels)) return false;
+        const size_t frame_bytes = static_cast<size_t>(format.numChannels) * sizeof(s16);
+        if (packet.encoded.size() % frame_bytes) return false;
+        const u64 available = packet.encoded.size() / frame_bytes;
+        if (packet.skip > available || packet.playable > available - packet.skip ||
+            packet.playable > MaxPcmSamples / format.numChannels) return false;
+        const size_t samples = static_cast<size_t>(packet.playable) * format.numChannels;
+        const bool replace = AtEnd(format.numChannels);
+        const size_t old_samples = replace ? 0 : retained;
+        if (old_samples > MaxPcmSamples - samples || (!replace && blocks.size() >= 4096)) return false;
+        std::vector<float> decoded(samples);
+        const size_t begin = static_cast<size_t>(packet.skip) * frame_bytes;
+        for (size_t index = 0; index < samples; ++index) {
+            const size_t offset = begin + index * sizeof(s16);
+            const u32 raw = packet.encoded[offset] | (static_cast<u32>(packet.encoded[offset + 1]) << 8);
+            const s32 signed_sample = raw < 0x8000 ? static_cast<s32>(raw) : static_cast<s32>(raw) - 0x10000;
+            decoded[index] = static_cast<float>(signed_sample) / 32768.0f;
+        }
+        DecodedBlock block{std::make_shared<const std::vector<float>>(std::move(decoded)), packet.identity, packet.user,
+                           static_cast<u32>(packet.encoded.size()), packet.identity};
+        blocks.push_back(std::move(block));
+        if (replace) { blocks.pop_front(); cursor = 0; final_completion_reported = false; }
+        retained = old_samples + samples;
+        waveform_type = format.waveformType;
+        source_sample_rate = format.sampleRate;
+        source_channels = format.numChannels;
+        // A refill preserves the fractional source position, including after EOF.
+        // Only an explicit replay/reset starts a new resampling timeline.
+        history.reset();
+        return true;
+    }
     bool Append(const OrbisNgs2WaveformFormat& format,const SamplerPacket& packet) {
+        if (format.waveformType == 0x12) return AppendPcm(format, packet);
         if(format.waveformType!=0x40||format.frameOffset||format.frameMargin||packet.encoded.empty()||packet.encoded.size()>MaxEncodedBytes||!packet.playable)return false;
+        if (!blocks.empty() && waveform_type &&
+            (waveform_type != format.waveformType || source_channels != format.numChannels)) return false;
         const u32 config=format.configData;
         if((config>>24)!=0xfe||((config>>17)&7)>5||(config&0x10007)||(((config>>3)&3)!=0&&((config>>3)&3)!=2))return false;
         std::array<unsigned char,4> bytes{static_cast<u8>(config>>24),static_cast<u8>(config>>16),static_cast<u8>(config>>8),static_cast<u8>(config)};
@@ -77,25 +121,79 @@ struct SamplerRuntime {
             }
             decoded=std::move(expanded);
         }
-        DecodedBlock block{std::make_shared<const std::vector<float>>(std::move(decoded)),packet.identity,packet.user};
+        DecodedBlock block{std::make_shared<const std::vector<float>>(std::move(decoded)),packet.identity,packet.user,
+                           static_cast<u32>(packet.encoded.size()),packet.identity};
         blocks.push_back(std::move(block));
-        if(replace){blocks.pop_front();cursor=0;}
+        if(replace){blocks.pop_front();cursor=0;final_completion_reported=false;}
         retained=old_samples+pcm_samples;
         history=packet.playable==available-packet.skip?std::move(decoder):std::shared_ptr<void>{};
+        waveform_type = format.waveformType;
+        source_sample_rate = 48000; // Preserve the existing ATRAC9 decode/expansion path.
+        source_channels = format.numChannels;
         return true;
     }
     void Event(u32 event,u32& state,u32 channels) {
         switch(event){
-        case 0:if(AtEnd(channels))cursor=0;state=3;break;
+        case 0:if(AtEnd(channels)){cursor=0;phase=0;final_completion_reported=false;}state=3;break;
         case 1:if(state==3||state==5)state=0xb;break;
-        case 2:case 3:state=0;blocks.clear();cursor=retained=0;history.reset();break;
+        case 2:case 3:state=0;blocks.clear();cursor=retained=0;phase=0;final_completion_reported=false;history.reset();break;
         case 4:if(state==3)state=5;break;
         case 5:if(state==5)state=3;break;
         default:break;
         }
     }
-    void Mix(u32& state,u32 channels,std::span<float> output,u32 output_channels) {
-        if(state!=3||!channels||!output_channels)return;
+    void ReportCompletion(std::vector<DecodedBlock>* completed) {
+        if (final_completion_reported) return;
+        if (completed) completed->push_back(blocks.front());
+        final_completion_reported = true;
+    }
+    void MixResampled(u32& state, u32 channels, std::span<float> output, u32 output_channels,
+                      std::vector<DecodedBlock>* completed) {
+        const size_t grain = output.size() / output_channels;
+        size_t written = 0;
+        while (!blocks.empty() && written < grain) {
+            const auto& pcm = *blocks.front().pcm;
+            const size_t frames = pcm.size() / channels;
+            if (cursor == frames) {
+                ReportCompletion(completed);
+                if (blocks.size() == 1) { state = 0; break; }
+                retained -= pcm.size(); blocks.pop_front(); cursor = 0; final_completion_reported = false; continue;
+            }
+            const auto* next_pcm = &pcm;
+            size_t next_frame = std::min(cursor + 1, frames - 1);
+            if (cursor + 1 == frames && blocks.size() > 1) {
+                next_pcm = blocks[1].pcm.get();
+                next_frame = 0;
+            }
+            // Use exact rational source positions. No float phase accumulates,
+            // and no rounding restarts at packet or output-grain boundaries.
+            const float fraction = static_cast<float>(phase) / 48000.0f;
+            const size_t dest = written * output_channels;
+            for (u32 channel = 0; channel < std::min(channels, output_channels); ++channel) {
+                const float a = pcm[cursor * channels + channel];
+                const float b = (*next_pcm)[next_frame * channels + channel];
+                const float sample = a + (b - a) * fraction;
+                output[dest + channel] += sample;
+                if (channels == 1 && output_channels >= 2) output[dest + 1] += sample;
+            }
+            phase += source_sample_rate;
+            cursor += phase / 48000;
+            phase %= 48000;
+            ++written;
+            if (cursor == frames) {
+                ReportCompletion(completed);
+                if (blocks.size() == 1) { state = 0; break; }
+                retained -= pcm.size(); blocks.pop_front(); cursor = 0; final_completion_reported = false;
+            }
+        }
+    }
+    void Mix(u32& state,u32 channels,std::span<float> output,u32 output_channels,
+             std::vector<DecodedBlock>* completed = nullptr) {
+        if(state!=3||!channels||!output_channels || (source_channels && channels != source_channels))return;
+        // The renderer can reserve across all voices before Event/Mix. This
+        // reserve also keeps a direct helper call atomic on allocation failure.
+        if (completed) completed->reserve(completed->size() + blocks.size());
+        if (source_sample_rate == 44100) { MixResampled(state, channels, output, output_channels, completed); return; }
         size_t written=0;const size_t grain=output.size()/output_channels;
         while(!blocks.empty()&&written<grain){
             const auto& pcm=*blocks.front().pcm;const auto frames=pcm.size()/channels;
@@ -106,7 +204,7 @@ struct SamplerRuntime {
                 else for(u32 channel=0;channel<std::min(channels,output_channels);++channel)output[dest+channel]+=pcm[source+channel];
             }
             cursor+=count;written+=count;
-            if(cursor==frames){if(blocks.size()==1){state=0;break;}retained-=pcm.size();blocks.pop_front();cursor=0;}
+            if(cursor==frames){ReportCompletion(completed);if(blocks.size()==1){state=0;break;}retained-=pcm.size();blocks.pop_front();cursor=0;final_completion_reported=false;}
         }
     }
 };

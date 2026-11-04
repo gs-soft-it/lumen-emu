@@ -7,16 +7,17 @@
   "cpu_engine": {
     "source": "source/gen4/src/core/fex/fex_guest_engine_direct.cpp",
     "upstream_modified": false,
-    "sha256": "6474e06688b3cedfc0a3306791ff47e04c56d9aad678bd7d553060c9ad39cb7b",
+    "sha256": "662d74dd7d658eaf642f687ffc5b98d0f6e67886a370f3a69a9f0a70c1b799db",
     "fex_revision": "f2b679f6028ce1c38875233aecfcf5d3f8ebecec",
-    "darwin_host_adaptation": "Mach VM inventory preserves current permissions across concurrent adjacent-region coalescing; no FEX vendor modification."
+    "darwin_host_adaptation": "Mach VM inventory preserves current permissions across concurrent adjacent-region coalescing; no FEX vendor modification.",
+    "fatal_error_logging": "The shared host bridge reports FEX fatal errors to stderr and Android logcat before preserving the original FEX trap."
   },
   "host_adaptations": [
     "Android ARM64 signal context, guarded native crash diagnostics and original GPU fault handling",
     "Android LoadExec avoids the API34 close_range symbol import: API34+ uses the syscall with UNSHARE and CLOEXEC intact; older Android returns ENOSYS through the existing error path without an unsafe descriptor loop or a syscall rejected by the older app seccomp policy.",
     "Direct x86 CPU calls, SysV typed HLE, callbacks, TLS, thread cancellation and fibers",
     "Original shared VM backing with the Gen4 Android host address-space bound",
-    "Android window, IME and existing controller integration",
+    "Android window and IME integration; SDL physical gamepad state hides the touch overlay, replays on Activity attach, and restores touch after the last physical pad disconnects without resetting physical input.",
     "Portable original shader-resource evaluator with an ARM64 SRT walker enabled by default",
     "Default-enabled empty-signal fast path, indexed typed HLE dispatch and asynchronous driver cache persistence, with individual off selectors",
     "Final SPIR-V fragment-barycentric admission against the enabled device feature",
@@ -853,9 +854,9 @@
     },
     {
       "path": "src/graphics/host_gpu/rangeSet.h",
-      "sha256": "eaa212090552c5a8d39f76f82c8ba0435d411720c919dd3e425370d08be20886",
+      "sha256": "19cbf737599d6fab586d92cbd9fed7106710267f243eb1dfa43fe82cdf9d88d2",
       "upstream_sha256": "eaa212090552c5a8d39f76f82c8ba0435d411720c919dd3e425370d08be20886",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/host_gpu/regionDefinitions.h",
@@ -1479,7 +1480,7 @@
     },
     {
       "path": "src/graphics/presentation/window/window.cpp",
-      "sha256": "057f83926e4cbc55d418a665ee81986dadfa758624bd88a0c941009bd83ad2ed",
+      "sha256": "031fd421044b7c01943b7b9c5319deb13d28a87666fec58b9b5c6677f19147df",
       "upstream_sha256": "d3be22a4f93efdeec17b21ae1398445a02eb8efabdd30e3e8e7c12d906fb9043",
       "origin": "host-adapted"
     },
@@ -1794,7 +1795,7 @@
     },
     {
       "path": "src/graphics/shader/recompiler/frontend/translate/Translate.cpp",
-      "sha256": "bcb951b4bd86afb0ab9fee0709b3882c8219a1647585f49ab27cae9668aff4bb",
+      "sha256": "d43bafd7deb90d1a44b27392df02aabd6165baf3ae4e3a723c1b5955796ea33d",
       "upstream_sha256": "b9fdd9e81b72482fc30be293494a97cc5d82ac297e4f91d03aa0530d4f1ae183",
       "origin": "modified"
     },
@@ -1842,9 +1843,9 @@
     },
     {
       "path": "src/graphics/shader/recompiler/ir/Program.cpp",
-      "sha256": "0d1b2ad7b1da84e341060b00efe1fa4262dde52fd3e547cd9a50750dccdb4c7c",
+      "sha256": "750c815797252d8b4794718fc280a2591ea754d7e73e047e910f4b68caf62236",
       "upstream_sha256": "0d1b2ad7b1da84e341060b00efe1fa4262dde52fd3e547cd9a50750dccdb4c7c",
-      "origin": "unchanged"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/Reg.h",
@@ -1878,15 +1879,15 @@
     },
     {
       "path": "src/graphics/shader/recompiler/ir/Value.cpp",
-      "sha256": "ccc33f7528a068c298f94fe909ed3bcee75005fff9fe1eaa8613fa2d30d99a2f",
+      "sha256": "36c15dcc09b9d38df78783f99e3e7d159c5654e028ee7fed5cffa7d3e9c3752f",
       "upstream_sha256": "a972e4160e7e639d91cca43dda0570d19b806e8491714549655b8857bc947ff1",
-      "origin": "host-adapted"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/Value.h",
-      "sha256": "eb6e6dfe211dee4e83c21f2ea8345d6b079a2b88dea2b8f4883db4f79e074e3a",
+      "sha256": "451bb68462c5489b1d866eef2411c548c99441d99f383c800b8d3e1f46e98bec",
       "upstream_sha256": "8a471d9e1c0b678897781405a404aaeb64d0f46ab61030ec493eead8eb998d48",
-      "origin": "host-adapted"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/opcodes/ValueOpcodes.cpp",
@@ -1976,9 +1977,9 @@
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/ResourceTracking.cpp",
-      "sha256": "8ed9d0624c0b05996ce64d9f9c484ce61ede84b4637201272d0188c8edfb415c",
+      "sha256": "1e07a3edd58163a0b6e99a89e03bb8237265ad4db7629a6038432fd2fa5116e4",
       "upstream_sha256": "f5a2f42ff6b07df39ec2e077de9fc56f18578bee27ffc45fd1b7fc7b09cd618f",
-      "origin": "host-adapted"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/ResourceTracking.h",
@@ -2041,9 +2042,9 @@
     },
     {
       "path": "src/graphics/shader/shader.cpp",
-      "sha256": "f144946e8d153a1b1ae2873033c34c981c7f848ac70a7bf3dd01d3926f8b7df2",
+      "sha256": "56d6003ce2706d76e46435658b9db485c9d947f9743c62ec1ab9c19365f67967",
       "upstream_sha256": "7e543fe181d99137c895ecc80d09a9f1be474b6a0bd1c6309dfa762f9e241ac3",
-      "origin": "host-adapted"
+      "origin": "modified"
     },
     {
       "path": "src/graphics/shader/shader.h",
@@ -3106,9 +3107,9 @@
     },
     {
       "path": "tests/MemoryTrackerTests.cpp",
-      "sha256": "9a470b54621407ab777be88544e624cbedbbbfaafab0677c1ab8dcfcb599b025",
+      "sha256": "1593fc12f42bb0a1e7823b2821b3d73c1dfd33a496f13d32a5090fc798552127",
       "upstream_sha256": "912ce65e6383028b9946f20be91b615aa75a8f466991e0e37521bd3025ff2225",
-      "origin": "host-adapted"
+      "origin": "modified"
     },
     {
       "path": "tests/NativeMetalContractTests.inc",
@@ -3192,9 +3193,9 @@
     },
     {
       "path": "tests/ResourceTrackingTests.cpp",
-      "sha256": "1fdb620682f1c5adc9f43d7a6a0b02a75439dd509c094545e813a325a587c6c9",
+      "sha256": "2ff743d3829588ca89a7d2e21377f828f66c6d6641305322d89616b8c6c9967c",
       "upstream_sha256": "2092c441455910b73a9616971a211f26b9947f83709921b6cea945c38b5c00ca",
-      "origin": "host-adapted"
+      "origin": "modified"
     },
     {
       "path": "tests/SaveDataDialogTests.cpp",
@@ -3210,7 +3211,7 @@
     },
     {
       "path": "tests/ScalarProvenanceTests.cpp",
-      "sha256": "98b054063c78b926d73f00f20af2b9503d9323509f33edcbd6c3d6f2261d8d82",
+      "sha256": "02ba3383c3689ac31b39e4476a56fd3de02b3c09dfa6c6e19688fdc259797539",
       "upstream_sha256": "272729142dda68ab484f4ab09e273a941436364379c21b1dc320edebd71a2f6d",
       "origin": "modified"
     },
@@ -3320,7 +3321,7 @@
     },
     {
       "path": "tests/shaderCfgTests.cpp",
-      "sha256": "85e89d99572d409d20a7272bbf6501b8cf80dd740afe0e37efce3eb81cce4692",
+      "sha256": "0271c6dc391d141b6039b426efaaa1cb52de882db03ec14736c2065b6e80147c",
       "upstream_sha256": "2b7c7747d56f36f6821808bd2f32c5309ae56b217e619a90abf40ea0836679c0",
       "origin": "modified"
     }
@@ -3402,6 +3403,37 @@
         {
           "commit": "e9bcc77e0ba8c91a48ff667a2aaa42b785f33979",
           "subject": "shader: retain resource guards for 64-bit scalar comparisons"
+        }
+      ]
+    },
+    {
+      "reviewed_revision": "dfec14aa8c59f8ea2bc4d87eba9854fc370161c6",
+      "date": "2026-11-03",
+      "scope": "Selected IR use-list and teardown, remaining inline accessors, single final IR validation, resource traversal and memory-owner indexing, range-node reuse and validated code/literal shader identity. Adapted to the direct engine and compatibility sources, preserving existing ARM64/Metal, guest memory and cumulative runtime defaults; not a full upstream revision replacement.",
+      "commits": [
+        {
+          "commit": "a526a8b9c9315ffc71002cd511655d6d2fbdc436",
+          "subject": "shader: hand IR uses over at once on replacement and skip use lists at program teardown"
+        },
+        {
+          "commit": "6cee2dc0bda731355ee56c610c62b988e4bd3280",
+          "subject": "shader: inline the hot IR operand accessors"
+        },
+        {
+          "commit": "4919fdb6e6e28f46f1f5df8cf931a7a0823cb93f",
+          "subject": "shader: validate the IR once, at SPIR-V emission"
+        },
+        {
+          "commit": "216bd28bf65602806375bb5fddc2290c279a3a4f",
+          "subject": "shader: drop quadratic scans from resource tracking"
+        },
+        {
+          "commit": "9eef2e143475b610be48d709eb0d6e61476e1f98",
+          "subject": "graphics: reuse range-set nodes when merging additions"
+        },
+        {
+          "commit": "ae67e2db519f71a9cca0d5014ebeca4880649695",
+          "subject": "shader: hash only the program code and literal buffer"
         }
       ]
     }

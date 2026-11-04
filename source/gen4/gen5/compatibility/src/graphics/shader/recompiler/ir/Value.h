@@ -120,8 +120,8 @@ public:
 	[[nodiscard]] size_t                  NumPhiBlocks() const;
 	[[nodiscard]] Value                   Arg(size_t index) const;
 	[[nodiscard]] Block*                  PhiBlock(size_t index) const;
-	[[nodiscard]] Block*                  Parent() const;
-	[[nodiscard]] const std::vector<Use>& Uses() const;
+	[[nodiscard]] Block*                  Parent() const { return parent; }
+	[[nodiscard]] const std::vector<Use>& Uses() const { return uses; }
 	// Runtime indices belong to the resource plan that owns this instruction.
 	[[nodiscard]] uint32_t EvaluationIndex(uint32_t& count) const {
 		if (evaluation_index == UINT32_MAX) {
@@ -141,6 +141,8 @@ public:
 	void AddPhiOperand(Block* predecessor, Value value);
 	void ReplaceUsesWith(Value replacement, bool preserve = true);
 	void Invalidate();
+	// Drop arguments only when both definitions and their users are being destroyed.
+	void DropArgs();
 
 	template <typename T>
 	requires(sizeof(T) <= sizeof(uint64_t) && std::is_trivially_copyable_v<T>)
@@ -160,6 +162,8 @@ public:
 private:
 	friend void EliminateDeadCode(const std::vector<Block*>& blocks);
 
+	template <typename Self>
+	static auto& ArgSlot(Self& self, size_t index);
 	void AddUse(Inst* used, size_t operand);
 	void RemoveUse(Inst* used, size_t operand);
 	void ClearArgs();
@@ -204,12 +208,17 @@ inline size_t Inst::NumArgs() const {
 	return num_args == PhiArity ? phi_args.size() : num_args;
 }
 
-inline Value Inst::Arg(size_t index) const {
-	EXIT_IF(index >= NumArgs());
-	if (num_args <= InlineArity) {
-		return fixed_args[index];
+template <typename Self>
+auto& Inst::ArgSlot(Self& self, size_t index) {
+	EXIT_IF(index >= self.NumArgs());
+	if (self.num_args <= InlineArity) {
+		return self.fixed_args[index];
 	}
-	return num_args == PhiArity ? phi_args[index].second : large_args[index];
+	return self.num_args == PhiArity ? self.phi_args[index].second : self.large_args[index];
+}
+
+inline Value Inst::Arg(size_t index) const {
+	return ArgSlot(*this, index);
 }
 
 inline bool Value::IsEmpty() const {

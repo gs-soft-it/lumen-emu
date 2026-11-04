@@ -342,6 +342,35 @@ void TestOperandMutationLifecycle() {
         "Phi replacement retained incoming uses or changed the consumer value");
 }
 
+void TestReplacementKeepsUseOrder() {
+  Fixture fixture(2);
+  const auto base = fixture.Emit(ValueOpcode::IAdd32, {Value(1u), Value(2u)});
+  auto *before = fixture.Emit(ValueOpcode::IAdd32, {base, Value(3u)}).TryInstruction();
+  auto *identity = fixture.Emit(ValueOpcode::Identity, {base}).TryInstruction();
+  auto *pair = fixture.Emit(ValueOpcode::IAdd32, {Value(identity), Value(identity)}).TryInstruction();
+  auto *after = fixture.Emit(ValueOpcode::IAdd32, {Value(4u), base}).TryInstruction();
+  auto &large = fixture.program.value_storage.emplace_back(ValueOpcode::GetImageResource);
+  const auto last = large.NumArgs() - 1;
+  large.SetArg(last, Value(identity));
+  identity->ReplaceUsesWith(base, false);
+  Check(!identity->HasUses() && identity->NumArgs() == 0 && pair->Arg(0) == base &&
+            pair->Arg(1) == base && large.Arg(last) == base &&
+            base.TryInstruction()->Uses() ==
+                std::vector<Use>({{before, 0}, {after, 1}, {pair, 0}, {pair, 1}, {&large, last}}),
+        "identity removal lost or reordered the uses of its argument");
+
+  auto &phi = fixture.BlockAt(1).AppendNewInst(ValueOpcode::Phi);
+  phi.SetFlags(Type::U32);
+  phi.AddPhiOperand(&fixture.BlockAt(0), Value(after));
+  phi.AddPhiOperand(&fixture.BlockAt(1), Value(&phi));
+  auto *user = fixture.Emit(ValueOpcode::IAdd32, {Value(&phi), Value(&phi)}, 0, 1).TryInstruction();
+  phi.ReplaceUsesWith(Value(after));
+  Check(phi.GetOpcode() == ValueOpcode::Identity && phi.Arg(0) == Value(after) && !phi.HasUses() &&
+            user->Arg(0) == Value(after) && user->Arg(1) == Value(after) &&
+            after->Uses() == std::vector<Use>({{user, 0}, {user, 1}, {&phi, 0}}),
+        "self-referencing Phi replacement kept a use of itself or reordered the moved uses");
+}
+
 void TestControlDependentStandaloneLoadStaysTyped() {
   Fixture fixture(3);
   const auto memory = fixture.AddMemory(ResourceKind::ScalarAddress);
@@ -870,6 +899,7 @@ int main() {
     TestCarryAndBitFields();
     TestInvariantAndDivergentPhi();
     TestOperandMutationLifecycle();
+    TestReplacementKeepsUseOrder();
     TestControlDependentStandaloneLoadStaysTyped();
     TestRuntime64BitDescriptorOps();
     TestUniformFirstLaneSamplerLod();

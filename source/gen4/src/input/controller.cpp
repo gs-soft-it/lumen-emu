@@ -138,7 +138,7 @@ void GameController::ApplyRemoteState(OrbisPadButtonDataOffset buttons,
     }
     m_state.OnTouchpad(0, touch_down, touch_x, touch_y);
     m_state.time = Libraries::Kernel::sceKernelGetProcessTime();
-    m_states_queue.Push(m_state);
+    PushBufferedState(m_state);
 }
 
 void GameController::Gyro(int id) {
@@ -426,7 +426,41 @@ void GameController::SetLastUpdate(std::chrono::steady_clock::time_point lastUpd
 void GameController::PushState() {
     std::lock_guard lg(m_states_queue_mutex);
     m_state.time = Libraries::Kernel::sceKernelGetProcessTime();
-    m_states_queue.Push(m_state);
+    PushBufferedState(m_state);
+}
+
+void GameController::PushBufferedState(State state) {
+    const auto same_vector = [](const auto& a, const auto& b) {
+        return a.x == b.x && a.y == b.y && a.z == b.z;
+    };
+    const auto can_replace = [&](const State& pending) {
+        if (pending.buttonsState != state.buttonsState ||
+            !same_vector(pending.acceleration, state.acceleration) ||
+            !same_vector(pending.angularVelocity, state.angularVelocity) ||
+            !same_vector(pending.orientation, state.orientation) ||
+            pending.orientation.w != state.orientation.w) {
+            return false;
+        }
+        for (int i = 0; i < 2; ++i) {
+            const auto& a = pending.touchpad[i];
+            const auto& b = state.touchpad[i];
+            if (a.state != b.state || a.ID != b.ID || a.x != b.x || a.y != b.y) return false;
+        }
+        return true;
+    };
+
+    // Keep the newest unread analog position and timestamp, without letting
+    // unchanged timer samples evict digital edges. Touch and motion changes
+    // retain their existing sampling; already returned records are not here.
+    if (auto* pending = m_states_queue.Back(); pending && can_replace(*pending)) {
+        // An identical timer sample is not a new input. Keep the original
+        // edge timestamp unless the pending analog position actually changes.
+        if (pending->axes != state.axes) {
+            *pending = std::move(state);
+        }
+        return;
+    }
+    m_states_queue.Push(std::move(state));
 }
 
 u8 GameControllers::GetGamepadIndexFromJoystickId(SDL_JoystickID id) {

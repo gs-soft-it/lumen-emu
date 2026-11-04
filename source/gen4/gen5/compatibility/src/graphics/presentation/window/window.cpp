@@ -24,6 +24,10 @@
 #include "libs/controller.h"
 #include "loader/systemContent.h"
 
+#if defined(LUMEN_PS5_ANDROID_ENGINE)
+#include "AndroidPs5RuntimeUi.h"
+#endif
+
 #include <cstdlib>
 #include <fmt/format.h>
 #include <memory>
@@ -315,6 +319,12 @@ static void GameEventController([[maybe_unused]] const EventController& f) {
 		Controller::Disconnect(f.id);
 		SDL_CloseGamepad(SDL_GetGamepadFromID(f.id));
 	}
+
+#if defined(LUMEN_PS5_ANDROID_ENGINE)
+	if (f.added || f.removed) {
+		AndroidPhysicalControllerStateChanged(Controller::GetActiveControllerId() > 0);
+	}
+#endif
 
 	if (f.down || f.up) {
 		const auto button = ControllerButtonToPadButton(f.button);

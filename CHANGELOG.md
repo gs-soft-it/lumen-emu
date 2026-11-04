@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.1.7-spike-fexlab — Android version code 10
+
+4 November 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.7-spike-fexlab)
+
+### Highlights
+
+- Quick folder browsing and direct game-file access in the GitHub APK, using Android’s all-files permission. Games remain in the selected folder without being copied into private app storage.
+- Preserve the active folder from earlier direct-access releases, plus existing settings and saves. GitHub skips the Play channel’s one-time folder-selection reset.
+- Improved NGS2 audio streaming and callbacks, including the PCM path that restored audible Brotato audio in the documented Android development test.
+- Current cumulative PS4/PS5 core updates, an English dashboard and an expanded compatibility catalog.
+- README compatibility reports updated with the latest device-specific results, including developer-reported West of Dead version 01.00 on realme GT 8 Pro. These reports retain their original device and tested-build context.
+
+### Library access and distribution channels
+
+The GitHub APK offers a fast filesystem browser for the folder containing extracted games. Grant Android’s all-files access when requested; the selected folder becomes the active library and is read directly. Existing direct-filesystem selections and supported legacy document bindings remain valid when available. Cancelling selection preserves the previous library, and pending transfers must be resolved before another library change.
+
+The Google Play package uses a separate storage workflow: select missing games, copy or move them into private app storage, and optionally verify their contents or remove transferred source files. Both options start disabled. That workflow includes transfer recovery and explicit cancellation. The shared core and bundled assets are identical across the two channels; the GitHub release asset is the direct-access APK, while the Play AAB is prepared separately.
+
+### Audio and cumulative core changes
+
+The NGS2 mixer now handles the supported streamed PCM formats and render layouts, processes buffer-completion callbacks through the guest runtime, and accepts the common four-byte voice-state query as well as the full state structure. These are general runtime corrections rather than title-specific patches. The documented Brotato test confirmed audible output; it is not a claim of complete audio fidelity or compatibility for every game.
+
+Six selected KytyPS5 changes improve shader intermediate-representation handling, resource tracking, shader identity and interval merging. Existing Lumen defaults, validation boundaries and ARM64/Metal adaptations are retained. The cumulative update also includes controller input-delivery fixes, instruction-qualified sampler comparison and restoration of FEX architectural state after signal callbacks. No new FPS or startup-speed measurement is attributed to this release.
+
+Mojo/Bionic, Turnip Banners and JimVulkan PanVK remain bundled with their pinned provenance and licence notices. Existing automatic defaults and saved explicit driver choices are preserved; Mali support remains experimental.
+
+The public repository contains the refreshed native core, relevant tests and provenance records described by `SOURCE_SNAPSHOT.json`. Existing public build adaptations and licence notices are preserved. Dashboard and Android application-shell sources remain outside this core repository; their changes are included in the APK.
+
+### Android package
+
+- APK: `lumenemu-0.1.7-spike-fexlab-v10-github.apk`
+- Package: `it.gssoft.lumenemu`
+- Version: `0.1.7-spike-fexlab` (version code `10`)
+- Android 13 (API 33) or newer, ARM64 (`arm64-v8a`); target API 36.
+- Non-debuggable FEX Release build, signed with the existing GitHub publication certificate.
+- Same package and signing certificate, and a higher version code, than public 0.1.5/build 6 and 0.1.6/build 7. This identity check does not establish upgrade compatibility with differently signed development or Google Play installations.
+
+APK SHA-256:
+
+```text
+0dc2aa834c03458a63474b8713717386e2a30bc3c4042edb52a17e2263da5e15
+```
+
+### Verification and limits
+
+Both signed APK variants passed native PS4/PS5 audits, package identity, signing, permission and 16 KiB alignment checks. The Play AAB also passed bundletool and signature checks. All three artifacts contain the same six native libraries and 195 assets, including the pinned graphics drivers, licence notices and SUCCI demo. Compiled storage-policy flags and manifests were checked for each channel.
+
+Each channel passed 84 JVM tests, with three existing skips, and the Release `lintVital` packaging gate. Full lint reports 54 pre-existing errors and is not a passing gate. Instrumentation tests compiled for both Release channels, including the new upgrade checks, but were not executed on a device during this preparation. The exact final packages have no new device installation, gameplay or upgrade trial. Binary alignment alone does not establish runtime compatibility with every 16 KiB-page device.
+
+A static diagnostics audit found no bundled debugger, diagnostic wrapper, Vulkan validation layer or malloc-debug tool. Heavy tracing and telemetry are disabled. Optional diagnostic implementations, including NGS2 audio tracing, remain compiled but disabled by default; their Android debug extras are ignored by the Release app. Normal warning/error logs, launch/preflight support and the SUCCI demo are retained. The Play bundle’s native-symbol metadata is passive crash-analysis data.
+
 ## 0.1.6-spike-fexlab — Android version code 7
 
 1 November 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.6-spike-fexlab)

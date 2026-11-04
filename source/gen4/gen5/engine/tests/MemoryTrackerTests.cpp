@@ -323,6 +323,40 @@ void TestRangeSet() {
             intersections[0].second == 0x1040 &&
             intersections[1].first == 0x1220 && intersections[1].second == 0x1240,
         "range set subtraction did not preserve both exact tails");
+
+  // Compare overlapping additions/subtractions with independent byte coverage.
+  ranges.Clear();
+  bool covered[256]{};
+  uint32_t state = 0x1248abcd;
+  for (unsigned step = 0; step < 512; ++step) {
+    state = state * 1664525u + 1013904223u;
+    const uint32_t begin = (state >> 16) % 256;
+    state = state * 1664525u + 1013904223u;
+    const uint32_t length = 1 + (state >> 16) % (256 - begin);
+    const bool add = (state & 4) != 0;
+    if (add) ranges.Add(begin, length);
+    else ranges.Subtract(begin, length);
+    for (uint32_t i = begin; i < begin + length; ++i) covered[i] = add;
+    std::vector<std::pair<uint64_t, uint64_t>> expected;
+    for (uint32_t i = 0; i < 256;) {
+      if (!covered[i]) { ++i; continue; }
+      const uint32_t first = i;
+      while (i < 256 && covered[i]) ++i;
+      expected.emplace_back(first, i);
+    }
+    intersections.clear();
+    ranges.ForEach([&](uint64_t first, uint64_t last) {
+      intersections.emplace_back(first, last);
+    });
+    Check(intersections == expected, "range merging changed byte coverage or canonical gaps");
+  }
+  ranges.Clear();
+  ranges.Add(UINT64_MAX - 8, 8);
+  ranges.Add(UINT64_MAX - 16, 8);
+  ranges.Add(UINT64_MAX - 12, 4);
+  Check(ranges.Contains(UINT64_MAX - 16, 16) &&
+            !ranges.Intersects(UINT64_MAX - 17, 1),
+        "range merging lost the largest valid endpoint");
 }
 
 void TestGuestRange() {

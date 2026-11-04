@@ -1,5 +1,6 @@
 #include "graphics/shader/shader.h"
 
+#include "common/alignment.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -22,6 +23,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -56,6 +58,21 @@ void ShaderInit() {
 	g_shader_map = std::make_unique<std::unordered_map<uint64_t, ShaderMapEntry>>();
 }
 
+// Hash and translate the same code/literal span. Unknown or malformed footers
+// retain the complete binary, including its metadata.
+static uint32_t ShaderProgramSize(const uint32_t* binary, uint32_t size) {
+	constexpr uint32_t FooterSize = 0x30;
+	if (size < FooterSize) return size;
+	uint32_t footer[FooterSize / sizeof(uint32_t)];
+	std::memcpy(footer, reinterpret_cast<const uint8_t*>(binary) + size - FooterSize, FooterSize);
+	const auto end = Common::AlignUp(uint64_t {footer[5]}, 16) + footer[6];
+	if (std::memcmp(footer, "barefoot", 8) != 0 || footer[4] != 1 || footer[5] == 0 || footer[5] % 4 != 0 ||
+	    end % 4 != 0 || end > size - FooterSize) {
+		return size;
+	}
+	return static_cast<uint32_t>(end);
+}
+
 void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 	EXIT_IF(g_shader_map == nullptr);
 
@@ -65,9 +82,12 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 	}
 	uint64_t host = 0;
 	EXIT_IF(!LibKernel::Memory::TranslateGuestMemory(addr, data.code_size_bytes, &host));
-	const auto hash = XXH3_64bits(reinterpret_cast<const void*>(host), data.code_size_bytes);
+	const auto* binary = reinterpret_cast<const uint32_t*>(host);
+	auto mapped = data;
+	mapped.code_size_bytes = ShaderProgramSize(binary, data.code_size_bytes);
+	const auto hash = XXH3_64bits(binary, mapped.code_size_bytes);
 	std::scoped_lock lock(g_shader_map_mutex);
-	(*g_shader_map)[addr] = {data, hash};
+	(*g_shader_map)[addr] = {mapped, hash};
 }
 
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {

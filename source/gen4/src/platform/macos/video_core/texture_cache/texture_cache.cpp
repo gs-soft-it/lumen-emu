@@ -1136,9 +1136,11 @@ void TextureCache::RefreshImage(Image& image) {
 }
 
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
-                                     AmdGpu::BorderColorBuffer border_color_base) {
+                                     AmdGpu::BorderColorBuffer border_color_base,
+                                     bool is_compare) {
     const u64 hash = XXH3_64bits(&sampler, sizeof(sampler));
-    const auto [it, new_sampler] = samplers.try_emplace(hash, instance, sampler, border_color_base);
+    const auto [it, new_sampler] =
+        samplers[is_compare].try_emplace(hash, instance, sampler, border_color_base, is_compare);
     return it->second.Handle();
 }
 

@@ -261,6 +261,9 @@ struct SamplerResource {
     SharpFetch<AmdGpu::Sampler> sharp_fetch{};
     SharpFetchPostOp post_op{};
     SharpLocation post_op_tsharp_dw3_off{};
+    bool is_compare{};
+
+    bool operator==(const SamplerResource&) const = default;
 
     constexpr AmdGpu::Sampler GetSharp(const auto& info) const noexcept {
         AmdGpu::Sampler sampler{};

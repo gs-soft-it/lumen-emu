@@ -135,6 +135,8 @@ public:
 
 private:
     void PushState();
+    // Caller holds m_states_queue_mutex; the argument is an owned snapshot.
+    void PushBufferedState(State state);
 
     bool m_connected = false;
     int m_connected_count = 0;

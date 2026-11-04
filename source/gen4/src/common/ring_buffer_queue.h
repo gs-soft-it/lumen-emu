@@ -38,6 +38,13 @@ public:
         return m_storage[m_begin];
     }
 
+    T* Back() {
+        if (m_size == 0) {
+            return nullptr;
+        }
+        return &m_storage[(m_begin + m_size - 1) % m_storage.size()];
+    }
+
 private:
     u64 m_begin = 0;
     u64 m_size = 0;

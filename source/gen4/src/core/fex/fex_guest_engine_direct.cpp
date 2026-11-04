@@ -21,6 +21,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <sys/ucontext.h>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #if defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
@@ -145,6 +148,55 @@ FEXCore::Core::InternalThreadState* CreateNativeThread(FEXCore::Context::Context
 }
 
 // Forward-declare so ActiveFexExecution can hold the HLE bridge for deferred flush.
+// A signal handler is asynchronous to the interrupted guest ABI call. Preserve
+// its architectural registers, including caller-saved vector registers. Keep
+// FEX cache pointers, deferred-signal counters and frame ownership untouched.
+class SignalGuestStateRestore final {
+public:
+  explicit SignalGuestStateRestore(FEXCore::Core::CPUState& state) noexcept : current{state} {
+    CopyRegisters(saved, current);
+#if defined(__aarch64__)
+    asm volatile("mrs %0, fpcr" : "=r"(host_fpcr));
+    asm volatile("mrs %0, fpsr" : "=r"(host_fpsr));
+#endif
+  }
+  SignalGuestStateRestore(const SignalGuestStateRestore&) = delete;
+  SignalGuestStateRestore& operator=(const SignalGuestStateRestore&) = delete;
+  void Restore() noexcept {
+    if (restored) return;
+    CopyRegisters(current, saved);
+#if defined(__aarch64__)
+    // FEX's SetRoundingMode updates host FPCR directly; restoring mxcsr alone
+    // would leave the resumed guest (and the next native HLE) in handler mode.
+    asm volatile("msr fpcr, %0" :: "r"(host_fpcr) : "memory");
+    asm volatile("msr fpsr, %0" :: "r"(host_fpsr) : "memory");
+#endif
+    restored = true;
+  }
+private:
+  static void CopyRegisters(FEXCore::Core::CPUState& to,
+                            const FEXCore::Core::CPUState& from) noexcept {
+    to.rip = from.rip;
+    to.callret_sp = from.callret_sp;
+    to.pf_raw = from.pf_raw; to.af_raw = from.af_raw;
+    to.mxcsr = from.mxcsr; to.FCW = from.FCW; to.AbridgedFTW = from.AbridgedFTW;
+    to.es_idx = from.es_idx; to.cs_idx = from.cs_idx; to.ss_idx = from.ss_idx;
+    to.ds_idx = from.ds_idx; to.gs_idx = from.gs_idx; to.fs_idx = from.fs_idx;
+    to.es_cached = from.es_cached; to.cs_cached = from.cs_cached;
+    to.ss_cached = from.ss_cached; to.ds_cached = from.ds_cached;
+    to.fs_cached = from.fs_cached; to.gs_cached = from.gs_cached;
+    std::memcpy(to.gregs, from.gregs, sizeof(to.gregs));
+    std::memcpy(to.flags, from.flags, sizeof(to.flags));
+    std::memcpy(to.mm, from.mm, sizeof(to.mm));
+    std::memcpy(to.avx_high, from.avx_high, sizeof(to.avx_high));
+    to.xmm = from.xmm;
+  }
+  FEXCore::Core::CPUState& current;
+  FEXCore::Core::CPUState saved{};
+  uint64_t host_fpcr{}, host_fpsr{};
+  bool restored{};
+};
+
 class BridgeSyscallHandler;
 
 struct ActiveFexExecutionState final {
@@ -200,9 +252,24 @@ void FexMessageHandler(LogMan::DebugLevels level, const char* message) {
       std::fprintf(stderr, "LUMEN_HOST_FEX_BLOCK index=%u %s\n", index, message);
     }
   } else if (level <= LogMan::ERROR) {
+#if defined(__ANDROID__)
+    __android_log_write(level == LogMan::ASSERT ? ANDROID_LOG_FATAL : ANDROID_LOG_ERROR,
+                        "LumenGen4FEX", message);
+#endif
     std::fprintf(stderr, "LUMEN_HOST_FEX_ERROR level=%u %s\n", static_cast<unsigned>(level),
                  message);
+    std::fflush(stderr);
   }
+}
+
+void FexThrowHandler(const char* message) {
+  const char* text = message != nullptr ? message : "FEX fatal error without a message";
+#if defined(__ANDROID__)
+  __android_log_write(ANDROID_LOG_FATAL, "LumenGen4FEX", text);
+#endif
+  std::fprintf(stderr, "LUMEN_HOST_FEX_FATAL %s\n", text);
+  std::fflush(stderr);
+  // FEX's caller still performs FEX_TRAP_EXECUTION after this handler returns.
 }
 
 EngineFailure Failure(EngineStage stage, int error) {
@@ -382,6 +449,7 @@ public:
                            traceEnabled ? "1" : "0");
       if (traceEnabled) FexBlockTraceCount.store(0, std::memory_order_relaxed);
       LogMan::Msg::InstallHandler(FexMessageHandler);
+      LogMan::Throw::InstallHandler(FexThrowHandler);
     }
     ++Users;
     return true;
@@ -392,6 +460,7 @@ public:
     if (Users == 0) return Failure(EngineStage::Teardown, EINVAL);
     if (--Users == 0) {
       FEXCore::Config::Shutdown();
+      LogMan::Throw::UnInstallHandler();
       LogMan::Msg::UnInstallHandler();
     }
     return true;
@@ -678,8 +747,6 @@ public:
     }
 
     // Save interrupted frame (may hold host values mid-HLE).
-    std::array<uint64_t, 16> saved_gprs {};
-    std::copy(std::begin(state.gregs), std::begin(state.gregs) + 16, saved_gprs.begin());
     const uint64_t saved_rip = state.rip;
     const uint64_t saved_rsp = state.gregs[REG_RSP];
     if (!looks_guest(work_rsp)) {
@@ -692,6 +759,8 @@ public:
       PendingOrbisSignal.Flushing = false;
       return;
     }
+
+    SignalGuestStateRestore interrupted_state{state};
 
     // Zero guest GPRs for soft handler: frame may contain host SRA garbage that
     // looks like pointers (null+0xf8 SEGV). Keep FS/GS as-is for TLS.
@@ -825,9 +894,9 @@ public:
                  static_cast<unsigned long>(state.gregs[REG_RSP]));
 
     // Restore interrupted frame for resume (HLE or JIT trampoline).
-    std::copy(saved_gprs.begin(), saved_gprs.end(), std::begin(state.gregs));
-    state.rip = saved_rip;
-    state.gregs[REG_RSP] = saved_rsp;
+    // Keep existing ucontext semantics: the handler's guest-memory writes remain;
+    // this path has never imported edits to the synthetic ucontext on return.
+    interrupted_state.Restore();
     PendingOrbisSignal.Flushing = false;
   }
 

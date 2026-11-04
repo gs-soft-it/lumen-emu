@@ -9,6 +9,7 @@
 #include "ngs2_reverb.h"
 #include "ngs2_custom.h"
 #include "ngs2_sampler_runtime.h"
+#include "ngs2_voice_callback.h"
 #include <cstdlib>
 
 #include <algorithm>
@@ -38,8 +39,15 @@ namespace {
 // backing, but never hosts a C++ mutex, vector or decoder object in that memory.
 struct Voice {
     u32 state{}, event{~0u};
+    u32 trace_id{};
     OrbisNgs2WaveformFormat waveform{};
     Detail::SamplerRuntime sampler;
+    bool pcm_stream_open{};
+    OrbisNgs2VoiceCallbackHandler callback{};
+    uintptr_t callback_data{};
+    u32 callback_flags{};
+    u64 callback_epoch{};
+    bool callback_native{};
     std::vector<OrbisNgs2VoicePortInfo> ports;
     std::vector<OrbisNgs2VoiceMatrixInfo> matrices;
 };
@@ -71,6 +79,7 @@ std::map<OrbisNgs2Handle, System> systems;
 std::map<OrbisNgs2Handle, Rack> racks;
 // Never reuse an exposed identity, including when an allocator reuses storage.
 OrbisNgs2Handle next_handle{0x10000};
+u32 next_trace_voice_id{};
 constexpr size_t SystemBytes = 512;
 constexpr size_t RackHeaderBytes = 4096;
 constexpr size_t VoiceBytes = 256;
@@ -225,6 +234,7 @@ s32 CreateRack(OrbisNgs2Handle system, u32 id, const OrbisNgs2RackOption& option
     Rack rack{.system=system,.id=id,.option=option,.backing=backing,.free=free,.user=backing.userData};
     rack.voices.resize(option.maxVoices);
     for (auto& voice:rack.voices) {
+        voice.trace_id=++next_trace_voice_id;
         voice.ports.resize(option.maxPorts,OrbisNgs2VoicePortInfo{-1,1.0f,0,0,0});
         voice.matrices.resize(option.maxMatrices);
     }
@@ -335,13 +345,13 @@ s32 PS4_SYSV_ABI sceNgs2RackGetVoiceHandle(OrbisNgs2Handle handle,u32 index,Orbi
 
 static s32 VoiceControl(OrbisNgs2Handle handle,const OrbisNgs2VoiceParamHeader* list,
                         OrbisNgs2VoiceParamHeader* observed) {
-    struct Command {OrbisNgs2VoiceParamHeader header;std::vector<u8> bytes;std::vector<float> levels;Detail::SamplerPacket packet;};
+    struct Command {OrbisNgs2VoiceParamHeader header;std::vector<u8> bytes;std::vector<float> levels;uintptr_t address{};};
     std::vector<Command> commands;
     auto address=reinterpret_cast<uintptr_t>(list);
     size_t encoded_total=0;
     for (u32 n=0;;++n) {
         if (n==4096) return ORBIS_NGS2_ERROR_DETECTED_CIRCULAR_VOICE_CONTROL;
-        Command cmd{};
+        Command cmd{};cmd.address=address;
         if (!Read(reinterpret_cast<const OrbisNgs2VoiceParamHeader*>(address),cmd.header)) return ORBIS_NGS2_ERROR_INVALID_VOICE_CONTROL_ADDRESS;
         if (observed) *observed = cmd.header;
         if (cmd.header.size<sizeof(cmd.header) || cmd.header.size>4096 || !Range(reinterpret_cast<void*>(address),cmd.header.size,false))
@@ -354,23 +364,6 @@ static s32 VoiceControl(OrbisNgs2Handle handle,const OrbisNgs2VoiceParamHeader* 
             if (p.numLevels>ORBIS_NGS2_MAX_MATRIX_LEVELS || (p.numLevels && !Range(p.aLevel,p.numLevels*sizeof(float),false)))
                 return ORBIS_NGS2_ERROR_INVALID_MATRIX_LEVEL_ADDRESS;
             cmd.levels.resize(p.numLevels);if (p.numLevels) std::memcpy(cmd.levels.data(),p.aLevel,p.numLevels*sizeof(float));
-        }
-        if (MixerEnabled() && cmd.header.id==0x10000001) {
-            // Original Lumen packet ABI: descriptor count is at +0x10. The
-            // adjacent +0x14 field remains opaque and is not a block count.
-            struct BlockParam {OrbisNgs2VoiceParamHeader header;const void* data;u32 count,opaque;const void* descriptors;};
-            struct Descriptor {u32 offset,size,flags,skip;u64 samples,user;};
-            static_assert(sizeof(BlockParam)==32 && sizeof(Descriptor)==32);
-            if(cmd.bytes.size()!=sizeof(BlockParam))return ORBIS_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE;
-            BlockParam p{};std::memcpy(&p,cmd.bytes.data(),sizeof(p));Descriptor d{};
-            if(p.count!=1)return ORBIS_NGS2_ERROR_INVALID_NUM_WAVEFORM_BLOCKS;
-            if(!Read(static_cast<const Descriptor*>(p.descriptors),d))return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_BLOCK_ADDRESS;
-            const auto base=reinterpret_cast<uintptr_t>(p.data);
-            if(!base||base>UINTPTR_MAX-d.offset||!d.size||d.size>Detail::MaxEncodedBytes-encoded_total||d.flags)return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_DATA;
-            const auto* encoded=reinterpret_cast<const u8*>(base+d.offset);
-            if(!Range(encoded,d.size,false)||Overlap(encoded,d.size,p.descriptors,sizeof(d))||Overlap(encoded,d.size,reinterpret_cast<void*>(address),cmd.bytes.size())||Overlap(p.descriptors,sizeof(d),reinterpret_cast<void*>(address),cmd.bytes.size()))return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_ADDRESS;
-            cmd.packet.encoded.assign(encoded,encoded+d.size);encoded_total+=d.size;
-            cmd.packet.skip=d.skip;cmd.packet.playable=d.samples;cmd.packet.identity=base;cmd.packet.user=d.user;
         }
         const s16 next=cmd.header.next;commands.push_back(std::move(cmd));
         if (!next) break;
@@ -392,12 +385,103 @@ static s32 VoiceControl(OrbisNgs2Handle handle,const OrbisNgs2VoiceParamHeader* 
                 if(id==0) {
                     if(cmd.bytes.size()!=sizeof(OrbisNgs2SamplerVoiceSetupParam))return ORBIS_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE;
                     OrbisNgs2SamplerVoiceSetupParam setup{};std::memcpy(&setup,cmd.bytes.data(),sizeof(setup));
+                    if (AudioTraceEnabled()) {
+                        static std::atomic<u32> formats{};
+                        if (formats.fetch_add(1, std::memory_order_relaxed) < 8) {
+                            std::fprintf(stderr,
+                                         "[NGS2_AUDIO_SAMPLER] type=%#x channels=%u rate=%u flags=%u reserved=%u\n",
+                                         setup.format.waveformType, setup.format.numChannels,
+                                         setup.format.sampleRate, setup.flags, setup.reserved);
+                        }
+                    }
                     std::array<u32,4> geometry{};
-                    if(setup.flags||setup.reserved||setup.format.waveformType!=0x40)return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
-                    if(auto error=FrameInfo(setup.format,geometry);error)return error;
+                    if(setup.flags||setup.reserved)return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+                    if (setup.format.waveformType == 0x12) {
+                        if (!setup.format.numChannels || setup.format.numChannels > 8 ||
+                            (setup.format.sampleRate != 44100 && setup.format.sampleRate != 48000) ||
+                            setup.format.configData || setup.format.frameOffset || setup.format.frameMargin)
+                            return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+                    } else {
+                        if(setup.format.waveformType!=0x40)return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+                        if(auto error=FrameInfo(setup.format,geometry);error)return error;
+                    }
                     updated.waveform=setup.format;updated.sampler={};
+                    updated.pcm_stream_open=false;++updated.callback_epoch;
                 } else if(id==1) {
-                    if(!updated.sampler.Append(updated.waveform,cmd.packet))return ORBIS_NGS2_ERROR_CODEC_DECODE_FAIL;
+                    const bool pcm = updated.waveform.waveformType == 0x12;
+                    OrbisNgs2SamplerVoiceWaveformBlocksParam p{};
+                    if (cmd.bytes.size() != sizeof(p)) return ORBIS_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE;
+                    std::memcpy(&p, cmd.bytes.data(), sizeof(p));
+                    // Preserve the qualified ATRAC9 packet profile. PCM uses
+                    // the public flags/count layout declared in ngs2_sampler.h.
+                    const u32 count = pcm ? p.numBlocks : p.flags;
+                    if ((!pcm && count != 1) || (pcm && count > 4096))
+                        return ORBIS_NGS2_ERROR_INVALID_NUM_WAVEFORM_BLOCKS;
+                    if (pcm && (p.flags & ~0x17u)) return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_DATA;
+                    if (pcm && (p.flags & 4u)) {updated.sampler = {};++updated.callback_epoch;}
+                    if (count && !Range(p.aBlock, size_t(count) * sizeof(*p.aBlock), false))
+                        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_BLOCK_ADDRESS;
+                    if (AudioTraceEnabled()) {
+                        static std::atomic<u32> packets{};
+                        if (packets.fetch_add(1, std::memory_order_relaxed) < 8)
+                            std::fprintf(stderr, "[NGS2_AUDIO_PACKET] field16=%u field20=%u\n", p.flags, p.numBlocks);
+                    }
+                    for (u32 n = 0; n < count; ++n) {
+                        OrbisNgs2WaveformBlock d{};
+                        if (!Read(p.aBlock + n, d)) return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_BLOCK_ADDRESS;
+                        if (AudioTraceEnabled()) {
+                            static std::atomic<u32> blocks{};
+                            if (blocks.fetch_add(1, std::memory_order_relaxed) < 8)
+                                std::fprintf(stderr, "[NGS2_AUDIO_BLOCK] bytes=%u repeats=%u skip=%u samples=%llu\n",
+                                             d.dataSize, d.numRepeats, d.numSkipSamples,
+                                             static_cast<unsigned long long>(d.numSamples) | (u64(d.reserved) << 32));
+                        }
+                        if (d.reserved || d.numRepeats) return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_DATA;
+                        if (pcm && !d.dataSize && !d.numSamples) continue;
+                        const auto base = reinterpret_cast<uintptr_t>(p.data);
+                        if (!base || base > UINTPTR_MAX - d.dataOffset || !d.dataSize ||
+                            d.dataSize > Detail::MaxEncodedBytes - encoded_total)
+                            return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_DATA;
+                        const auto* encoded = reinterpret_cast<const u8*>(base + d.dataOffset);
+                        const size_t descriptor_bytes = size_t(count) * sizeof(*p.aBlock);
+                        if (!Range(encoded, d.dataSize, false) ||
+                            Overlap(encoded, d.dataSize, p.aBlock, descriptor_bytes) ||
+                            Overlap(encoded, d.dataSize, reinterpret_cast<void*>(cmd.address), cmd.bytes.size()) ||
+                            Overlap(p.aBlock, descriptor_bytes, reinterpret_cast<void*>(cmd.address), cmd.bytes.size()) ||
+                            AliasesBacking(encoded, d.dataSize))
+                            return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_ADDRESS;
+                        Detail::SamplerPacket packet{};
+                        packet.encoded.assign(encoded, encoded + d.dataSize);
+                        encoded_total += d.dataSize;
+                        packet.skip = d.numSkipSamples;
+                        packet.playable = d.numSamples;
+                        if (pcm) {
+                            const size_t frame_bytes = size_t(updated.waveform.numChannels) * sizeof(s16);
+                            if (!frame_bytes || d.dataSize % frame_bytes)
+                                return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_SIZE;
+                            const u64 available = d.dataSize / frame_bytes;
+                            if (p.flags & 2u) {packet.skip = 0;packet.playable = available;}
+                            else if (d.numSamples == UINT32_MAX) {
+                                if (packet.skip > available) return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_SIZE;
+                                packet.playable = available - packet.skip;
+                            }
+                        }
+                        packet.identity = base;
+                        packet.user = d.userData;
+                        if (!updated.sampler.Append(updated.waveform, packet))
+                            return ORBIS_NGS2_ERROR_CODEC_DECODE_FAIL;
+                        updated.sampler.blocks.back().dataAddress = base + d.dataOffset;
+                        if (AudioTraceEnabled()) {
+                            static std::atomic<u32> snapshots{};
+                            if (snapshots.fetch_add(1,std::memory_order_relaxed)<8) {
+                                const auto& samples=*updated.sampler.blocks.back().pcm;
+                                float peak=0;
+                                for (const float sample:samples) peak=std::max(peak,std::fabs(sample));
+                                std::fprintf(stderr,"[NGS2_AUDIO_SNAPSHOT] samples=%zu peak=%.9g\n",samples.size(),peak);
+                            }
+                        }
+                    }
+                    if (pcm) updated.pcm_stream_open = (p.flags & 1u) != 0;
                 } else {
                     // These envelopes were observed alongside format/refill.
                     // Their bodies have no qualified gain, loop or routing
@@ -470,13 +554,52 @@ static s32 VoiceControl(OrbisNgs2Handle handle,const OrbisNgs2VoiceParamHeader* 
         case 6: {
             if (cmd.header.size!=sizeof(OrbisNgs2VoiceEventParam)) return ORBIS_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE;
             OrbisNgs2VoiceEventParam p{};std::memcpy(&p,cmd.bytes.data(),sizeof(p));
+            if (AudioTraceEnabled()) {
+                static std::atomic<u32> events{};
+                if (events.fetch_add(1, std::memory_order_relaxed) < 16)
+                    std::fprintf(stderr, "[NGS2_AUDIO_EVENT] id=%u\n", p.eventId);
+            }
             if (p.eventId>5) return ORBIS_NGS2_ERROR_INVALID_EVENT_TYPE;
+            if (p.eventId == 2 || p.eventId == 3) ++updated.callback_epoch;
             updated.event=p.eventId;break;
+        }
+        case 7: {
+            if (cmd.header.size!=sizeof(OrbisNgs2VoiceCallbackParam)) return ORBIS_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE;
+            OrbisNgs2VoiceCallbackParam p{};std::memcpy(&p,cmd.bytes.data(),sizeof(p));
+            if (AudioTraceEnabled()) {
+                static std::atomic<u32> callbacks{};
+                if (callbacks.fetch_add(1, std::memory_order_relaxed) < 8)
+                    std::fprintf(stderr, "[NGS2_AUDIO_CALLBACK] flags=%u reserved=%u installed=%u\n",
+                                 p.flags, p.reserved, static_cast<unsigned>(p.callbackHandler != nullptr));
+            }
+            if (!MixerEnabled()) return ORBIS_NGS2_ERROR_INVALID_VOICE_CONTROL_ID;
+            if (p.reserved || (p.flags & ~1u)) return ORBIS_NGS2_ERROR_INVALID_CALLBACK_FLAG;
+            if (p.flags && !p.callbackHandler) return ORBIS_NGS2_ERROR_INVALID_CALLBACK_HANDLER;
+            updated.callback=p.callbackHandler;updated.callback_data=p.callbackData;
+            updated.callback_flags=p.flags;++updated.callback_epoch;
+#ifdef LUMEN_GEN4_ENABLE_FEX_GUEST_CPU
+            updated.callback_native=!Core::GuestCpu::IsGuestHleCallActive();
+#else
+            updated.callback_native=true;
+#endif
+            break;
         }
         default:return ORBIS_NGS2_ERROR_INVALID_VOICE_CONTROL_ID;
         }
     }
-    *voice=std::move(updated);return 0;
+    *voice=std::move(updated);
+    if (AudioTraceEnabled() && voice->waveform.waveformType == 0x12) {
+        static std::atomic<u32> changes{};
+        if (changes.fetch_add(1, std::memory_order_relaxed) < 128) {
+            const auto& command=commands.back();
+            u32 event=~0u;
+            if (command.header.id==6 && command.bytes.size()==sizeof(OrbisNgs2VoiceEventParam))
+                std::memcpy(&event,command.bytes.data()+sizeof(OrbisNgs2VoiceParamHeader),sizeof(event));
+            std::fprintf(stderr,"[NGS2_AUDIO_VOICE] voice=%u rack=%#x command=%#x event=%u state=%u pending=%u blocks=%zu\n",
+                         voice->trace_id,rack->id,command.header.id,event,voice->state,voice->event,voice->sampler.blocks.size());
+        }
+    }
+    return 0;
 }
 s32 PS4_SYSV_ABI sceNgs2VoiceControl(OrbisNgs2Handle handle,
                                    const OrbisNgs2VoiceParamHeader* list) {
@@ -507,14 +630,23 @@ s32 PS4_SYSV_ABI sceNgs2VoiceGetStateFlags(OrbisNgs2Handle handle,u32* out) {
     if (!FindVoice(handle,&voice)) return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
     if (AliasesBacking(out,sizeof(*out))) return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
     const auto state = QueryState(*voice);
+    if (AudioTraceEnabled() && voice->waveform.waveformType == 0x12) {
+        static std::atomic<u32> queries{};
+        if (queries.fetch_add(1,std::memory_order_relaxed)<32)
+            std::fprintf(stderr,"[NGS2_AUDIO_QUERY] voice=%u state=%u pending=%u blocks=%zu\n",
+                         voice->trace_id,state,voice->event,voice->sampler.blocks.size());
+    }
     std::memcpy(out,&state,sizeof(*out));return 0;
 }
-s32 PS4_SYSV_ABI sceNgs2VoiceGetState(OrbisNgs2Handle handle,OrbisNgs2VoiceState* out,size_t size) {
+static s32 VoiceGetState(OrbisNgs2Handle handle,OrbisNgs2VoiceState* out,size_t size) {
     if (!Range(out,size,true)) return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
     std::scoped_lock lock{registry_mutex};Voice* voice{};const auto rack=FindVoice(handle,&voice);
     if (!rack) return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
     const auto expected=rack->id==0x1000?sizeof(OrbisNgs2SamplerVoiceState):rack->id==0x3000?sizeof(OrbisNgs2MasteringVoiceState):sizeof(OrbisNgs2VoiceState);
-    if (size!=expected) return ORBIS_NGS2_ERROR_INVALID_VOICE_STATE_SIZE;
+    // Every rack exposes the common state prefix as well as its complete
+    // typed state. Callers polling only stateFlags provide the four-byte base.
+    if (size!=sizeof(OrbisNgs2VoiceState) && size!=expected)
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_STATE_SIZE;
     if (AliasesBacking(out,size)) return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
     std::array<u8,sizeof(OrbisNgs2MasteringVoiceState)> data{};
     if (rack->id==0x1000) {
@@ -531,6 +663,19 @@ s32 PS4_SYSV_ABI sceNgs2VoiceGetState(OrbisNgs2Handle handle,OrbisNgs2VoiceState
         std::memcpy(data.data(),&state,sizeof(state));
     }
     std::memcpy(out,data.data(),size);return 0;
+}
+s32 PS4_SYSV_ABI sceNgs2VoiceGetState(OrbisNgs2Handle handle,OrbisNgs2VoiceState* out,size_t size) {
+    const auto result=VoiceGetState(handle,out,size);
+    if (AudioTraceEnabled()) {
+        static std::atomic<u32> queries{};
+        if (queries.fetch_add(1,std::memory_order_relaxed)<64) {
+            u32 state=~0u;
+            if (!result && Range(out,sizeof(state),false)) std::memcpy(&state,out,sizeof(state));
+            std::fprintf(stderr,"[NGS2_AUDIO_FULLSTATE] size=%zu result=%#x state=%u\n",
+                         size,static_cast<u32>(result),state);
+        }
+    }
+    return result;
 }
 s32 PS4_SYSV_ABI sceNgs2VoiceGetOwner(OrbisNgs2Handle handle,OrbisNgs2Handle* out,u32* index) {
     if ((!out&&!index) || (out&&!Range(out,sizeof(*out),true)) || (index&&!Range(index,sizeof(*index),true))) return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
@@ -576,24 +721,95 @@ void Advance(Voice& v) {
 static s32 RenderSystem(OrbisNgs2Handle handle,const OrbisNgs2RenderBufferInfo* inputs,u32 count) {
     if (!count || count>64 || !Range(inputs,count*sizeof(*inputs),false)) return ORBIS_NGS2_ERROR_INVALID_BUFFER_INFO;
     std::vector<OrbisNgs2RenderBufferInfo> buffers(count);std::memcpy(buffers.data(),inputs,count*sizeof(*inputs));
+    bool trace_layout = false;
+    if (AudioTraceEnabled()) {
+        static std::atomic<u32> layouts{};
+        trace_layout = layouts.fetch_add(1, std::memory_order_relaxed) < 8;
+        if (trace_layout) {
+            for (size_t index = 0; index < buffers.size(); ++index) {
+                const auto& buffer = buffers[index];
+                std::fprintf(stderr,
+                             "[NGS2_AUDIO_BUFFER] index=%zu type=%#x channels=%u bytes=%llu writable=%u\n",
+                             index, buffer.waveformType, buffer.numChannels,
+                             static_cast<unsigned long long>(buffer.bufferSize),
+                             static_cast<unsigned>(Range(buffer.buffer, buffer.bufferSize, true)));
+            }
+        }
+    }
     for(const auto& b:buffers) if(!b.numChannels||b.numChannels>8||!PcmSize(b.waveformType)||!Range(b.buffer,b.bufferSize,true)) return ORBIS_NGS2_ERROR_INVALID_BUFFER_INFO;
-    std::scoped_lock lock{registry_mutex};auto it=systems.find(handle);
+    struct PendingCallback {
+        OrbisNgs2VoiceCallbackHandler handler{};
+        OrbisNgs2VoiceCallbackInfo info{};
+        u64 epoch{};
+        bool native_registration{};
+    };
+    std::vector<PendingCallback> callbacks;
+    std::unique_lock lock{registry_mutex};auto it=systems.find(handle);
     if(it==systems.end()) return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     if(!CanAccess(it->second)) return ORBIS_NGS2_ERROR_INVALID_OPERATION;
+    if (trace_layout) {
+        std::fprintf(stderr, "[NGS2_AUDIO_SYSTEM] grain=%u rate=%u buffers=%u\n",
+                     it->second.option.numGrainSamples, it->second.option.sampleRate, count);
+    }
     for(const auto& b:buffers) {
         const size_t bytes=static_cast<size_t>(it->second.option.numGrainSamples)*b.numChannels*PcmSize(b.waveformType);
         if(b.bufferSize<bytes||AliasesBacking(b.buffer,bytes))return ORBIS_NGS2_ERROR_INVALID_BUFFER_SIZE;
     }
     for(const auto& [id,rack]:racks) if(rack.system==handle&&!CanAccess(rack))return ORBIS_NGS2_ERROR_INVALID_OPERATION;
     if(MixerEnabled()) {
-        if(count!=1||it->second.option.numGrainSamples!=512||it->second.option.sampleRate!=48000||buffers[0].waveformType!=0x18||buffers[0].numChannels!=8||buffers[0].bufferSize!=512*8*sizeof(float)||Overlap(inputs,count*sizeof(*inputs),buffers[0].buffer,buffers[0].bufferSize))return ORBIS_NGS2_ERROR_INVALID_BUFFER_INFO;
-        std::vector<float> mix(512*8);
-        for(auto& [id,rack]:racks)if(rack.system==handle)for(auto& voice:rack.voices){
-            voice.sampler.Event(voice.event,voice.state,voice.waveform.numChannels);voice.event=~0u;
-            if(rack.id==0x1000)voice.sampler.Mix(voice.state,voice.waveform.numChannels,mix,8);
+        const auto& output = buffers[0];
+        const size_t sample_count =
+            static_cast<size_t>(it->second.option.numGrainSamples) * output.numChannels;
+        const size_t output_bytes = sample_count * PcmSize(output.waveformType);
+        if (count != 1 || it->second.option.sampleRate != 48000 ||
+            (output.waveformType != 0x12 && output.waveformType != 0x18) ||
+            output.bufferSize != output_bytes ||
+            Overlap(inputs, count * sizeof(*inputs), output.buffer, output.bufferSize))
+            return ORBIS_NGS2_ERROR_INVALID_BUFFER_INFO;
+        // Allocate before committing events or consuming the decoded FIFO.
+        // Grain and channels have already passed their bounded validation.
+        std::vector<float> mix(sample_count);
+        size_t completion_capacity = 0;
+        for (const auto& [id, rack] : racks) if (rack.system == handle)
+            for (const auto& voice : rack.voices) completion_capacity += voice.sampler.blocks.size();
+        std::vector<Detail::DecodedBlock> completed;
+        completed.reserve(completion_capacity);
+        callbacks.reserve(completion_capacity);
+        for (auto& [id, rack] : racks) if (rack.system == handle) {
+            for (size_t index = 0; index < rack.voices.size(); ++index) {
+                auto& voice = rack.voices[index];
+                voice.sampler.Event(voice.event, voice.state, voice.waveform.numChannels);
+                voice.event = ~0u;
+                const bool playing = voice.state == 3;
+                completed.clear();
+                if (rack.id == 0x1000)
+                    voice.sampler.Mix(voice.state, voice.waveform.numChannels, mix,
+                                      output.numChannels, &completed);
+                if (playing && voice.pcm_stream_open && voice.state == 0) voice.state = 3;
+                if (voice.callback && (voice.callback_flags & 1u)) for (const auto& block : completed) {
+                    OrbisNgs2VoiceCallbackInfo info{};
+                    info.callbackData = voice.callback_data;
+                    info.voiceHandle = rack.first_voice + index;
+                    info.flag = 1;
+                    info.param.waveformBlock.userData = block.user;
+                    info.param.waveformBlock.data = reinterpret_cast<const void*>(block.dataAddress);
+                    info.param.waveformBlock.dataSize = block.dataSize;
+                    callbacks.push_back({voice.callback, info, voice.callback_epoch, voice.callback_native});
+                }
+            }
         }
         for(auto& sample:mix)sample=std::isfinite(sample)?std::clamp(sample,-1.0f,1.0f):0.0f;
-        std::memcpy(buffers[0].buffer,mix.data(),mix.size()*sizeof(float));
+        if (output.waveformType == 0x18) {
+            std::memcpy(output.buffer, mix.data(), mix.size() * sizeof(float));
+        } else {
+            auto* destination = static_cast<u8*>(output.buffer);
+            for (size_t index = 0; index < mix.size(); ++index) {
+                const auto sample = static_cast<s16>(std::clamp(
+                    std::lround(mix[index] * 32768.0f), -32768L, 32767L));
+                // The guest buffer need not have native int16 alignment.
+                std::memcpy(destination + index * sizeof(sample), &sample, sizeof(sample));
+            }
+        }
         if (AudioTraceEnabled()) {
             float peak{};
             for (const float sample : mix) peak = std::max(peak, std::fabs(sample));
@@ -611,7 +827,30 @@ static s32 RenderSystem(OrbisNgs2Handle handle,const OrbisNgs2RenderBufferInfo* 
         for(auto& [id,rack]:racks) if(rack.system==handle) for(auto& voice:rack.voices) Advance(voice);
         for(const auto& b:buffers)std::memset(b.buffer,0,static_cast<size_t>(it->second.option.numGrainSamples)*b.numChannels*PcmSize(b.waveformType));
     }
-    ++it->second.renders;return 0;
+    ++it->second.renders;
+    // Completion notifications are delivered after the grain is committed.
+    // No registry reference or guest output buffer survives the unlocked call:
+    // the callback may refill, replace a voice, or destroy its entire system.
+    lock.unlock();
+    for (const auto& pending : callbacks) {
+        lock.lock();
+        Voice* voice{};
+        const auto* rack = FindVoice(pending.info.voiceHandle, &voice);
+        const bool current = rack && rack->system == handle &&
+            voice->callback_epoch == pending.epoch && voice->callback == pending.handler;
+        lock.unlock();
+        if (current) {
+            const auto error = Detail::InvokeVoiceCallback(pending.handler, pending.info, pending.native_registration);
+            if (AudioTraceEnabled()) {
+                static std::atomic<u32> dispatches{};
+                if (dispatches.fetch_add(1,std::memory_order_relaxed)<16)
+                    std::fprintf(stderr,"[NGS2_AUDIO_DISPATCH] result=%#x native=%u\n",
+                                 static_cast<u32>(error),static_cast<unsigned>(pending.native_registration));
+            }
+            if (error) return error;
+        }
+    }
+    return 0;
 }
 s32 PS4_SYSV_ABI sceNgs2SystemRender(OrbisNgs2Handle handle,
                                    const OrbisNgs2RenderBufferInfo* inputs,u32 count) {

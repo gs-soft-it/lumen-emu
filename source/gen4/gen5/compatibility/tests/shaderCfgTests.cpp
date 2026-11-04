@@ -1718,6 +1718,71 @@ void TestShaderStageBarriers() {
         "independent vertex invocations retained a workgroup barrier");
 }
 
+
+void TestShaderProgramHash() {
+  EnsureConfigInitialized();
+  using Binary = std::array<uint32_t, 22>;
+  const auto Make = [](uint32_t literal, uint32_t metadata) {
+    Binary words{};
+    words[0] = EncodeSopp(0x01);
+    words[4] = literal;
+    words[8] = metadata;
+    std::memcpy(&words[10], "barefoot", 8);
+    words[12] = metadata;
+    words[14] = 1;
+    words[15] = 4;
+    words[16] = 16;
+    words[18] = metadata;
+    return words;
+  };
+  const auto Map = [](const auto& binary) {
+    ShaderMappedData mapped{};
+    mapped.code_size_bytes = sizeof(binary);
+    HW::ComputeShaderInfo regs{};
+    regs.cs_regs.data_addr = reinterpret_cast<uint64_t>(binary.data());
+    ShaderMapUserData(regs.cs_regs.data_addr, mapped);
+    HW::ShaderRegisters sh{};
+    ShaderComputeInputInfo input{};
+    return PrepareProgram(regs, sh, input);
+  };
+  Check(Map(Make(7, 1)).hash == Map(Make(7, 2)).hash,
+        "metadata-only changes must reuse the same shader program");
+  Check(Map(Make(7, 1)).hash != Map(Make(8, 1)).hash,
+        "shader program identity must include literal bytes");
+  auto code_changed = Make(7, 1);
+  code_changed[0] ^= 1u;
+  Check(Map(code_changed).hash != Map(Make(7, 1)).hash,
+        "shader program identity must include code bytes");
+  Check(Map(Make(7, 1)).code.size() == 8,
+        "translation must consume exactly the hashed program span");
+  // Unknown versions, invalid sizes, overflow and damaged magic hash whole.
+  for (unsigned invalid = 0; invalid < 8; ++invalid) {
+    auto a = Make(7, 1);
+    auto b = Make(7, 2);
+    for (auto* words : {&a, &b}) {
+      switch (invalid) {
+      case 0: (*words)[14] = 2; break;
+      case 1: (*words)[15] = 0; break;
+      case 2: (*words)[15] = UINT32_MAX; break;
+      case 3: (*words)[16] = 17; break;
+      case 4: (*words)[16] = UINT32_MAX; break;
+      case 5: (*words)[10] ^= 1u; break;
+      case 6: (*words)[16] = 64; break;
+      case 7: (*words)[15] = 3; break;
+      }
+    }
+    Check(Map(a).hash != Map(b).hash && Map(a).code.size() == a.size(),
+          "unknown or malformed footer must retain the whole shader binary");
+  }
+  const std::array<uint32_t, 1> short_binary{EncodeSopp(0x01)};
+  Check(Map(short_binary).code.size() == short_binary.size(),
+        "footer-free shader must retain all of its code");
+  auto without_literals = Make(7, 1);
+  without_literals[16] = 0;
+  Check(Map(without_literals).code.size() == 4,
+        "empty literal buffer must preserve aligned code bytes");
+}
+
 void TestVertexBufferGrouping() {
   const uint32_t shader[] = {EncodeSopp(0x01)};
   std::array<uint16_t, static_cast<size_t>(AgcDirectResourceType::Last) + 1> offsets;
@@ -12192,6 +12257,35 @@ void TestFinalSsaRejectsRegisterStatePseudos() {
   check_rejected(false);
   check_rejected(true);
 }
+
+void TestEmitterValidatesFinalProgram() {
+  using namespace ShaderRecompiler;
+  const uint32_t shader[] = {
+      EncodeMubuf0(0x1c, 0, false), // buffer_store_dword v0
+      EncodeMubuf1(0, 12, 0),
+      0xbf810000u,
+  };
+  const auto options = MakeCompileOptions(ShaderType::Compute);
+  auto result = RecompileForTest(shader, options);
+  // Only emission validates, so a definition moved below its same-block user must be fatal.
+  bool moved = false;
+  for (auto *block : result.program.blocks) {
+    auto &list = block->Instructions();
+    for (auto user = list.begin(); !moved && user != list.end(); ++user) {
+      for (size_t arg = 0; !moved && arg < user->NumArgs(); ++arg) {
+        const auto *def = user->Arg(arg).TryInstruction();
+        if (def == nullptr || def->Parent() != block) continue;
+        const auto where = std::ranges::find_if(
+            list, [&](const IR::Inst &inst) { return &inst == def; });
+        list.splice(std::next(user), list, where);
+        moved = true;
+      }
+    }
+  }
+  Check(moved, "emitter fixture has no same-block definition");
+  ExpectFatal([&] { Spirv::EmitProgram(result.program, options.input_info); },
+              "SPIR-V emission accepted a use before its definition");
+}
 #endif
 
 void TestSsaRewriteSealsFilledBlocks() {
@@ -15811,6 +15905,18 @@ int main(int argc, char **argv) {
   using namespace Libs::Graphics;
 
   EnsureConfigInitialized();
+  if (argc == 2 && std::strcmp(argv[1], "--upstream-perf-only") == 0) {
+    TestShaderProgramHash();
+    TestTypedEntryStateIsMinimal();
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+    TestFinalSsaRejectsRegisterStatePseudos();
+    TestEmitterValidatesFinalProgram();
+#endif
+    TestSsaRewriteSealsFilledBlocks();
+    TestValuePhiValidation();
+    std::printf("ShaderCfgTests: shader identity, final IR validation and SSA cases passed\n");
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--upstream-shader-only") == 0) {
     TestSsaRewriteSealsFilledBlocks();
     TestScalarDataCacheInvalidation();
@@ -15839,6 +15945,7 @@ int main(int argc, char **argv) {
   TestNewShaderRecompilerSMovB32();
   TestShaderStageBarriers();
   TestVertexBufferGrouping();
+  TestShaderProgramHash();
   TestNggVertexEntryState();
   TestNewShaderRecompilerClipDisabledPosition();
   TestNewShaderRecompilerAuxPositionExports();
@@ -15954,6 +16061,7 @@ int main(int argc, char **argv) {
   TestTypedEntryStateIsMinimal();
 #if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
   TestFinalSsaRejectsRegisterStatePseudos();
+  TestEmitterValidatesFinalProgram();
 #endif
   TestSsaRewriteSealsFilledBlocks();
   TestValuePhiValidation();
