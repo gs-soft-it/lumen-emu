@@ -176,9 +176,24 @@ APK SHA-256:
 
 The experimental iOS app targets **ARM64 iPhone and iPad devices** and has a minimum deployment version of **iOS/iPadOS 17.4**. It uses **FEX with JIT** for PS4 and PS5 CPU emulation and **native Metal** for graphics. The dashboard includes touch controls and the SUCCI benchmark. In Settings, use **Choose library folder…** to select a folder in Files containing your extracted games. Lumen reads them in place.
 
-Gameplay requires an iOS process with JIT access. The integrated JIT setup was exercised on an **iPhone 15 Pro running iOS 27.2** with Developer Mode, development signing with `get-task-allow`, the phone's pairing file imported under **Settings → On-device JIT**, and LocalDevVPN connected on the phone over Wi-Fi. JIT access is needed again after the app restarts. The deployment minimum alone does not establish JIT or game compatibility on other OS versions or devices.
+**[Download the build 5 IPA](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.0-ios-build5/LumenEmu-iOS-0.1.0-build5-arm64.ipa)** · [Release notes, checksums, and source](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.0-ios-build5)
 
-The **0.1.0 build 5 preview** includes a sideload IPA for installers that import and re-sign the app, such as AltStore Classic. The matching Simulator build was tested on an iPhone 18 Pro simulator. Installation through AltStore Classic and the rebuilt helper's JIT handshake on physical hardware remain unverified for this build. [iOS preview and corresponding source](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.0-ios-build5) · [AltStore distribution options](https://developer.altstore.io/)
+### Install the IPA with AltStore Classic
+
+1. Install and run AltServer on a Mac or Windows PC. Connect your unlocked iPhone by USB and tap **Trust** if asked. In AltServer, choose **Install AltStore**, select your iPhone, and sign in with your Apple Account. [macOS setup](https://faq.altstore.io/altstore-classic/how-to-install-altstore-macos) · [Windows setup](https://faq.altstore.io/altstore-classic/how-to-install-altstore-windows)
+2. If prompted, trust your Apple Account's developer profile in **Settings → General → VPN & Device Management**. Then turn on **Settings → Privacy & Security → Developer Mode**, restart, and confirm after unlocking. [Apple's Developer Mode guide](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
+3. Download the IPA to **Files** on your iPhone. Leave AltServer running and keep the iPhone connected over USB, or use the same Wi-Fi network after setting up Wi-Fi sync. In **AltStore Classic → My Apps**, tap **+** and select the IPA. If prompted, choose **Keep App Extensions** so Lumen can use its built-in JIT helper. Open Lumen when installation finishes. [AltServer connection guide](https://faq.altstore.io/altstore-classic/altserver)
+
+If you use a free Apple Account, open **My Apps → Refresh All** with AltServer reachable before the seven-day signing period expires. [AltStore app refresh guide](https://faq.altstore.io/altstore-classic/your-altstore)
+
+### Enable JIT on iPhone
+
+1. On your computer, open `idevice_pair` and select your unlocked, trusted iPhone over USB. Choose **Remote pairing**, click **Create**, then **Save to file…**. Copy the saved record to **Files** on your iPhone. Keep it private because it contains pairing credentials. [Pairing tool and USB instructions](https://github.com/jkcoxson/idevice_pair/tree/v1.1.0#over-usb)
+2. In Lumen, go to **Settings → On-device JIT → Set up on-device JIT… → Import pairing file…** and select the record. This screen should show **Pairing: stored securely on this iPhone** and **Signing: supports JIT**. The signing check requires the `get-task-allow` entitlement.
+3. Install and open LocalDevVPN on the iPhone. Join a Wi-Fi network and tap **Connect**. Allow the VPN configuration and local network access if prompted. You can open the VPN from Lumen's JIT setup screen. [LocalDevVPN on the App Store](https://apps.apple.com/app/id6755608044)
+4. Return to Lumen and tap **Play** on a game or the included SUCCI demo. Wait for **Starting JIT** to finish. After restarting Lumen, keep LocalDevVPN connected and tap **Play** again to prepare JIT for the new session. If pairing stops working, create and import a fresh record.
+
+The built-in JIT flow was tested on an iPhone 15 Pro running iOS 27.2 with an earlier development-signed build. Build 5 passed Simulator testing. Installation through AltStore Classic and JIT after re-signing build 5 still need to be verified on a physical iPhone.
 
 ### iPhone 15 Pro game reports
 
