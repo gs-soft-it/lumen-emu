@@ -1,5 +1,16 @@
 # Changelog
 
+## iOS and iPadOS preview 0.1.0 build 5
+
+9 November 2026 · [IPA and corresponding source](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.0-ios-build5)
+
+- The PS4 core uses FFmpeg for AAC and Mbed TLS for HTTPS on iOS. HTTPS verifies certificate trust and hostnames through Apple Security.
+- The PS5 iOS core reads SPIR-V operands from tables generated from the MIT-licensed Khronos grammar.
+- The on-device JIT helper uses a source-built StikJIT framework. The corresponding-source archive records the `idevice` revision, Rust dependency lock and build recipe.
+- The matching Simulator build installed and passed FEX JIT probes for PS4 and PS5. The PS4 Succi demo rendered its title screen.
+
+Build 5 is an experimental ARM64 sideload preview with a minimum deployment version of iOS/iPadOS 17.4. Physical AltStore Classic installation and JIT after re-signing remain unverified for this build.
+
 ## iOS / iPadOS 0.1.0 (build 3) — development preview
 
 9 November 2026 · [iOS requirements](README.md#ios-and-ipados)
@@ -11,7 +22,7 @@
 
 These playability reports come from development builds on the developer's device. The integrated JIT path was exercised with development signing on iOS 27.2.
 
-The IPA is pending distribution review. The current build links components with open licence compatibility issues described in [LICENSES.md](LICENSES.md#unresolved-release-issues).
+Build 3 was kept local while the licence compatibility issues recorded in [LICENSES.md](LICENSES.md) were reviewed.
 
 ## 0.1.7-spike-fexlab — Android version code 10
 

@@ -60,8 +60,9 @@
     "Android selected document trees provide the authoritative read-only game root through persisted Storage Access Framework grants. A shared JNI bridge supplies the original seekable file descriptors for native reads and mappings, plus virtual stat and directory queries; scoped URI validation rejects traversal and revoked grants without copying game payloads or falling back to the private metadata cache. Native filesystem paths retain their existing behavior. The bridge supports bounded, thread-local metadata reuse within one synchronous read operation, scoped by the PS4 open/stat/directory consumers and PS5 KernelOpen/KernelStat in both runtime variants; nested scopes share only that operation, errors and mount replacement invalidate metadata, and every descriptor opening still consults the live provider. Metadata hits validate the path before avoiding a redundant JNI thread attachment. Gen5 directory enumeration consumes names and file/directory types from one validated provider cursor through an additive C ABI, without per-child stat, payload opens or metadata reuse across operations; the names-only PS4 API remains unchanged.",
     "Shader layer output is enabled only when reported by the device; final SPIR-V capabilities and stage-qualified output interfaces are admitted before native module creation on every backend, including runtime and fixture helpers, without rewriting shader semantics.",
     "Capability-qualified fragment quad partitioning for native subgroup widths below32 uses constant quad-prefix DPP broadcasts and certified control votes. Read-only resources, whole-program observable-state and finite-loop proofs, enabled QuadControl/MaximalReconvergence features and final SPIR-V validation are required; unproven raster wave semantics remain denied.",
-    "iOS build support covers the direct FEX runtime framework and its native Metal dependencies.",
-    "Barycentric preprocessing, geometry and mesh rewriting preserve the actual enabled fragment quad-control contract; ordinary quad fragments pass through unchanged and the final native-module capability gate remains authoritative."
+    "Barycentric preprocessing, geometry and mesh rewriting preserve the actual enabled fragment quad-control contract; ordinary quad fragments pass through unchanged and the final native-module capability gate remains authoritative.",
+    "iOS direct FEX derives a bounded SPIR-V operand reader from the Khronos MIT core and GLSL.std.450 grammars. It preserves ID-reference classification for mesh pointer-escape checks and validates binary structure before the existing Metal compiler; desktop and Android retain the SPIRV-Tools validation path.",
+    "iOS build support covers the direct FEX runtime framework and its native Metal dependencies."
   ],
   "performance_opt_ins": {
     "default": true,
@@ -1140,7 +1141,7 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp",
-      "sha256": "de1c5d3940bb9afc7ebaf18de870c671cdad24a900ab3995ecd2800ec3bd07a5",
+      "sha256": "1acc1979df7c29c945df44f7918e287f14f37a431aa64e081ec00e719051ef05",
       "upstream_sha256": "5e99991c9062cdfff935bfb900a1b9ffe0c4fcf5402e3401d252c6c57aa35115",
       "origin": "host-adapted"
     },
@@ -1164,7 +1165,7 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/pipeline/shaders.cpp",
-      "sha256": "433ea0b9c4f4a7bf864336ef2f013bd246912e1b3341eeada23d43305582aede",
+      "sha256": "0fc35a6b6807500a895c79be7b0876345baa38bece5ffb681f31a4906ba954bf",
       "upstream_sha256": "f584e16eff6911067ab584422c1a1bd4aa710e8cf41999d85b36876c8c0af322",
       "origin": "host-adapted"
     },
@@ -1498,7 +1499,7 @@
     },
     {
       "path": "src/graphics/shader/barycentricFallback.cpp",
-      "sha256": "9441a3fd6e79275ba8869467872c4657a74a77b2dfa9ad6d44f1cbeb876e054b",
+      "sha256": "1cdcd8d9c247acb58ea578f42c45ddf979e5a6da8cf2aef3f6d016c8b3e35d42",
       "origin": "host-adapter"
     },
     {
@@ -2088,6 +2089,16 @@
       "sha256": "d3151c60192e5f78a7e22522841fad18ca518af007debf9e814e596c78c9b735",
       "upstream_sha256": "d3151c60192e5f78a7e22522841fad18ca518af007debf9e814e596c78c9b735",
       "origin": "unchanged"
+    },
+    {
+      "path": "src/graphics/shader/spirvBinary/reader.cpp",
+      "sha256": "3b2def72ca026fb7b392384338801dc46e02dd3778368e9187b166a1057a2a35",
+      "origin": "host-adapter"
+    },
+    {
+      "path": "src/graphics/shader/spirvBinary/reader.h",
+      "sha256": "67ea52ba053e932496cef731f97014dc09393997550e600ee71df80b44d87338",
+      "origin": "host-adapter"
     },
     {
       "path": "src/kernel/directMemoryMutation.h",

@@ -24,7 +24,11 @@
 #include <bit>
 #include <limits>
 #include <span>
+#if defined(LUMEN_PS5_IOS_SPIRV_READER)
+#include "graphics/shader/spirvBinary/reader.h"
+#else
 #include <spirv-tools/libspirv.hpp>
+#endif
 #include <vector>
 
 namespace Libs::Graphics {
@@ -300,6 +304,13 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 			     static_cast<uint32_t>(static_params.topology), static_params.provoking_vtx_last,
 			     geometry.reason.c_str());
 		}
+#if defined(LUMEN_PS5_IOS_SPIRV_READER)
+		const auto issue = SpirvBinary::Inspect(geometry.spirv);
+		if (issue.message) {
+			EXIT("PS5_BARYCENTRIC_FALLBACK_DENIED reason=invalid_generated_geometry word=%zu %s\n",
+			     issue.offset, issue.message);
+		}
+#else
 		spvtools::SpirvTools validator(SPV_ENV_VULKAN_1_3);
 		validator.SetMessageConsumer([](spv_message_level_t, const char*,
 		                                  const spv_position_t& position, const char* message) {
@@ -308,6 +319,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		if (!validator.Validate(geometry.spirv)) {
 			EXIT("PS5_BARYCENTRIC_FALLBACK_DENIED reason=invalid_generated_geometry\n");
 		}
+#endif
 		barycentric_geometry_module = CompileSPV(geometry.spirv, graphics);
 		EXIT_IF(barycentric_geometry_module == nullptr);
 		LOGF("PS5_BARYCENTRIC_GEOMETRY_READY VS=%" PRIu64 " PS=%" PRIu64

@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Lumen modification, 2026-11-09: use system certificate trust on iOS.
 
 #include <algorithm>
 #include <atomic>
@@ -33,6 +34,9 @@
 #if __has_include(<httplib.h>)
 #include <httplib.h>
 #define ORBIS_HTTP_WITH_HTTPLIB 1
+#endif
+#ifdef CPPHTTPLIB_MBEDTLS_SUPPORT
+#include "ios_https_trust.h"
 #endif
 
 namespace Libraries::Http {
@@ -572,7 +576,7 @@ static void LogSendRequestSettings(const HttpRequest& req, int reqId, u64 body_s
     LOG_INFO(Lib_Http, "--- end dump reqId={} ---", reqId);
 }
 
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+#ifdef CPPHTTPLIB_SSL_ENABLED
 #define ORBIS_HTTP_HAS_HTTPS 1
 #else
 #define ORBIS_HTTP_HAS_HTTPS 0
@@ -740,7 +744,7 @@ static s32 RunRealHttpRequest(const SendRequestPlan& plan_in, HttpResponse& out_
 
     for (int depth = 0; depth <= MaxRedirects; ++depth) {
         if (plan.scheme == "https" && !ORBIS_HTTP_HAS_HTTPS) {
-            LOG_ERROR(Lib_Http, "HTTPS request but cpp-httplib lacks OpenSSL support");
+            LOG_ERROR(Lib_Http, "HTTPS request but cpp-httplib lacks TLS support");
             SynthesizeTransportFailureResponse(out_res);
             return ORBIS_HTTP_ERROR_SSL;
         }
@@ -762,10 +766,13 @@ static s32 RunRealHttpRequest(const SendRequestPlan& plan_in, HttpResponse& out_
         cli.set_decompress(plan.settings.inflate_gzip);
 #endif
 
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+#ifdef CPPHTTPLIB_SSL_ENABLED
         if (plan.scheme == "https") {
             const bool game_disabled_verify =
                 (plan.settings.ssl_flags & ORBIS_HTTPS_FLAG_SERVER_VERIFY) == 0;
+#ifdef CPPHTTPLIB_MBEDTLS_SUPPORT
+            ConfigureIosHttpsVerification(cli, plan.host, !game_disabled_verify);
+#else
             bool verify_server = !game_disabled_verify;
             if (verify_server && plan.ctx_has_loaded_certs) {
                 verify_server = false;
@@ -775,6 +782,7 @@ static s32 RunRealHttpRequest(const SendRequestPlan& plan_in, HttpResponse& out_
                          plan.scheme, plan.host);
             }
             cli.enable_server_certificate_verification(verify_server);
+#endif
             if (game_disabled_verify) {
                 LOG_INFO(Lib_Http, "{}://{}: server cert verification disabled (ssl_flags={:#x})",
                          plan.scheme, plan.host, plan.settings.ssl_flags);
@@ -1794,16 +1802,19 @@ int PS4_SYSV_ABI sceHttpsLoadCert(int libhttpCtxId, int caCertNum, const void** 
         return ORBIS_HTTP_ERROR_INVALID_ID;
     }
     // Firmware would hand caList/cert/privKey to libSceSsl, which would parse
-    // them into an X509_STORE used by the TLS layer. We don't implement that
-    // pipeline. Instead, we record that this context expects custom CA-based
-    // verification, and at TLS-handshake time we bypass cpp-httplib's default
-    // CA verification so the game's private-CA-signed endpoints aren't blocked
-    // by our system CA store not knowing about them.
+    // them into an X509_STORE used by the TLS layer. We record this for the
+    // existing guest compatibility behavior on other platforms. The iOS
+    // transport keeps system verification because the guest CA list is not parsed.
     g_state.contexts_with_loaded_certs.insert(libhttpCtxId);
+#ifdef CPPHTTPLIB_MBEDTLS_SUPPORT
+    LOG_WARNING(Lib_Http, "ctxId={} custom CAs are unsupported on iOS; keeping system trust",
+                libhttpCtxId);
+#else
     LOG_ERROR(Lib_Http,
               "ctxId={} marked as using custom CAs; subsequent HTTPS requests on this "
               "context will bypass cert verification (libSceSsl integration not implemented)",
               libhttpCtxId);
+#endif
     return ORBIS_OK;
 }
 

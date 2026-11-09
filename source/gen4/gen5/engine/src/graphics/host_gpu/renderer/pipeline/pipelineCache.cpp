@@ -41,7 +41,11 @@
 #include <fmt/format.h>
 #include <limits>
 #include <span>
+#if defined(LUMEN_PS5_IOS_SPIRV_READER)
+#include "graphics/shader/spirvBinary/reader.h"
+#else
 #include <spirv-tools/libspirv.hpp>
+#endif
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -363,6 +367,16 @@ bool ValidateShaderSpirv(const char* label, uint64_t shader_hash,
 	if (!force_validate && !Config::ShaderValidationEnabled()) {
 		return true;
 	}
+#if defined(LUMEN_PS5_IOS_SPIRV_READER)
+	(void)maintenance8_enabled;
+	const auto issue = SpirvBinary::Inspect(spirv);
+	if (!issue.message) {
+		return true;
+	}
+	LOGF_COLOR(Log::Color::BrightRed,
+	           "%s SPIR-V structure check failed hash=0x%016" PRIx64 " word=%zu: %s\n",
+	           label, shader_hash, issue.offset, issue.message);
+#else
 	spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_3);
 	std::string          messages;
 	tools.SetMessageConsumer([&messages](spv_message_level_t, const char*,
@@ -387,6 +401,7 @@ bool ValidateShaderSpirv(const char* label, uint64_t shader_hash,
 	LOGF_COLOR(Log::Color::BrightRed, "%s SPIR-V validation failed hash=0x%016" PRIx64 ":\n%s",
 	           label, shader_hash, messages.c_str());
 	LOGF("%s\n", text.c_str());
+#endif
 	return false;
 }
 

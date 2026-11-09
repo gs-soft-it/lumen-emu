@@ -84,7 +84,7 @@ def prepare_direct_cpu(repository):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", type=Path, default=Path(__file__).resolve().parents[4] / "lumen-deps/gen4")
-    parser.add_argument("--platform", choices=("macos", "android", "windows"), default="macos")
+    parser.add_argument("--platform", choices=("macos", "ios", "android", "windows"), default="macos")
     parser.add_argument("--seed", type=Path)
     parser.add_argument("--jobs", type=int, default=6)
     args = parser.parse_args()
@@ -94,6 +94,9 @@ def main():
         prepare_direct_cpu(Path(__file__).resolve().parents[3])
     lock = json.loads(Path(__file__).with_name("dependencies.lock.json").read_text())
     records = [record for record in lock["dependencies"] if args.platform in record["platforms"]]
+    if args.platform == "ios":
+        records += [record for record in lock["dependencies"]
+                    if "macos" in record["platforms"] and record["name"] != "libressl"]
     failures = []
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         pending = {pool.submit(prepare, record, args.cache.resolve(), args.seed): record for record in records}

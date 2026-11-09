@@ -17,6 +17,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	add_compile_definitions(LUMEN_IOS_FEX_MODULE=1)
 endif()
 option(LUMEN_PS5_DIRECT_FEX "Use the complete Gen5 engine and direct C13 CPU" OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT LUMEN_PS5_DIRECT_FEX)
+	message(FATAL_ERROR "The Gen5 iOS runtime requires DIRECT FEX")
+endif()
 if(APPLE AND LUMEN_PS5_DIRECT_FEX)
 	option(LUMEN_PS5_NATIVE_METAL "Execute Gen5 graphics through the native Metal backend" ON)
 	if(LUMEN_PS5_NATIVE_METAL)
@@ -408,7 +411,10 @@ if (KYTY_CLANG_CL)
 	set_source_files_properties(${kyty_emulator_src} PROPERTIES COMPILE_FLAGS "-Wno-pragma-pack -Wno-deprecated-declarations -D_TIMESPEC_DEFINED")
 endif()
 
-set(kyty_emulator_link_libraries common Vulkan::Headers kyty_spirv_tools_opt kyty_spirv_tools SDL3::SDL3-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak)
+set(kyty_emulator_link_libraries common Vulkan::Headers SDL3::SDL3-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	list(APPEND kyty_emulator_link_libraries kyty_spirv_tools_opt kyty_spirv_tools)
+endif()
 
 # Linux system libraries.
 if(LINUX OR ANDROID)
@@ -419,7 +425,6 @@ endif()
 set(inc_headers
 	${KYTY_SOURCE_DIR}
 	${KYTY_THIRD_PARTY_DIR}/VulkanMemoryAllocator/include
-	${KYTY_THIRD_PARTY_DIR}/SPIRV-Tools/include
 	${KYTY_THIRD_PARTY_DIR}/SPIRV-Headers/include
 	${KYTY_FMT_INCLUDE_DIR}
 	${KYTY_THIRD_PARTY_DIR}/xxhash
@@ -427,6 +432,10 @@ set(inc_headers
 	${KYTY_THIRD_PARTY_DIR}/renderdoc
 	${KYTY_THIRD_PARTY_DIR}/stb
 )
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	list(APPEND inc_headers "${KYTY_THIRD_PARTY_DIR}/SPIRV-Tools/include")
+endif()
 
 if(LUMEN_PS5_DIRECT_FEX)
 	list(APPEND inc_headers "${CMAKE_CURRENT_SOURCE_DIR}/../direct_fex")

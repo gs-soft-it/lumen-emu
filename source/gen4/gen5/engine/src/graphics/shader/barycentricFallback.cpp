@@ -4,7 +4,11 @@
 #include "graphics/host_gpu/spirvModuleAdmission.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvBuilder.h"
 
+#if defined(LUMEN_PS5_IOS_SPIRV_READER)
+#include "graphics/shader/spirvBinary/reader.h"
+#else
 #include <spirv-tools/libspirv.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -729,7 +733,7 @@ MeshResult PrepareMeshFragment(const FragmentPlan& fragment, const Limits& limit
     // Every supported load is replaced at its original execution point;
     // pointer escapes are denied. Compact plans can then remove the original
     // coordinate variables and derived pointers without changing other uses.
-    // BinaryParse distinguishes ID operands from equal-valued literal words.
+    // Operand decoding distinguishes ID references from equal-valued literal words.
     struct Pointer { uint32_t variable; uint32_t component; };
     std::map<uint32_t, Pointer> pointers;
     for (const auto& [id, input] : coordinates) pointers.emplace(id, Pointer{id, Absent});
@@ -769,25 +773,39 @@ MeshResult PrepareMeshFragment(const FragmentPlan& fragment, const Limits& limit
         }
         cursor += count;
     }
-    struct Uses { const std::map<uint32_t, Pointer>& pointers; bool valid = true; } uses{pointers};
+    struct Uses {
+        const std::map<uint32_t, Pointer>& pointers;
+
+        bool Allows(std::span<const uint32_t> instruction, size_t offset) const {
+            if (!pointers.contains(instruction[offset])) return true;
+            const auto op = instruction[0] & spv::OpCodeMask;
+            const bool metadata = op == spv::OpName || op == spv::OpDecorate || op == spv::OpEntryPoint;
+            const bool read = op == spv::OpLoad && offset == 3;
+            const bool derived = (op == spv::OpAccessChain || op == spv::OpInBoundsAccessChain ||
+                                  op == spv::OpCopyObject) && offset == 3 &&
+                                 pointers.contains(instruction[2]);
+            return metadata || read || derived;
+        }
+    } uses{pointers};
+#if defined(LUMEN_PS5_IOS_SPIRV_READER)
+    const auto issue = SpirvBinary::Inspect(words,
+        [](void* opaque, std::span<const uint32_t> instruction, size_t offset) {
+            return static_cast<const Uses*>(opaque)->Allows(instruction, offset);
+        }, &uses);
+    if (issue.message)
+        return fail("mesh coordinate pointer escapes supported loads and access chains or SPIR-V is invalid");
+#else
     const auto context = spvContextCreate(SPV_ENV_VULKAN_1_3);
     if (context == nullptr) return fail("cannot parse mesh fragment pointer uses");
     spv_diagnostic diagnostic = nullptr;
     const auto parsed = spvBinaryParse(context, &uses, words.data(), words.size(), nullptr,
         [](void* opaque, const spv_parsed_instruction_t* instruction) -> spv_result_t {
-            auto& state = *static_cast<Uses*>(opaque);
-            const auto op = static_cast<spv::Op>(instruction->opcode);
+            const auto& state = *static_cast<const Uses*>(opaque);
+            const std::span operands(instruction->words, instruction->num_words);
             for (uint32_t i = 0; i < instruction->num_operands; ++i) {
                 const auto& operand = instruction->operands[i];
-                if (operand.type != SPV_OPERAND_TYPE_ID || operand.num_words != 1 ||
-                    !state.pointers.contains(instruction->words[operand.offset])) continue;
-                const bool metadata = op == spv::OpName || op == spv::OpDecorate || op == spv::OpEntryPoint;
-                const bool read = op == spv::OpLoad && operand.offset == 3;
-                const bool derived = (op == spv::OpAccessChain || op == spv::OpInBoundsAccessChain ||
-                                      op == spv::OpCopyObject) && operand.offset == 3 &&
-                                     state.pointers.contains(instruction->result_id);
-                if (!metadata && !read && !derived) {
-                    state.valid = false;
+                if (operand.type == SPV_OPERAND_TYPE_ID && operand.num_words == 1 &&
+                    !state.Allows(operands, operand.offset)) {
                     return SPV_ERROR_INVALID_ID;
                 }
             }
@@ -795,8 +813,9 @@ MeshResult PrepareMeshFragment(const FragmentPlan& fragment, const Limits& limit
         }, &diagnostic);
     spvDiagnosticDestroy(diagnostic);
     spvContextDestroy(context);
-    if (parsed != SPV_SUCCESS || !uses.valid)
+    if (parsed != SPV_SUCCESS)
         return fail("mesh coordinate pointer escapes supported loads and access chains");
+#endif
 
     uint32_t next_id = words[3];
     // Bound growth before reserving IDs, including per-load arithmetic.

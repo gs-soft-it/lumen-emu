@@ -1,6 +1,6 @@
 # Lumen Emu: licences, credits and source availability
 
-Updated 1 November 2026.
+Updated 9 November 2026.
 
 Lumen Emu is an independent emulator port optimised for Android, iOS and Mac (Apple Silicon), developed by
 GS-Soft using work from **shadPS4**, **Kyty** and **KytyPS5**. We thank their
@@ -11,9 +11,9 @@ release of, or endorsed by, these projects.
 Mac (Apple Silicon) and iOS versions are coming soon; this platform scope
 does not declare a public release or equal compatibility across platforms.
 
-The core source is planned for publication soon in a new public repository,
-with a single initial snapshot commit. The repository URL will be added once
-published. No public core source URL is available yet.
+The [public core repository](https://github.com/gs-soft-it/lumen-emu) contains
+the emulator engines and build tools. The application shell and its packaging
+are separate inputs to a corresponding-source bundle.
 
 ## Emulator provenance
 
@@ -62,24 +62,43 @@ under `assets/Legal/gen4` and `assets/Legal/ps5`. The legal-asset audit checks
 packaged bytes against their canonical files. Updating these source documents
 does not update an APK or application already built or installed.
 
+## iOS dependency changes
+
+- **Gen4 AAC:** AJM uses FFmpeg's native AAC decoder for ADTS and raw AAC-LC.
+  The Gen4 build no longer links FDK AAC. The [historical FDK notice](source/licenses/gen4/dependencies/aacdec/fdk-aac/NOTICE)
+  remains available for older binaries.
+- **Gen5 SPIRV-Tools:** the iOS direct runtime uses its own shader admission
+  checks and a binary operand reader generated from the pinned MIT
+  [SPIRV-Headers grammar](source/gen4/gen5/compatibility/3rdparty/SPIRV-Headers/LICENSE).
+  Other Gen5 build paths retain SPIRV-Tools as described below.
+- **Gen4 HTTPS:** iOS links the Mbed TLS 3.6.7 library targets under their
+  GPL-2.0-or-later option and uses Apple Security for certificate trust.
+  [Mbed TLS terms](source/licenses/gen4/dependencies/mbedtls/LICENSE).
+- **iOS JIT helper:** the separate extension uses its AGPL-3.0-only option
+  when built with the Universal script from StikDebug. StikJIT's Swift
+  sources retain MPL-2.0 and are also offered under AGPL-3.0 for this
+  combination under MPL section 3.3. The device framework is rebuilt from
+  StikJIT 2.0.1 and locked `idevice` 0.1.68 Rust sources using RustCrypto.
+  `Legal/stikjit` records the source revisions, dependency lock, licence
+  notices and script provenance. The emulator and the extension run in
+  separate processes and communicate through iOS extension IPC and the
+  debugger protocol.
+
 ## Unresolved release issues
 
 The current notice update is not a declaration that the combined binaries can
 be publicly distributed. The following concrete issues remain:
 
-- **PS5 SPIRV-Tools / GPLv2-only:** the Gen5 compatibility build links
-  `kyty_spirv_tools` and `kyty_spirv_tools_opt`; the active direct renderer also
-  uses SPIRV-Tools. Its Apache-2.0 licence is incompatible with GPLv2-only for
+- **PS5 SPIRV-Tools / GPLv2-only:** Gen5 builds outside the iOS direct runtime
+  can link `kyty_spirv_tools` and `kyty_spirv_tools_opt`. Their Apache-2.0
+  licence is incompatible with GPLv2-only for
   a combined work. A compatible replacement or sufficient permission from the
   relevant rightsholders is needed; merely retaining notices does not solve
   this. See the [Apache licence FAQ](https://www.apache.org/foundation/license-faq.html#GPL).
-- **Gen4 FDK AAC / GPL:** `source/gen4/CMakeLists.txt` links `fdk-aac`. The
-  [Fraunhofer FDK licence](source/licenses/gen4/dependencies/aacdec/fdk-aac/NOTICE)
-  is not GPL-compatible; its additional source and patent provisions must not
-  be described as MIT, BSD or covered by Lumen's GPL. See the
-  [FFmpeg licensing explanation](https://ffmpeg.org/doxygen/trunk/md_LICENSE.html).
-  A compatible replacement or sufficient permissions are needed for the
-  affected combined distribution.
+- **Gen4 LibreSSL / GPL outside iOS:** builds that retain LibreSSL include
+  historical OpenSSL/SSLeay terms with advertising clauses. Those terms
+  require separate resolution for a combined GPL binary. See the
+  [GNU licence list](https://www.gnu.org/licenses/license-list.html#OpenSSL).
 - **Actual platform closure:** assess the exact selected header/source licences,
   optional Vulkan/MoltenVK components, desktop Qt modules and plugins, and all
   linked static LGPL dependencies. Existing historical audits and packaged
@@ -88,9 +107,7 @@ be publicly distributed. The following concrete issues remain:
   FFmpeg, OpenAL Soft, FreeType and optional QEMU dependencies must be assessed
   under the licence option actually used.
 
-The upstream licence texts and copyright notices remain intact. No licence
-exception, relicensing permission or public-binary qualification has been
-created by this documentation update.
+The original upstream licence texts and copyright notices remain intact.
 
 ## Preparing the future source snapshot
 

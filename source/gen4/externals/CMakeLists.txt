@@ -349,8 +349,6 @@ if (WIN32)
 add_subdirectory("${LUMEN_GEN4_DEPS_DIR}/ext-wepoll" "${CMAKE_CURRENT_BINARY_DIR}/ext-wepoll")
 endif()
 
-add_subdirectory(aacdec)
-
 #nlohmann json 
 if (NOT TARGET nlohmann_json::nlohmann_json)
 set(JSON_BuildTests OFF CACHE INTERNAL "")
@@ -449,8 +447,19 @@ endif()
 add_subdirectory("${LUMEN_GEN4_DEPS_DIR}/openal-soft" "${CMAKE_CURRENT_BINARY_DIR}/openal-soft" EXCLUDE_FROM_ALL)
 endif()
 
-# LibreSSL
-if (TARGET LibreSSL::SSL OR TARGET LibreSSL::Crypto)
+# HTTPS backend
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # Select the upstream GPLv2 library targets without the optional crypto
+    # drivers from the top-level build (including Apache-only Everest).
+    include(GNUInstallDirs)
+    set(MBEDTLS_DIR "${LUMEN_GEN4_DEPS_DIR}/mbedtls")
+    set(USE_STATIC_MBEDTLS_LIBRARY ON)
+    set(USE_SHARED_MBEDTLS_LIBRARY OFF)
+    add_subdirectory("${MBEDTLS_DIR}/library" "${CMAKE_CURRENT_BINARY_DIR}/mbedtls"
+                     EXCLUDE_FROM_ALL SYSTEM)
+    set(SSL_DEPENDENCIES MbedTLS::mbedtls "-framework CoreFoundation" "-framework Security")
+    set(SSL_BACKEND_DEFINITION CPPHTTPLIB_MBEDTLS_SUPPORT)
+elseif (TARGET LibreSSL::SSL OR TARGET LibreSSL::Crypto)
     set(SSL_DEPENDENCIES LibreSSL::SSL LibreSSL::Crypto)
 elseif (TARGET OpenSSL::SSL OR TARGET OpenSSL::Crypto)
     set(SSL_DEPENDENCIES OpenSSL::SSL OpenSSL::Crypto)
@@ -482,7 +491,10 @@ endif()
 
 if (DEFINED SSL_DEPENDENCIES)
     target_link_libraries(Cpp_Httplib INTERFACE ${SSL_DEPENDENCIES})
-    target_compile_definitions(Cpp_Httplib INTERFACE CPPHTTPLIB_OPENSSL_SUPPORT)
+    if(NOT DEFINED SSL_BACKEND_DEFINITION)
+        set(SSL_BACKEND_DEFINITION CPPHTTPLIB_OPENSSL_SUPPORT)
+    endif()
+    target_compile_definitions(Cpp_Httplib INTERFACE ${SSL_BACKEND_DEFINITION})
     message(STATUS "cpp-httplib: SSL support enabled (TLS connections)")
 else()
     message(STATUS "cpp-httplib: OpenSSL/LibreSSL not available — libSceHttp HTTPS will fall back to mock at runtime.")

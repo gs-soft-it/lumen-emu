@@ -178,7 +178,7 @@ The experimental iOS app targets **ARM64 iPhone and iPad devices** and has a min
 
 Gameplay requires an iOS process with JIT access. The integrated JIT setup was exercised on an **iPhone 15 Pro running iOS 27.2** with Developer Mode, development signing with `get-task-allow`, the phone's pairing file imported under **Settings → On-device JIT**, and LocalDevVPN connected on the phone over Wi-Fi. JIT access is needed again after the app restarts. The deployment minimum alone does not establish JIT or game compatibility on other OS versions or devices.
 
-The IPA is pending distribution review. The planned sideload route uses an installer that imports and re-signs an IPA, such as AltStore Classic, which supports JIT. Apple's alternative marketplace channel requires notarization and a separate distribution package. AltStore PAL currently lacks the JIT access Lumen requires. [AltStore distribution options](https://developer.altstore.io/) · [Apple alternative distribution](https://developer.apple.com/help/app-store-connect/managing-alternative-distribution/submit-for-notarization/)
+The **0.1.0 build 5 preview** includes a sideload IPA for installers that import and re-sign the app, such as AltStore Classic. The matching Simulator build was tested on an iPhone 18 Pro simulator. Installation through AltStore Classic and the rebuilt helper's JIT handshake on physical hardware remain unverified for this build. [iOS preview and corresponding source](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.0-ios-build5) · [AltStore distribution options](https://developer.altstore.io/)
 
 ### iPhone 15 Pro game reports
 
@@ -190,7 +190,7 @@ The developer reported these games playable in hands-on iOS testing.
 | Brotato | PS4 | Playable |
 | Dreaming Sarah | PS5 | Playable |
 
-Other titles are pending compatibility testing. 3D game compatibility and performance need further fixes. [iOS changelog](CHANGELOG.md#ios--ipados-010-build-3--development-preview)
+Other titles are pending compatibility testing. 3D game compatibility and performance need further fixes. [iOS changelog](CHANGELOG.md#ios-and-ipados-preview-010-build-5)
 
 ## Prepare the source
 
@@ -262,7 +262,7 @@ The public iOS entry point provides the PS4 and PS5 FEX runtime frameworks and s
 The framework build requires CMake 3.25+, Ninja, Xcode with the iPhoneOS SDK, and Python 3.12+. Prepare the pinned Gen4 dependencies and use the iPhoneOS FFmpeg package produced by the [iOS FFmpeg build script](source/gen4/gen5/tools/BuildIOSFfmpeg.py). Set the FFmpeg path to the resulting `install` directory.
 
 ```sh
-python3 source/gen4/tools/prepare_dependencies.py --platform macos
+python3 source/gen4/tools/prepare_dependencies.py --platform ios
 cmake -S . -B build/ios-frameworks -G Ninja \
   -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
   -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.4 \
@@ -311,4 +311,4 @@ The initial export recorded CMake parsing, the native Metal build graph, source-
 
 Read [LICENSE](LICENSE), [LICENSES.md](LICENSES.md) and [NOTICE](NOTICE), along with the per-file notices and dependency records. Original Lumen integration is GPL-2.0-only unless a file says otherwise. This does not replace inherited MIT, GPL-2.0-or-later or other component terms.
 
-The existing licence inventory identifies unresolved combined-binary release issues, including PS5 SPIRV-Tools/Apache-2.0 with GPLv2-only components, Gen4 FDK AAC with GPL components, and the exact static LGPL dependency closure. Publishing this source snapshot does not resolve those issues or qualify a binary release. Preserve corresponding sources, local modifications, compilation scripts and any required relinking materials when distributing covered binaries. Some retained notice documents describe the pre-publication state; this repository is the public core snapshot.
+The iOS release includes a separate corresponding-source archive with the application shell, dependency pins, build recipes and materials for relinking. The licence inventory also records issues that apply to other platform builds and earlier binaries. [iOS release materials](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.0-ios-build5)

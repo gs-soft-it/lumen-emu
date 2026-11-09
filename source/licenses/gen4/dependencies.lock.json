@@ -23,16 +23,6 @@
       ]
     },
     {
-      "name": "aacdec/fdk-aac",
-      "commit": "ee76460efbdb147e26d804c798949c23f174460b",
-      "url": "https://android.googlesource.com/platform/external/aac",
-      "platforms": [
-        "macos",
-        "android",
-        "windows"
-      ]
-    },
-    {
       "name": "cpp-httplib",
       "commit": "28f8264d134a576422cd0f99f19719c2749d9e47",
       "url": "https://github.com/shadexternals/cpp-httplib.git",
@@ -191,6 +181,14 @@
       ]
     },
     {
+      "name": "mbedtls",
+      "commit": "068ff080b369adfac81509f9b57b2afabaf82dc5",
+      "url": "https://github.com/Mbed-TLS/mbedtls.git",
+      "platforms": [
+        "ios"
+      ]
+    },
+    {
       "name": "minimp3",
       "commit": "7b590fdcfa5a79c033e76eacc05d0c3e4c79f536",
       "url": "https://github.com/lieff/minimp3",
@@ -346,6 +344,7 @@
       "commit": "965b66c8d67b6b7e30fd63b3b75aa91a99ff303b",
       "url": "https://github.com/shadexternals/ZArchive.git",
       "platforms": [
+        "ios",
         "android"
       ]
     },
@@ -364,6 +363,7 @@
       "commit": "5c7b7bad26808e6b40ac3b3d0075466e27738a9d",
       "url": "https://github.com/shadexternals/zstd.git",
       "platforms": [
+        "ios",
         "android"
       ]
     },

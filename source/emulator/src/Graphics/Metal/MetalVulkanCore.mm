@@ -1,8 +1,6 @@
 #include "MetalVulkanInternal.h"
 #include "MetalCullDistance.h"
 
-#include <vulkan/vk_enum_string_helper.h>
-
 #import <TargetConditionals.h>
 #import <dispatch/dispatch.h>
 #include <mach/mach.h>
@@ -3628,11 +3626,11 @@ static VkResult QueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitI
 				{
 					std::fprintf(stderr,
 					             "[LUMEN_METAL] vkQueueSubmit replay failed: submit[%u] commandBuffer[%u] "
-					             "%s[%zu]=%s VkResult=%s (%d)\n",
+					             "%s[%zu]=%s VkResult=%d\n",
 					             submitIndex, commandIndex,
 					             replayFailure.occurredDuringRecording ? "recording" : "operation",
 					             replayFailure.operationIndex, replayFailure.operationName,
-					             string_VkResult(replayFailure.result), static_cast<int>(replayFailure.result));
+					             static_cast<int>(replayFailure.result));
 				}
 				return encode;
 			}

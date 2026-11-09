@@ -8,9 +8,11 @@
 #include "core/libraries/ajm/ajm_instance.h"
 
 #include <span>
-#include <vector>
 
-struct AAC_DECODER_INSTANCE;
+struct AVCodecContext;
+struct AVFrame;
+struct AVPacket;
+struct SwrContext;
 
 namespace Libraries::Ajm {
 
@@ -51,19 +53,21 @@ private:
         u32 sampling_freq_type;
     };
 
-    template <class T>
-    size_t WriteOutputSamples(SparseOutputBuffer& output, std::span<const s16> pcm);
-    std::span<const s16> GetOuputPcm(u32 skipped_pcm, u32 max_pcm) const;
+    int ConvertFrame();
+    u32 WriteFrame(SparseOutputBuffer& output, AjmInstanceGapless& gapless) const;
 
     const AjmFormatEncoding m_format;
     const AjmAacCodecFlags m_flags;
     const u32 m_channels;
-    std::vector<s16> m_pcm_buffer;
-    std::vector<float> m_resample_buffer;
-
     u32 m_skip_frames = 0;
+    u32 m_frame_samples = 0;
+    AjmSidebandFormat m_stream_format{};
     InitializeParameters m_init_params = {};
-    AAC_DECODER_INSTANCE* m_decoder = nullptr;
+    AVCodecContext* m_decoder = nullptr;
+    AVPacket* m_packet = nullptr;
+    AVFrame* m_frame = nullptr;
+    AVFrame* m_pcm_frame = nullptr;
+    SwrContext* m_resampler = nullptr;
 };
 
 } // namespace Libraries::Ajm

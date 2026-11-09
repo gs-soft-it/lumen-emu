@@ -57,6 +57,7 @@
     },
     "dependencies/aacdec/fdk-aac/NOTICE": {
       "sha256": "95ec80da40b4af12ad4c4f3158c9cfb80f2479f3246e4260cb600827cc8c7836",
+      "scope": "Historical notice for releases predating the Gen4 FFmpeg AAC decoder.",
       "origin": {
         "repository": "https://android.googlesource.com/platform/external/aac",
         "commit": "ee76460efbdb147e26d804c798949c23f174460b",
@@ -293,6 +294,15 @@
         "repository": "https://github.com/Neargye/magic_enum.git",
         "commit": "a413fcc9c46a020a746907136a384c227f3cd095",
         "path": "test/3rdparty/Catch2/LICENSE"
+      }
+    },
+    "dependencies/mbedtls/LICENSE": {
+      "sha256": "9b405ef4c89342f5eae1dd828882f931747f71001cfba7d114801039b52ad09b",
+      "scope": "iOS Gen4 HTTPS. Select GPL-2.0-or-later for the linked Mbed TLS libraries.",
+      "origin": {
+        "repository": "https://github.com/Mbed-TLS/mbedtls.git",
+        "commit": "068ff080b369adfac81509f9b57b2afaf82dc5",
+        "path": "LICENSE"
       }
     },
     "dependencies/minimp3/LICENSE": {
@@ -661,7 +671,7 @@
       }
     },
     "dependencies.lock.json": {
-      "sha256": "9260164aab08d6b972fcd4810711b607be838e2a9ae03f67b0564f70721e9103",
+      "sha256": "811786656bd788ceb5f940bedb98cf884eaa70162a428562d224598ce6cef526",
       "origin": {
         "path": "source/gen4/tools/dependencies.lock.json"
       }
