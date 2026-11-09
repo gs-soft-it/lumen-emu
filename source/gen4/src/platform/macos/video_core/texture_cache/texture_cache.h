@@ -108,6 +108,9 @@ public:
     /// Retrieves image whose address matches provided
     [[nodiscard]] ImageId FindImageFromRange(VAddr address, size_t size, bool ensure_valid = true);
 
+    /// Checks for a cached image that overlaps any part of the guest range.
+    [[nodiscard]] bool HasImageOverlap(VAddr address, size_t size);
+
     /// Retrieves an image view with the properties of the specified image id.
     [[nodiscard]] ImageView& FindTexture(ImageId image_id, const ImageDesc& desc);
 

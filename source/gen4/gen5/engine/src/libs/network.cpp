@@ -18,7 +18,9 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#if !defined(LUMEN_IOS_FEX_MODULE)
 #include <net/route.h>
+#endif
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <sys/select.h>
@@ -3617,6 +3619,7 @@ static HostNetworkInfo QueryHostNetworkInfo() {
 			break;
 		}
 	}
+#if !defined(LUMEN_IOS_FEX_MODULE)
 	std::ifstream routes("/proc/net/route");
 	std::string line;
 	uint32_t best_metric = std::numeric_limits<uint32_t>::max();
@@ -3643,14 +3646,17 @@ static HostNetworkInfo QueryHostNetworkInfo() {
 			}
 		}
 	}
+#endif
 	if (selected != nullptr) {
 		CopyIpv4String(info.ip_address, sizeof(info.ip_address), selected->ifa_addr);
 		CopyIpv4String(info.netmask, sizeof(info.netmask), selected->ifa_netmask);
 		info.connected = info.ip_address[0] != '\0';
+#if !defined(LUMEN_IOS_FEX_MODULE)
 		if (has_default_route) {
 			in_addr address {gateway};
 			inet_ntop(AF_INET, &address, info.default_route, sizeof(info.default_route));
 		}
+#endif
 	}
 	freeifaddrs(addresses);
 	return info;

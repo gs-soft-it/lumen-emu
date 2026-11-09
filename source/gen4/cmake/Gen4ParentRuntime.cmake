@@ -44,6 +44,11 @@ if(APPLE)
     add_library(lumen_gen4_native_metal INTERFACE)
     target_link_libraries(lumen_gen4_native_metal INTERFACE
         "${LUMEN_GEN4_NATIVE_METAL_ARCHIVE}" ${LUMEN_GEN4_NATIVE_METAL_DEPENDENCIES}
-        "-framework Metal" "-framework QuartzCore" "-framework Foundation" "-framework AppKit")
+        "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        target_link_libraries(lumen_gen4_native_metal INTERFACE "-framework UIKit")
+    else()
+        target_link_libraries(lumen_gen4_native_metal INTERFACE "-framework AppKit")
+    endif()
     target_link_options(lumen_gen4_native_metal INTERFACE "LINKER:-u,_vkGetInstanceProcAddr")
 endif()

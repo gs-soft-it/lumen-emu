@@ -16,12 +16,15 @@
 #include <psapi.h>
 // clang-format on
 #elif defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <CoreFoundation/CoreFoundation.h>
+#if !TARGET_OS_IPHONE
 #include <IOKit/IOKitLib.h>
-#include <cstring>
 #include <libproc.h>
-#include <mach/mach.h>
 #include <notify.h>
+#endif
+#include <cstring>
+#include <mach/mach.h>
 #include <sys/resource.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
@@ -126,7 +129,24 @@ void SampleRusage(Counters& now) {
 	now.page_ins         = static_cast<uint64_t>(usage.ru_majflt);
 }
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+
+struct PlatformState {};
+void SamplePlatform(PlatformState&, HostStats& stats, Counters& now) {
+	SampleRusage(now);
+	task_vm_info_data_t info {};
+	mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+	if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info),
+	              &count) == KERN_SUCCESS) {
+		stats.process_memory = info.phys_footprint;
+		stats.process_resident = info.resident_size;
+		stats.process_virtual = info.virtual_size;
+	}
+	// iOS has no public IOAccelerator/libproc telemetry contract. Unavailable
+	// host-wide figures remain nullopt rather than inheriting macOS values.
+}
+
+#elif defined(__APPLE__)
 
 template <typename T>
 std::optional<T> SysctlValue(const char* name) {

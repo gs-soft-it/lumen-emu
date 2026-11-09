@@ -4,7 +4,9 @@
 
 #include "common/assert.h"
 #include "common/stringUtils.h"
+#include "gen4/gen5/desktopWindowInfo.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/presentation/presenter.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "libs/controller.h"
@@ -896,8 +898,10 @@ struct SystemOverlay::Impl {
 	}
 
 	bool PrepareFrame(vk::Extent2D frame_extent, vk::Format format, uint32_t image_count) {
-		OverlaySnapshot snapshot;
-		if (!GetOverlaySnapshot(&snapshot)) {
+		OverlaySnapshot snapshot {};
+		const bool has_overlay = GetOverlaySnapshot(&snapshot);
+		const bool draw_fps = DesktopWindowInfo::FpsEnabled();
+		if (!has_overlay && !draw_fps) {
 			return false;
 		}
 #if defined(LUMEN_PS5_ANDROID_ENGINE)
@@ -905,7 +909,7 @@ struct SystemOverlay::Impl {
 #endif
 		const auto prepared_session = snapshot.session;
 		EnsureVulkan(format, image_count);
-		if (session != snapshot.session) {
+		if (has_overlay && session != snapshot.session) {
 			session       = snapshot.session;
 			focus_pending = true;
 			panel_state.Reset(snapshot.ime.generation,
@@ -917,7 +921,9 @@ struct SystemOverlay::Impl {
 			io.ClearInputKeys();
 			io.ClearInputMouse();
 		}
-		DrainInput(snapshot.session);
+		if (has_overlay) {
+			DrainInput(snapshot.session);
+		}
 
 		auto& io       = ImGui::GetIO();
 		io.DisplaySize = {static_cast<float>(frame_extent.width),
@@ -930,14 +936,21 @@ struct SystemOverlay::Impl {
 		last_frame     = now;
 		ImGui_ImplVulkan_NewFrame();
 		ImGui::NewFrame();
-		if (!GetOverlaySnapshot(&snapshot) || snapshot.session != prepared_session) {
+		const bool draw_dialog = has_overlay && GetOverlaySnapshot(&snapshot) &&
+		                         snapshot.session == prepared_session;
+		if (!draw_dialog && !draw_fps) {
 			ImGui::EndFrame();
 			return false;
 		}
-		if (snapshot.session.kind == OverlayKind::Error) {
-			DrawError(snapshot.error, frame_extent);
-		} else {
-			DrawIme(snapshot.ime, frame_extent);
+		if (draw_dialog) {
+			if (snapshot.session.kind == OverlayKind::Error) {
+				DrawError(snapshot.error, frame_extent);
+			} else {
+				DrawIme(snapshot.ime, frame_extent);
+			}
+		}
+		if (draw_fps) {
+			DesktopWindowInfo::DrawFps(GetPresentedGuestFrameCount());
 		}
 		ImGui::Render();
 		extent = frame_extent;

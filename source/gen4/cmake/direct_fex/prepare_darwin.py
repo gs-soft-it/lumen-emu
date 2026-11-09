@@ -63,8 +63,12 @@ def main():
         if relative and git(source, "rev-parse", "HEAD:" + relative) != revision:
             raise ValueError("FEX gitlink mismatch: " + relative)
     patch = Path(__file__).with_name("fex-f2b679f-darwin.patch")
+    ios_patch = Path(__file__).with_name("fex-f2b679f-ios-jit-callback.patch")
+    debugger_patch = Path(__file__).with_name("fex-f2b679f-ios-debugger-jit.patch")
     identity = {"schema": 1, "pin": PIN, "submodules": SUBMODULES,
         "darwin_patch_sha256": hashlib.sha256(patch.read_bytes()).hexdigest(),
+        "ios_patch_sha256": hashlib.sha256(ios_patch.read_bytes()).hexdigest(),
+        "ios_debugger_patch_sha256": hashlib.sha256(debugger_patch.read_bytes()).hexdigest(),
         "preparer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     manifest = destination / ".lumen-overlay.json"
     if destination.exists():
@@ -81,6 +85,10 @@ def main():
             archive(source / relative, revision, root / relative, temporary)
         subprocess.run(["git", "apply", "--check", str(patch)], cwd=root, check=True)
         subprocess.run(["git", "apply", str(patch)], cwd=root, check=True)
+        subprocess.run(["git", "apply", "--check", str(ios_patch)], cwd=root, check=True)
+        subprocess.run(["git", "apply", str(ios_patch)], cwd=root, check=True)
+        subprocess.run(["git", "apply", "--check", str(debugger_patch)], cwd=root, check=True)
+        subprocess.run(["git", "apply", str(debugger_patch)], cwd=root, check=True)
         (root / ".lumen-overlay.json").write_text(json.dumps(
             {"identity": identity, "files": inventory(root)}, indent=2, sort_keys=True) + "\n")
         # The temporary directory is outside any Git checkout so apply cannot

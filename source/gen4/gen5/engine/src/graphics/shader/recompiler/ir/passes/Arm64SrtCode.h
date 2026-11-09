@@ -13,8 +13,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #ifdef __APPLE__
+#include <TargetConditionals.h>
 #include <libkern/OSCacheControl.h>
 #include <pthread.h>
+#if TARGET_OS_IPHONE
+#include "LumenDarwinJitWrite.h"
+#endif
 #endif
 #endif
 
@@ -46,15 +50,34 @@ public:
         permissions |= PROT_EXEC;
         flags |= MAP_JIT;
 #endif
-        auto* mapping = ::mmap(nullptr, size, permissions, flags, -1, 0);
-        if (mapping == MAP_FAILED) return {};
+        void* mapping;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        if (FEXCore::Allocator::IsDebuggerJit()) {
+            mapping = FEXCore::Allocator::AllocateDebuggerJit(size);
+        } else
+#endif
+        {
+            mapping = ::mmap(nullptr, size, permissions, flags, -1, 0);
+        }
+        if (mapping == nullptr || mapping == MAP_FAILED) return {};
 #ifdef __APPLE__
+#if TARGET_OS_IPHONE
+        FEXCore::Allocator::WithJITWriteProtection([&] {
+            auto* writable = FEXCore::Allocator::JitWritable(mapping);
+            std::memcpy(writable, words.data(), words.size_bytes());
+            if (!checked.empty()) std::memcpy(static_cast<char*>(writable) + checked_offset,
+                                             checked.data(), checked.size_bytes());
+            if (writable != mapping) sys_dcache_flush(writable, code_size);
+        });
+        sys_icache_invalidate(mapping, code_size);
+#else
         pthread_jit_write_protect_np(0);
         std::memcpy(mapping, words.data(), words.size_bytes());
         if (!checked.empty()) std::memcpy(static_cast<char*>(mapping) + checked_offset,
                                          checked.data(), checked.size_bytes());
         sys_icache_invalidate(mapping, code_size);
         pthread_jit_write_protect_np(1);
+#endif
 #else
         std::memcpy(mapping, words.data(), words.size_bytes());
         if (!checked.empty()) std::memcpy(static_cast<char*>(mapping) + checked_offset,
@@ -68,7 +91,7 @@ public:
 #endif
         auto* owner = new (std::nothrow) Arm64SrtCode(mapping, size, checked_offset);
         if (owner == nullptr) {
-            ::munmap(mapping, size);
+            FreeMapping(mapping, size);
             return {};
         }
         try {
@@ -86,7 +109,7 @@ public:
 
     ~Arm64SrtCode() {
 #if defined(__aarch64__) && (defined(__linux__) || defined(__APPLE__))
-        ::munmap(m_mapping, m_size);
+        FreeMapping(m_mapping, m_size);
 #endif
     }
 
@@ -97,6 +120,15 @@ public:
     }
 
 private:
+#if defined(__aarch64__) && (defined(__linux__) || defined(__APPLE__))
+    static void FreeMapping(void* mapping, size_t size) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        if (FEXCore::Allocator::FreeDebuggerJit(mapping, size)) return;
+#endif
+        ::munmap(mapping, size);
+    }
+#endif
+
     Arm64SrtCode(void* mapping, size_t size, size_t checked_offset):
         m_mapping(mapping), m_size(size), m_checked_offset(checked_offset) {}
     void* m_mapping;

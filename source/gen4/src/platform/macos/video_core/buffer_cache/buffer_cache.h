@@ -6,6 +6,7 @@
 #include <memory>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -86,10 +87,8 @@ public:
         return &gds_buffer;
     }
 
-    /// Retrieves the device local DBA page table buffer.
-    [[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept {
-        return &bda_pagetable_buffer;
-    }
+    /// Allocates and populates the BDA page table on the first DMA shader binding.
+    [[nodiscard]] Buffer* GetBdaPageTableBuffer();
 
     /// Retrieves the fault buffer.
     [[nodiscard]] Buffer* GetFaultBuffer() noexcept {
@@ -145,6 +144,11 @@ public:
     [[nodiscard]] std::pair<Buffer*, u32> ObtainBuffer(VAddr gpu_addr, u32 size, bool is_written,
                                                        bool is_texel_buffer = false,
                                                        BufferId buffer_id = {});
+
+    /// Takes an aligned snapshot of a read-only graphics descriptor without waiting for the ring.
+    [[nodiscard]] std::pair<Buffer*, u32> TrySnapshotReadOnlyBuffer(VAddr gpu_addr, u64 size,
+                                                                   u64 alignment);
+    void CommitReadOnlyBufferSnapshot();
 
     /// Publish GPU-written data to fixed-function/indirect consumers without
     /// changing the descriptor state whose barriers may still be queued.
@@ -218,6 +222,8 @@ private:
     template <bool insert>
     void ChangeRegister(BufferId buffer_id);
 
+    void PublishBdaMappings(const Buffer& buffer);
+
     bool SynchronizeBuffer(Buffer& buffer, VAddr device_addr, u32 size, bool is_written,
                            bool is_texel_buffer);
 
@@ -268,7 +274,7 @@ private:
     StreamBuffer download_buffer;
     StreamBuffer device_buffer;
     Buffer gds_buffer;
-    Buffer bda_pagetable_buffer;
+    std::optional<Buffer> bda_pagetable_buffer;
     Common::SlotVector<Buffer> slot_buffers;
 
     u64 total_used_memory = 0;
@@ -284,6 +290,9 @@ private:
     std::vector<PreservedWrite> preserved_writes;
     SplitRangeMap<BufferId> buffer_ranges;
     PageTable page_table;
+    std::unique_ptr<StreamBuffer> read_only_snapshot_ring;
+    bool read_only_snapshot_ring_attempted{};
+    bool read_only_snapshot_pending{};
 };
 
 } // namespace VideoCore

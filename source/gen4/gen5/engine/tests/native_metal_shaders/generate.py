@@ -7,6 +7,7 @@ import tempfile
 root = pathlib.Path(__file__).resolve().parent
 variants = [
     ("Vertex", "vert", []), ("CullVertex", "vert", ["CULL"]),
+    ("FixedVertexInput", "vert", ["FIXED_VERTEX_INPUT"]),
     ("Control3", "tesc", ["CONTROL_POINTS=3"]),
     ("Control4", "tesc", ["CONTROL_POINTS=4"]),
     ("TriangleEvaluation", "tese", []),

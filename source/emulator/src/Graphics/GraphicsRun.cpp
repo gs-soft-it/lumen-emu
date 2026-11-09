@@ -3500,7 +3500,8 @@ private:
 	}
 	[[maybe_unused]] CommandProcessor* m_cp;
 	uint64_t m_token = 0;
-	uint64_t m_native_token = 0, m_native_owner = 0;
+	uint64_t m_native_token = 0;
+	[[maybe_unused]] uint64_t m_native_owner = 0;
 	bool m_owner = false;
 	std::unique_lock<std::mutex> m_admission {g_gpu_native_admission, std::defer_lock};
 	std::optional<Core::VirtualMemory::GuestMemoryMutationOwnerScope> m_core_owner;

@@ -58,9 +58,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
       stream_buffer{instance, scheduler, MemoryUsage::Stream, UboStreamBufferSize},
       download_buffer{instance, scheduler, MemoryUsage::Download, DownloadBufferSize},
       device_buffer{instance, scheduler, MemoryUsage::DeviceLocal, DeviceBufferSize},
-      gds_buffer{instance, scheduler, MemoryUsage::Stream, 0, AllFlags, DataShareBufferSize},
-      bda_pagetable_buffer{instance, scheduler, MemoryUsage::DeviceLocal,
-                           0,        AllFlags,  BDA_PAGETABLE_SIZE} {
+      gds_buffer{instance, scheduler, MemoryUsage::Stream, 0, AllFlags, DataShareBufferSize} {
     (void)ResourcePublicationTrace::Enabled();
     LOG_INFO(Render_Vulkan, "[BUFFER_PENDING_WRITE_RESOLVE] enabled={} default=1",
              BufferPendingWriteResolveEnabled() ? 1 : 0);
@@ -71,8 +69,6 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     LOG_INFO(Render_Vulkan, "[BUFFER_COPY_RESOLVE] enabled={} default=1",
              BufferCopyResolveEnabled() ? 1 : 0);
     Vulkan::SetObjectName(instance.GetDevice(), gds_buffer.Handle(), "GDS Buffer");
-    Vulkan::SetObjectName(instance.GetDevice(), bda_pagetable_buffer.Handle(),
-                          "BDA Page Table Buffer");
 
     memory_tracker = std::make_unique<MemoryTracker>(tracker);
     stream_upload_cache.SetEpochMode(
@@ -109,6 +105,22 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
 }
 
 BufferCache::~BufferCache() = default;
+
+Buffer* BufferCache::GetBdaPageTableBuffer() {
+    if (!bda_pagetable_buffer) {
+        auto& table = bda_pagetable_buffer.emplace(instance, scheduler, MemoryUsage::DeviceLocal,
+                                                   0, AllFlags, BDA_PAGETABLE_SIZE);
+        Vulkan::SetObjectName(instance.GetDevice(), table.Handle(), "BDA Page Table Buffer");
+        // Unmapped pages are represented by zero, including before any buffer was registered.
+        table.Fill(0, BDA_PAGETABLE_SIZE, 0);
+        for (const auto& buffer : slot_buffers) {
+            if (buffer.CpuAddr() != 0 && !buffer.is_deleted) {
+                PublishBdaMappings(buffer);
+            }
+        }
+    }
+    return &*bda_pagetable_buffer;
+}
 
 void BufferCache::InvalidateMemory(VAddr device_addr, u64 size) {
     if (!IsRegionRegistered(device_addr, size)) {
@@ -1272,6 +1284,20 @@ void BufferCache::Unregister(BufferId buffer_id) {
     ChangeRegister<false>(buffer_id);
 }
 
+void BufferCache::PublishBdaMappings(const Buffer& buffer) {
+    const u64 page_begin = buffer.CpuAddr() / CACHING_PAGESIZE;
+    const u64 page_end = Common::DivCeil(buffer.CpuAddr() + buffer.SizeBytes(), CACHING_PAGESIZE);
+    const u64 size_pages = page_end - page_begin;
+    boost::container::small_vector<vk::DeviceAddress, 128> bda_addrs;
+    bda_addrs.reserve(size_pages);
+    const auto address = buffer.BufferDeviceAddress();
+    for (u64 i = 0; i < size_pages; ++i) {
+        bda_addrs.push_back(address + (i << CACHING_PAGEBITS));
+    }
+    WriteDataBuffer(*bda_pagetable_buffer, page_begin * sizeof(vk::DeviceAddress),
+                    bda_addrs.data(), bda_addrs.size() * sizeof(vk::DeviceAddress));
+}
+
 template <bool insert>
 void BufferCache::ChangeRegister(BufferId buffer_id) {
     Buffer& buffer = slot_buffers[buffer_id];
@@ -1280,7 +1306,6 @@ void BufferCache::ChangeRegister(BufferId buffer_id) {
     const VAddr device_addr_end = device_addr_begin + size;
     const u64 page_begin = device_addr_begin / CACHING_PAGESIZE;
     const u64 page_end = Common::DivCeil(device_addr_end, CACHING_PAGESIZE);
-    const u64 size_pages = page_end - page_begin;
     for (u64 page = page_begin; page != page_end; ++page) {
         if constexpr (insert) {
             page_table[page].buffer_id = buffer_id;
@@ -1291,20 +1316,18 @@ void BufferCache::ChangeRegister(BufferId buffer_id) {
     if constexpr (insert) {
         total_used_memory += Common::AlignUp(size, CACHING_PAGESIZE);
         buffer.SetLRUId(lru_cache.Insert(buffer_id, gc_tick));
-        boost::container::small_vector<vk::DeviceAddress, 128> bda_addrs;
-        bda_addrs.reserve(size_pages);
-        for (u64 i = 0; i < size_pages; ++i) {
-            vk::DeviceAddress addr = buffer.BufferDeviceAddress() + (i << CACHING_PAGEBITS);
-            bda_addrs.push_back(addr);
+        if (bda_pagetable_buffer) {
+            PublishBdaMappings(buffer);
         }
-        WriteDataBuffer(bda_pagetable_buffer, page_begin * sizeof(vk::DeviceAddress),
-                        bda_addrs.data(), bda_addrs.size() * sizeof(vk::DeviceAddress));
         buffer_ranges.Add(buffer.CpuAddr(), buffer.SizeBytes(), buffer_id);
     } else {
         total_used_memory -= Common::AlignUp(size, CACHING_PAGESIZE);
         lru_cache.Free(buffer.LRUId());
-        const u64 offset = bda_pagetable_buffer.Offset(page_begin * sizeof(vk::DeviceAddress));
-        bda_pagetable_buffer.Fill(offset, size_pages * sizeof(vk::DeviceAddress), 0);
+        if (bda_pagetable_buffer) {
+            const u64 offset = bda_pagetable_buffer->Offset(page_begin * sizeof(vk::DeviceAddress));
+            const u64 bytes = (page_end - page_begin) * sizeof(vk::DeviceAddress);
+            bda_pagetable_buffer->Fill(offset, bytes, 0);
+        }
         buffer_ranges.Subtract(buffer.CpuAddr(), buffer.SizeBytes());
     }
 }

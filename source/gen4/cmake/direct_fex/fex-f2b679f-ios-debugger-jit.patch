@@ -1,0 +1,321 @@
+diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+--- a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
++++ b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+@@ -26,9 +26,14 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstring>
++#include <cerrno>
+ #include <sys/types.h>
+ 
+ namespace FEXCore::Allocator {
++#if !(defined(__APPLE__) && TARGET_OS_IPHONE)
++// Other hosts retain their single-address executable-memory contract.
++template<typename T> inline T* JitWritable(T* Pointer) { return Pointer; }
++#endif
+ enum class ProtectOptions : uint32_t {
+   None = 0,
+   Read = (1U << 0),
+@@ -154,6 +159,13 @@
+ // All commit parameters are ignored here, they are unnecessary as Linux supports overcommit
+ 
+ inline void* VirtualAlloc(size_t Size, bool Execute = false, bool Commit = true) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  if (Execute && IsDebuggerJit()) {
++    if (auto* Pointer = AllocateDebuggerJit(Size, nullptr)) return Pointer;
++    errno = ENOMEM;
++    return MAP_FAILED;
++  }
++#endif
+   int Flags = MAP_PRIVATE | MAP_ANONYMOUS;
+ #ifdef __APPLE__
+   if (Execute) {
+@@ -164,6 +176,13 @@
+ }
+ 
+ inline void* VirtualAlloc(void* Base, size_t Size, bool Execute = false, bool Commit = true) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  if (Execute && IsDebuggerJit()) {
++    if (auto* Pointer = AllocateDebuggerJit(Size, Base)) return Pointer;
++    errno = ENOMEM;
++    return MAP_FAILED;
++  }
++#endif
+   int Flags = MAP_PRIVATE | MAP_ANONYMOUS;
+ #ifdef __APPLE__
+   if (Execute) {
+@@ -174,6 +193,9 @@
+ }
+ 
+ inline void VirtualFree(void* Ptr, size_t Size) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  if (FreeDebuggerJit(Ptr, Size)) return;
++#endif
+   FEXCore::Allocator::munmap(Ptr, Size);
+ }
+ inline void VirtualDontNeed(void* Ptr, size_t Size, bool Recommit = true) {
+@@ -183,7 +205,7 @@
+   // contract when dropping L1/L2 state, so explicitly clear the retained
+   // mapping on Darwin. All current executable callers hold the JIT write
+   // scope before reaching this helper.
+-  std::memset(Ptr, 0, Size);
++  std::memset(JitWritable(Ptr), 0, Size);
+ #else
+   ::madvise(reinterpret_cast<void*>(Ptr), Size, MADV_DONTNEED);
+ #endif
+diff --git a/CodeEmitter/CodeEmitter/Buffer.h b/CodeEmitter/CodeEmitter/Buffer.h
+--- a/CodeEmitter/CodeEmitter/Buffer.h
++++ b/CodeEmitter/CodeEmitter/Buffer.h
+@@ -5,12 +5,27 @@
+ #include <cstring>
+ #include <type_traits>
+ #ifdef __APPLE__
++#include <TargetConditionals.h>
+ #include <libkern/OSCacheControl.h>
++#if TARGET_OS_IPHONE
++#include "LumenDarwinJitWrite.h"
++#endif
+ #endif
+ 
+ namespace ARMEmitter {
+ class Buffer {
+ public:
++  // Keep cursor/label addresses in the executable view. Only actual stores
++  // use the writable alias, preserving PC-relative branch calculations.
++  template<typename T>
++  static T* WritableAddress(T* Pointer) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++    return FEXCore::Allocator::JitWritable(Pointer);
++#else
++    return Pointer;
++#endif
++  }
++
+   Buffer() {
+     SetBuffer(nullptr, 0);
+   }
+@@ -28,7 +43,7 @@
+   template<typename T>
+   requires (std::is_trivially_copyable_v<T>)
+   void dcn(const T& Data) {
+-    std::memcpy(CurrentOffset, &Data, sizeof(Data));
++    std::memcpy(WritableAddress(CurrentOffset), &Data, sizeof(Data));
+     CurrentOffset += sizeof(Data);
+   }
+   void dc8(uint8_t Data) {
+@@ -46,7 +61,7 @@
+ 
+   void EmitString(const char* String) {
+     const auto StringLength = strlen(String);
+-    memcpy(CurrentOffset, String, StringLength);
++    memcpy(WritableAddress(CurrentOffset), String, StringLength);
+     CurrentOffset += StringLength;
+   }
+ 
+@@ -56,7 +71,7 @@
+     if (!CurrentAlignment) {
+       return;
+     }
+-    std::memset(CurrentOffset, 0, Size - CurrentAlignment);
++    std::memset(WritableAddress(CurrentOffset), 0, Size - CurrentAlignment);
+     CurrentOffset += Size - CurrentAlignment;
+   }
+ 
+@@ -67,6 +82,9 @@
+ 
+   static void ClearICache(void* Begin, std::size_t Length) {
+ #ifdef __APPLE__
++    if (void* Writable = WritableAddress(Begin); Writable != Begin) {
++      sys_dcache_flush(Writable, Length);
++    }
+     sys_icache_invalidate(Begin, Length);
+ #else
+     __builtin___clear_cache(static_cast<char*>(Begin), static_cast<char*>(Begin) + Length);
+diff --git a/CodeEmitter/CodeEmitter/Emitter.h b/CodeEmitter/CodeEmitter/Emitter.h
+--- a/CodeEmitter/CodeEmitter/Emitter.h
++++ b/CodeEmitter/CodeEmitter/Emitter.h
+@@ -671,7 +671,7 @@
+       uint32_t Inst = *Instruction & ~InstMask;
+       Inst |= (Offset & 0b11) << 29;
+       Inst |= (Offset >> 2) << 5;
+-      *Instruction = Inst;
++      *WritableAddress(Instruction) = Inst;
+       break;
+     }
+     case ForwardLabel::InstType::ADRP: {
+@@ -689,7 +689,7 @@
+       uint32_t Inst = *Instruction & ~InstMask;
+       Inst |= (Offset & 0b11) << 29;
+       Inst |= (Offset >> 2) << 5;
+-      *Instruction = Inst;
++      *WritableAddress(Instruction) = Inst;
+       break;
+     }
+     case ForwardLabel::InstType::B: {
+@@ -704,7 +704,7 @@
+       uint32_t Offset = static_cast<uint32_t>(Imm) & InstMask;
+       uint32_t Inst = *Instruction & ~InstMask;
+       Inst |= Offset;
+-      *Instruction = Inst;
++      *WritableAddress(Instruction) = Inst;
+ 
+       break;
+     }
+@@ -720,7 +720,7 @@
+       uint32_t Offset = static_cast<uint32_t>(Imm) & InstMask;
+       uint32_t Inst = *Instruction & ~(InstMask << 5);
+       Inst |= Offset << 5;
+-      *Instruction = Inst;
++      *WritableAddress(Instruction) = Inst;
+ 
+       break;
+     }
+@@ -737,7 +737,7 @@
+       uint32_t Offset = static_cast<uint32_t>(Imm) & InstMask;
+       uint32_t Inst = *Instruction & ~(InstMask << 5);
+       Inst |= Offset << 5;
+-      *Instruction = Inst;
++      *WritableAddress(Instruction) = Inst;
+       break;
+     }
+     case ForwardLabel::InstType::LONG_ADDRESS_GEN: {
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -515,7 +515,7 @@
+     BranchEmit.b(BranchOffset);
+   }
+ 
+-  std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).store(BranchInst, std::memory_order::relaxed);
++  std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(reinterpret_cast<uint32_t*>(CallerAddress))).store(BranchInst, std::memory_order::relaxed);
+   ARMEmitter::Emitter::ClearICache(reinterpret_cast<void*>(CallerAddress), 4);
+ #if defined(__APPLE__) && TARGET_OS_IPHONE
+   });
+@@ -533,7 +533,7 @@
+   // Restore branch +2 instructions to jump to the linker block
+   BranchEmit.b(0x2);
+ 
+-  std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(JumpThunkStartAddress)).store(BranchInst, std::memory_order::relaxed);
++  std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(reinterpret_cast<uint32_t*>(JumpThunkStartAddress))).store(BranchInst, std::memory_order::relaxed);
+   ARMEmitter::Emitter::ClearICache(reinterpret_cast<void*>(JumpThunkStartAddress), 4);
+ 
+   // No need to reset HostCode here as the exit linker pointer is stored separately, and if the block is relinked it will be updated.
+@@ -607,20 +607,23 @@
+         GuestRip, Record, [](FEXCore::Context::ExitFunctionLinkData* Record) { DirectBlockDelinker(Record, false); }, lk);
+     }
+ 
+-    std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).store(BranchInst, std::memory_order::relaxed);
++    std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(reinterpret_cast<uint32_t*>(CallerAddress))).store(BranchInst, std::memory_order::relaxed);
+     ARMEmitter::Emitter::ClearICache(reinterpret_cast<void*>(CallerAddress), 4);
+   } else {
+     // This case is common between calls and jumps as the thunk callsite can be left untouched.
+-    std::atomic_ref<uint64_t>(Record->HostCode).store(HostCode, std::memory_order::seq_cst);
++    // FEX aligns linking records to eight bytes despite their packed type.
++    auto* WritableHostCode = FEXCore::Allocator::JitWritable(reinterpret_cast<uint64_t*>(
++      reinterpret_cast<uint8_t*>(Record) + offsetof(FEXCore::Context::ExitFunctionLinkData, HostCode)));
++    std::atomic_ref<uint64_t>(*WritableHostCode).store(HostCode, std::memory_order::seq_cst);
+ #ifdef ARCHITECTURE_arm64
+     // Make memory write visible to other threads reading the same location
+-    asm volatile("dc cvau, %0; dsb ish" : : "r"(Record->HostCode) :);
++    asm volatile("dc cvau, %0; dsb ish" : : "r"(WritableHostCode) : "memory");
+ #endif
+ 
+     uint32_t LdrInst = 0;
+     ARMEmitter::Emitter LdrEmit(reinterpret_cast<uint8_t*>(&LdrInst), 4);
+     LdrEmit.ldr(TMP1, reinterpret_cast<uint64_t>(&Record->HostCode) - JumpThunkStartAddress);
+-    std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(JumpThunkStartAddress)).store(LdrInst, std::memory_order::relaxed);
++    std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(reinterpret_cast<uint32_t*>(JumpThunkStartAddress))).store(LdrInst, std::memory_order::relaxed);
+     ARMEmitter::Emitter::ClearICache(reinterpret_cast<void*>(JumpThunkStartAddress), 4);
+ 
+     Thread->LookupCache->AddBlockLink(GuestRip, Record, IndirectBlockDelinker, lk);
+@@ -1140,7 +1143,7 @@
+     }
+ 
+     // Copy over CodeBuffer contents
+-    memcpy(GetCursorAddress<uint8_t*>(), TempCodeBuffer, TempSize);
++    memcpy(FEXCore::Allocator::JitWritable(GetCursorAddress<uint8_t*>()), TempCodeBuffer, TempSize);
+     SetCursorOffset(CodeBuffers.LatestOffset + TempSize);
+ 
+     CodeBuffers.LatestOffset = GetCursorOffset();
+diff --git a/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp b/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
+--- a/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
++++ b/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
+@@ -3,6 +3,7 @@
+ #include "Interface/Core/CPUBackend.h"
+ #include "Interface/Context/Context.h"
+ #include <FEXCore/Utils/SpinWaitLock.h>
++#include <FEXCore/Utils/AllocatorHooks.h>
+ 
+ #include <FEXCore/Debug/InternalThreadState.h>
+ #include <FEXCore/Utils/EnumUtils.h>
+@@ -124,6 +125,9 @@
+ 
+ static void ClearICache(void* Begin, std::size_t Length) {
+ #ifdef __APPLE__
++  if (void* Writable = FEXCore::Allocator::JitWritable(Begin); Writable != Begin) {
++    sys_dcache_flush(Writable, Length);
++  }
+   sys_icache_invalidate(Begin, Length);
+ #else
+   __builtin___clear_cache(static_cast<char*>(Begin), static_cast<char*>(Begin) + Length);
+@@ -2110,7 +2114,7 @@
+   // Lock code mutex during any SIGBUS handling that potentially changes code.
+   // Due to code buffer sharing between threads, code must be carefully backpatched from last to first.
+   // Multiple threads can be attempting to handle the SIGBUS or even be executing the code being backpatched.
+-  FEXCore::Utils::SpinWaitLock::UniqueSpinMutex lk(&InlineTail->SpinLockFutex);
++  FEXCore::Utils::SpinWaitLock::UniqueSpinMutex lk(FEXCore::Allocator::JitWritable(&InlineTail->SpinLockFutex));
+ 
+   if ((Instr & LDAXR_MASK) == LDAR_INST ||  // LDAR*
+       (Instr & LDAXR_MASK) == LDAPR_INST) { // LDAPR*
+@@ -2120,9 +2124,9 @@
+     LDR |= DataReg;
+     if (HandleType != UnalignedHandlerType::NonAtomic) {
+       // Ordering matters with cross-thread visibility!
+-      std::atomic_ref<uint32_t>(PC[1]).store(DMB_LD, std::memory_order_release); // Back-patch the half-barrier.
+-    }
+-    std::atomic_ref<uint32_t>(PC[0]).store(LDR, std::memory_order_release);
++      std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(&PC[1])).store(DMB_LD, std::memory_order_release); // Back-patch the half-barrier.
++    }
++    std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(&PC[0])).store(LDR, std::memory_order_release);
+     ClearICache(&PC[0], 8);
+     // With the instruction modified, now execute again.
+     return 0;
+@@ -2132,9 +2136,9 @@
+     STR |= AddrReg << 5;
+     STR |= DataReg;
+     if (HandleType != UnalignedHandlerType::NonAtomic) {
+-      std::atomic_ref<uint32_t>(PC[-1]).store(DMB, std::memory_order_release); // Back-patch the half-barrier.
+-    }
+-    std::atomic_ref<uint32_t>(PC[0]).store(STR, std::memory_order_release);
++      std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(&PC[-1])).store(DMB, std::memory_order_release); // Back-patch the half-barrier.
++    }
++    std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(&PC[0])).store(STR, std::memory_order_release);
+     ClearICache(&PC[-1], 8);
+     // Back up one instruction and have another go
+     return -4;
+@@ -2147,9 +2151,9 @@
+     LDUR |= Instr & (0b1'1111'1111 << 12);
+     if (HandleType != UnalignedHandlerType::NonAtomic) {
+       // Ordering matters with cross-thread visibility!
+-      std::atomic_ref<uint32_t>(PC[1]).store(DMB_LD, std::memory_order_release); // Back-patch the half-barrier.
+-    }
+-    std::atomic_ref<uint32_t>(PC[0]).store(LDUR, std::memory_order_release);
++      std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(&PC[1])).store(DMB_LD, std::memory_order_release); // Back-patch the half-barrier.
++    }
++    std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(&PC[0])).store(LDUR, std::memory_order_release);
+     ClearICache(&PC[0], 8);
+     // With the instruction modified, now execute again.
+     return 0;
+@@ -2160,9 +2164,9 @@
+     STUR |= DataReg;
+     STUR |= Instr & (0b1'1111'1111 << 12);
+     if (HandleType != UnalignedHandlerType::NonAtomic) {
+-      std::atomic_ref<uint32_t>(PC[-1]).store(DMB, std::memory_order_release); // Back-patch the half-barrier.
+-    }
+-    std::atomic_ref<uint32_t>(PC[0]).store(STUR, std::memory_order_release);
++      std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(&PC[-1])).store(DMB, std::memory_order_release); // Back-patch the half-barrier.
++    }
++    std::atomic_ref<uint32_t>(*FEXCore::Allocator::JitWritable(&PC[0])).store(STUR, std::memory_order_release);
+ 
+     ClearICache(&PC[-1], 8);
+     // Back up one instruction and have another go

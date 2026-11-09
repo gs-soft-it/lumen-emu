@@ -14,6 +14,11 @@
 #include <cstdlib>
 #include <cstring>
 #ifdef __APPLE__
+#include <TargetConditionals.h>
+#include <mach/mach.h>
+#if !TARGET_OS_IPHONE
+#include <mach/mach_vm.h>
+#endif
 #include <mach-o/dyld.h>
 #include <pthread.h>
 #include <sys/ucontext.h>
@@ -75,7 +80,7 @@ void safe_write_dec(int fd, int v) {
     safe_write(fd, buf + i, (size_t)(11 - i));
 }
 
-#if defined(__linux__) && defined(ARCH_ARM64) && defined(LUMEN_GEN4_DIRECT_FEX)
+#if (defined(__linux__) || defined(__APPLE__)) && defined(ARCH_ARM64) && defined(LUMEN_GEN4_DIRECT_FEX)
 template <typename Word, std::size_t Count>
 void report_candidate_memory_words(int fd, const char* label, std::uint64_t address) {
     // Use the kernel read interface so an invalid candidate cannot fault again.
@@ -88,6 +93,19 @@ void report_candidate_memory_words(int fd, const char* label, std::uint64_t addr
         safe_write_str(fd, " invalid_offset=1\n");
         return;
     }
+#if defined(__APPLE__)
+#if TARGET_OS_IPHONE
+    vm_size_t copied = 0;
+    const kern_return_t result = vm_read_overwrite(
+        mach_task_self(), address, sizeof(words), reinterpret_cast<vm_address_t>(words), &copied);
+#else
+    mach_vm_size_t copied = 0;
+    const kern_return_t result = mach_vm_read_overwrite(
+        mach_task_self(), address, sizeof(words), reinterpret_cast<mach_vm_address_t>(words), &copied);
+#endif
+    const ssize_t bytes = result == KERN_SUCCESS ? static_cast<ssize_t>(copied) : -1;
+    const int error = result;
+#else
     const int memory_fd = open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
     if (memory_fd < 0) {
         const int error = errno;
@@ -99,10 +117,15 @@ void report_candidate_memory_words(int fd, const char* label, std::uint64_t addr
     const ssize_t bytes = pread(memory_fd, words, sizeof(words), static_cast<off_t>(address));
     const int error = bytes < 0 ? errno : 0;
     close(memory_fd);
+#endif
     safe_write_str(fd, " bytes=");
     safe_write_dec(fd, static_cast<int>(bytes));
     if (bytes < 0) {
+#if defined(__APPLE__)
+        safe_write_str(fd, " mach_error=");
+#else
         safe_write_str(fd, " read_errno=");
+#endif
         safe_write_dec(fd, error);
     }
     safe_write_str(fd, "\n");
@@ -244,6 +267,10 @@ void InitCrashReporter() {
 #endif
 }
 
+bool IsCrashReporterEnabled() noexcept {
+    return gCrashReporterEnabled;
+}
+
 void dump_maps(int fd) {
     int mapfd = open("/proc/self/maps", O_RDONLY);
     if (mapfd < 0) {
@@ -299,6 +326,14 @@ void ReportCrash(void* raw_context, int signum, void* siginfo_ptr) {
     }
     reg(" x29=", arm_thread_state64_get_fp(state));
     reg(" x30=", arm_thread_state64_get_lr(state));
+#if defined(LUMEN_GEN4_DIRECT_FEX)
+    safe_write_str(fd, "\n");
+    // Match the bounded Linux diagnostic for the pinned direct FEX backend.
+    // The kernel copy reports unreadable candidates without dereferencing them.
+    report_candidate_memory_words<std::uint64_t, 32>(fd, "candidate_guest_stack", state.__x[8]);
+    const auto pc = arm_thread_state64_get_pc(state);
+    report_candidate_memory_words<std::uint32_t, 32>(fd, "host_code_window", pc >= 64 ? pc - 64 : 0);
+#endif
 #elif defined(ARCH_X86_64)
     reg("\n[LumenHost.Crash] pc=", state.__rip);
     reg(" sp=", state.__rsp);
@@ -416,6 +451,18 @@ void ReportGuestCrashSnapshot(std::uint64_t rip, std::uint64_t rax) {
     safe_write_hex(fd, rip);
     safe_write_str(fd, " rax=");
     safe_write_hex(fd, rax);
+    safe_write_str(fd, "\n");
+#endif
+}
+
+void ReportGuestCrashJitRip(std::uint64_t host_pc, std::uint64_t guest_rip) {
+#ifndef _WIN32
+    if (!gCrashReporterEnabled) return;
+    constexpr int fd = STDOUT_FILENO;
+    safe_write_str(fd, "[LumenHost.Crash] guest_jit_location candidate=1 host_pc=");
+    safe_write_hex(fd, host_pc);
+    safe_write_str(fd, " guest_rip=");
+    safe_write_hex(fd, guest_rip);
     safe_write_str(fd, "\n");
 #endif
 }

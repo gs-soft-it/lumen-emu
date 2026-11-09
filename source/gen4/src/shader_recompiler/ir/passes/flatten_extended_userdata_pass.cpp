@@ -37,8 +37,12 @@
 #include <sys/ucontext.h>
 #include <unistd.h>
 #ifdef __APPLE__
+#include <TargetConditionals.h>
 #include <libkern/OSCacheControl.h>
 #include <pthread.h>
+#if TARGET_OS_IPHONE
+#include "LumenDarwinJitWrite.h"
+#endif
 #endif
 #endif
 
@@ -942,6 +946,9 @@ struct SrtCodeMapping {
 
     ~SrtCodeMapping() {
         if (data != nullptr) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+            if (FEXCore::Allocator::FreeDebuggerJit(data, size)) return;
+#endif
             munmap(data, size);
         }
     }
@@ -1230,9 +1237,17 @@ PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
     protection |= PROT_EXEC;
     flags |= MAP_JIT;
 #endif
-    mapping->data = static_cast<u8*>(mmap(nullptr, mapping_size, protection, flags, -1, 0));
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    if (FEXCore::Allocator::IsDebuggerJit()) {
+        mapping->data = static_cast<u8*>(FEXCore::Allocator::AllocateDebuggerJit(mapping_size));
+        if (mapping->data == nullptr) errno = ENOMEM;
+    } else
+#endif
+    {
+        mapping->data = static_cast<u8*>(mmap(nullptr, mapping_size, protection, flags, -1, 0));
+    }
     mapping->size = mapping_size;
-    if (mapping->data == MAP_FAILED) {
+    if (mapping->data == nullptr || mapping->data == MAP_FAILED) {
         mapping->data = nullptr;
         LOG_CRITICAL(Render_Recompiler, "Unable to allocate ARM64 SRT walker: errno {}", errno);
         std::abort();
@@ -1242,10 +1257,19 @@ PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
     // non-reentrant publication window limited to copying already-emitted code;
     // no guest execution or compiler callbacks can enter it. Publish the walker
     // only after restoring execution permission and invalidating the I-cache.
+#if TARGET_OS_IPHONE
+    FEXCore::Allocator::WithJITWriteProtection([&] {
+        auto* writable = FEXCore::Allocator::JitWritable(mapping->data);
+        std::memcpy(writable, ptr, size);
+        if (writable != mapping->data) sys_dcache_flush(writable, size);
+    });
+    sys_icache_invalidate(mapping->data, size);
+#else
     pthread_jit_write_protect_np(0);
     std::memcpy(mapping->data, ptr, size);
     sys_icache_invalidate(mapping->data, size);
     pthread_jit_write_protect_np(1);
+#endif
 #else
     std::memcpy(mapping->data, ptr, size);
     __builtin___clear_cache(reinterpret_cast<char*>(mapping->data),

@@ -7,7 +7,7 @@
   "cpu_engine": {
     "source": "source/gen4/src/core/fex/fex_guest_engine_direct.cpp",
     "upstream_modified": false,
-    "sha256": "662d74dd7d658eaf642f687ffc5b98d0f6e67886a370f3a69a9f0a70c1b799db",
+    "sha256": "6065edd48f1aaefb453ddec57f53d0318c240a018fbc8e4095ada9044ce4dff5",
     "fex_revision": "f2b679f6028ce1c38875233aecfcf5d3f8ebecec",
     "darwin_host_adaptation": "Mach VM inventory preserves current permissions across concurrent adjacent-region coalescing; no FEX vendor modification.",
     "fatal_error_logging": "The shared host bridge reports FEX fatal errors to stderr and Android logcat before preserving the original FEX trap."
@@ -60,6 +60,7 @@
     "Android selected document trees provide the authoritative read-only game root through persisted Storage Access Framework grants. A shared JNI bridge supplies the original seekable file descriptors for native reads and mappings, plus virtual stat and directory queries; scoped URI validation rejects traversal and revoked grants without copying game payloads or falling back to the private metadata cache. Native filesystem paths retain their existing behavior. The bridge supports bounded, thread-local metadata reuse within one synchronous read operation, scoped by the PS4 open/stat/directory consumers and PS5 KernelOpen/KernelStat in both runtime variants; nested scopes share only that operation, errors and mount replacement invalidate metadata, and every descriptor opening still consults the live provider. Metadata hits validate the path before avoiding a redundant JNI thread attachment. Gen5 directory enumeration consumes names and file/directory types from one validated provider cursor through an additive C ABI, without per-child stat, payload opens or metadata reuse across operations; the names-only PS4 API remains unchanged.",
     "Shader layer output is enabled only when reported by the device; final SPIR-V capabilities and stage-qualified output interfaces are admitted before native module creation on every backend, including runtime and fixture helpers, without rewriting shader semantics.",
     "Capability-qualified fragment quad partitioning for native subgroup widths below32 uses constant quad-prefix DPP broadcasts and certified control votes. Read-only resources, whole-program observable-state and finite-loop proofs, enabled QuadControl/MaximalReconvergence features and final SPIR-V validation are required; unproven raster wave semantics remain denied.",
+    "iOS build support covers the direct FEX runtime framework and its native Metal dependencies.",
     "Barycentric preprocessing, geometry and mesh rewriting preserve the actual enabled fragment quad-control contract; ordinary quad fragments pass through unchanged and the final native-module capability gate remains authoritative."
   ],
   "performance_opt_ins": {
@@ -311,7 +312,7 @@
     },
     {
       "path": "src/common/CMakeLists.txt",
-      "sha256": "b6a7998b8999fc3ddb21a168d996e932b6e6853184776d8aaefc2631efc10374",
+      "sha256": "87729dcaa039ecc46a01ce5726a1aa77666af7782f43f8e956e6f9f87d8156dd",
       "upstream_sha256": "b33d218a35c3cce84477554879fd7f098490dc553cae000d2b6e3a43410c380d",
       "origin": "host-adapted"
     },
@@ -465,7 +466,7 @@
     },
     {
       "path": "src/common/hostStats.cpp",
-      "sha256": "4ae624d1ea19e6d06cb49dcf83b7ddd999d78dc65a6d305f34a5d0856ef147aa",
+      "sha256": "8553eeae35ba884abc6b24dd680b860a213387cca3d4a18ef5a484df49f7debd",
       "upstream_sha256": "4ae624d1ea19e6d06cb49dcf83b7ddd999d78dc65a6d305f34a5d0856ef147aa",
       "origin": "unchanged"
     },
@@ -541,7 +542,7 @@
     },
     {
       "path": "src/common/platform/sysLinuxVirtual.cpp",
-      "sha256": "ebc496d84a7e095752fee7997d1a5f37fcabfe185561240efca13eb389344449",
+      "sha256": "02c7e20fa17f4d2e02635e25ce424e5f59987c8039c82525f1efe05656e2dc53",
       "upstream_sha256": "060b607d27ef5b71877b2e6afe1c066a823c8c8bf15bbccd2437a0dd3cfb6e71",
       "origin": "host-adapted"
     },
@@ -700,7 +701,7 @@
     },
     {
       "path": "src/emulator.cpp",
-      "sha256": "4c9b65965f64406fcac48a7a7d096ad04dfc2a4394a2ffc37d81de95370a1d23",
+      "sha256": "5946cb456c8197c9bf474d2da348a1294d99410edb796e41950b3938a7a291ad",
       "upstream_sha256": "f0f27b69ba0969d98fbf82f6cf8240ff84b9dab24a5a881e6d97f3d3c53636bd",
       "origin": "host-adapted"
     },
@@ -872,19 +873,19 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/cache/bufferCache.cpp",
-      "sha256": "0a32a3a15eaf64f1e8e729ad1e70cc254e396703798acc9e7a1ee31bb9e5ee5a",
+      "sha256": "e8b959e7b854b92586079c1fa916b3a42ffdfeb345ec9cdf5bdeafdfbb8da074",
       "upstream_sha256": "d30a789c1519e9bae5dc124551fa8be35df04cdf3b46d11faf98509a94537675",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/cache/bufferCache.h",
-      "sha256": "30018763ac6534595e37b2e4de60c82bb3ce32274ef596856ec94f2719c4a43c",
+      "sha256": "516f65f7fe88e4bc957b90d735b71d9a42fe344b3916310ea5dfd0d11da8c5d7",
       "upstream_sha256": "de29d28368969a7ff7f4dc47a2f28b65b57155eda551296ced3dd9b7c178820c",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/host_gpu/renderer/cache/faultManager.cpp",
-      "sha256": "6f146860c27bab0fda745c3349646a86ab0fc116c3d3447d823b794879d828da",
+      "sha256": "29c285fae3641003987d18b66ea737a1eb41ceecc72c5448c09da519c6b5a2a1",
       "upstream_sha256": "8b6a9ec8255debea7847fa9ec488b4aa2f3b585bc63be52f322c6addf47beb8a",
       "origin": "host-adapted"
     },
@@ -914,13 +915,13 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/cache/streamBuffer.cpp",
-      "sha256": "1ee38de3199d698773d2adba3d76e6202c89f88d9331861c2b2d31c46555dd70",
+      "sha256": "b1de3c61ba423e37e69fd40f8097cd3de7b6b4c4f70ce0180816d658deabd8da",
       "upstream_sha256": "1ee38de3199d698773d2adba3d76e6202c89f88d9331861c2b2d31c46555dd70",
       "origin": "unchanged"
     },
     {
       "path": "src/graphics/host_gpu/renderer/cache/streamBuffer.h",
-      "sha256": "75ee1a2c3d9ec90a456a7d3cc6e744fd019f446b887380b41ad8595bb8eaaf03",
+      "sha256": "2099a8e4203dc5ef526035275743b564823eb503ae4ae2b3c409136158759c83",
       "upstream_sha256": "75ee1a2c3d9ec90a456a7d3cc6e744fd019f446b887380b41ad8595bb8eaaf03",
       "origin": "unchanged"
     },
@@ -1122,7 +1123,7 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/pipeline/descriptors.cpp",
-      "sha256": "cd7254b700b9d3b9213ec574b0605eacf0244e94c69c6b87f5ca78f4e8e8ee69",
+      "sha256": "0626375abc22ad5ffc296c5d8eb885fb2d0143c6cf7172f0bd039b898823b6e7",
       "upstream_sha256": "6217d05dfd3f504725d1fdd6b03659445044303a68d87e1d892f210c36dbc207",
       "origin": "host-adapted"
     },
@@ -1169,7 +1170,7 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/render.h",
-      "sha256": "6332c2f3d6d0878d1e052f676e237c09c4a90ccad2d69eb7627f69bfcc7050d1",
+      "sha256": "5f56066300cbedf5ccb284fa4702a23a08784bf56fc617f08ca57f560b16b8aa",
       "upstream_sha256": "6332c2f3d6d0878d1e052f676e237c09c4a90ccad2d69eb7627f69bfcc7050d1",
       "origin": "unchanged"
     },
@@ -1193,7 +1194,7 @@
     },
     {
       "path": "src/graphics/host_gpu/renderer/renderDraw.cpp",
-      "sha256": "9d9a5d490bf1083144ffc0b6066fe0e122acd344158cd6f7833715d1f36dd0ab",
+      "sha256": "ee0ab2c5ce341dc43160ce49c8bc883bedca1f2e135f2b4d9e8fb23d65d748cb",
       "upstream_sha256": "9111c3eb5ff4314bc5b4228a186dc367e00d6a5e78a30a32e303b7144cdd979d",
       "origin": "host-adapted"
     },
@@ -1426,7 +1427,7 @@
     },
     {
       "path": "src/graphics/presentation/systemOverlay.cpp",
-      "sha256": "cecb7a2c6f45e663a30ce3f022dc6678ff6e93a1846b2937fbfb0f1f9fd4071a",
+      "sha256": "1cea2c839c3265cbf0eeb1b3062c9cd7b077cc43212c7b8888eae06a23c41714",
       "upstream_sha256": "16f369b6477a00352cec685b785274e90bcf5e1eafb40f3d0bbb8fd646dbf4ff",
       "origin": "host-adapted"
     },
@@ -1468,7 +1469,7 @@
     },
     {
       "path": "src/graphics/presentation/window/swapchain.cpp",
-      "sha256": "b9143d47285034a053f157f6d8c7fef5beb747c343613617da732ce1ced7cbce",
+      "sha256": "92b30f8261bece95246c29b63277702846367231d343e8918c9c516be0cec1bd",
       "upstream_sha256": "dd1fbd1bd36d6a77af5228bf883189db5ea3b8900333989ef118b728b6234cb4",
       "origin": "host-adapted"
     },
@@ -1480,13 +1481,13 @@
     },
     {
       "path": "src/graphics/presentation/window/window.cpp",
-      "sha256": "031fd421044b7c01943b7b9c5319deb13d28a87666fec58b9b5c6677f19147df",
+      "sha256": "af5653c48c5cf51278c202d7cfceef177d36fa1faca34743516810368ea8e907",
       "upstream_sha256": "d3be22a4f93efdeec17b21ae1398445a02eb8efabdd30e3e8e7c12d906fb9043",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/presentation/window/windowInternal.h",
-      "sha256": "aef7177c13e3891598cbddb87c23f37eaae776d82934036ed04232b69cd3c729",
+      "sha256": "f7a645f999dd7f9a41599fdeaf16571dee75ca0b5de48e84aee4f1a424aaad4d",
       "upstream_sha256": "a4d2e9935fae5bffd094a3bf2a62016b29bf833be2e4aa54d7ae219776f7bd5b",
       "origin": "host-adapted"
     },
@@ -1513,13 +1514,13 @@
     },
     {
       "path": "src/graphics/shader/recompiler/ShaderRecompiler.cpp",
-      "sha256": "08eca5d2325e07ff96d056dcda08af623d7c2deef166f35868bbbb746940fd81",
+      "sha256": "4224ab5ccb2780ff7c44040549ec22531ca1114bff07e51b58563c5b2ed4b84e",
       "upstream_sha256": "48b4ffecbd24849ea7576db0f5f025d154e9951536babcc01a242841cac50ce7",
       "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/ShaderRecompiler.h",
-      "sha256": "f8065df9640a84ec875a352654bd0e52723edc93a541450eefaa66c3780afa51",
+      "sha256": "849ead0d144e27841b5e566741ba8e451bdb91bb57b7f7e6afb5645fa946fb2c",
       "upstream_sha256": "a2f24d6e06bf8585e273e2f443133c2c8a847f42a11b040cffdd6136e71a0c8a",
       "origin": "host-adapted"
     },
@@ -1549,13 +1550,13 @@
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/SpirvEmitter.cpp",
-      "sha256": "8613219b25bad63b4bf1d561c81d63f9c40a9f487c93fa8ba2c2fd8f31126b73",
+      "sha256": "23ebbaede889881e951f2f7a275266324ee3743e2745f3a2c6c82e9ff7b80eae",
       "upstream_sha256": "844115e8bb6c3a1c2adc761bd2b9f8cd56dd1108efbdd45a55a51bf54806ce10",
       "origin": "modified"
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/SpirvEmitter.h",
-      "sha256": "af3ff291d73c429361b91ebb41396b99bd366c7c5a52f01bfc7afd14ee091834",
+      "sha256": "640e3fd3690120dead9fae5b8f2e9b42dbea6058b963776b60d32856d0d9fca9",
       "upstream_sha256": "af3ff291d73c429361b91ebb41396b99bd366c7c5a52f01bfc7afd14ee091834",
       "origin": "unchanged"
     },
@@ -1609,13 +1610,13 @@
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h",
-      "sha256": "3948e65495f2d90187b4a85fbcb9c8a964abe1a6be9008777b32b21da9a44e73",
+      "sha256": "3f156e8846e15cc0cab4805bf3da86e9f4ca9b6df86574374e66cc94ef860f4a",
       "upstream_sha256": "fa28500594e325b41be9060a3a7e35baa27696e526de2442b32fb3ed621bcf58",
       "origin": "host-adapted"
     },
     {
       "path": "src/graphics/shader/recompiler/backend/spirv/spirvEmitterMemory.cpp",
-      "sha256": "331e11d0c7dad34bdbe02fe18f6b9dc48eb037127059fab466bb7a31cbcc7a8d",
+      "sha256": "20740f6ef2e58f03668fc4106483b82f785f14dfd49121f00a996c1672d315af",
       "upstream_sha256": "fcb1b6e47d4254e85d468a25fcf35348fc036681cef569b13290b6977fc86ab6",
       "origin": "modified"
     },
@@ -1909,7 +1910,7 @@
     },
     {
       "path": "src/graphics/shader/recompiler/ir/passes/Arm64SrtCode.h",
-      "sha256": "7434ff5fa8ee6e6b146073fe4f5c4d767e2e32afe7fdcbd978ff002638d12cb1",
+      "sha256": "4c5c525938e8a9cb28efc0d096b392d39a5585902587374ba5e9639ea229bbc5",
       "origin": "host-adapter"
     },
     {
@@ -2142,19 +2143,19 @@
     },
     {
       "path": "src/kernel/memory.cpp",
-      "sha256": "99ea07abfc899d7c2e1bd433df5c772fc65641ac7df9497a38b66fae85b09a66",
+      "sha256": "aabf7b3db66c2abe1fb46379b5d75449c5c4f3d1af3e4317e29a6916b23774fc",
       "upstream_sha256": "93232c868951052370463eb39fa1a0b291865e8d68b1b9e534f9222bab6410fd",
       "origin": "host-adapted"
     },
     {
       "path": "src/kernel/memory.h",
-      "sha256": "cce9029851129c396d7b084b43dd1cab660617d77df5988e8fc24aabc5ea433c",
+      "sha256": "569de69f69ba5dd8286000b2f80483203d9b739dfd270417e56db8c65454f2c2",
       "upstream_sha256": "3bbff2981b75cad8c899187d841cf2011ec98235faa8b2b0d6f20005773edbc4",
       "origin": "host-adapted"
     },
     {
       "path": "src/kernel/memoryAddressSpace.inc",
-      "sha256": "7eb19024de688db4156c637ed27e3a121afb2e4f5b179d26d076d869699c442f",
+      "sha256": "2b16d417ac4e2f199492cc3b397bf70cdaa873cb7afd2ee5eb36111b917fd61e",
       "upstream_sha256": "baa9bd40c8eff8d9299b22b541af59d8f2da12279870f9a47bc3ff3c05f2cc7c",
       "origin": "host-adapted"
     },
@@ -2316,7 +2317,7 @@
     },
     {
       "path": "src/libs/controller.cpp",
-      "sha256": "801206b5d5c8d29ee00393658d5bfd75d1043e1e06005b648d621bd06390469b",
+      "sha256": "86abf5ae1673dc393f151faac2bc8a3fa665ffb8dc0f71101ec997db956ff565",
       "upstream_sha256": "9b82df8868fb3e18cc03d4a830f71c1b34caf4a0c0c573c76c585bcec1f84836",
       "origin": "host-adapted"
     },
@@ -2686,7 +2687,7 @@
     },
     {
       "path": "src/libs/network.cpp",
-      "sha256": "9976a87d37d7438d9d3f69d094a984948704dc1aad585999989e7b70cf0006ee",
+      "sha256": "fdfb86437617e00ea2299b9261c5b877d1178b4ee1ff96904b8bd6c3917fb120",
       "upstream_sha256": "8f68a3cdb4af9bb8392edd2b2c16efec62f3f5158b38ac28305ee2e814f0f686",
       "origin": "host-adapted"
     },
@@ -2856,7 +2857,7 @@
     },
     {
       "path": "src/loader/runtimeLinker.cpp",
-      "sha256": "328d6d899057644cc3f2d0e6772fc8332bd9d283caa08e1f2173b605c2d7318c",
+      "sha256": "07cb0fdf890efad3ba651522b1cef6f7c0d54b62a5d34daceb1323df05275a60",
       "upstream_sha256": "16b8ade02bd06826550e235fd46a5075d3504028a1288ff0ba2168690c9699b3",
       "origin": "host-adapted"
     },
@@ -3005,7 +3006,7 @@
     },
     {
       "path": "tests/DirectGuestAddressSpaceTests.cpp",
-      "sha256": "8c354303040f69a315efa5109f06af0ceb84bb6c7b8a15cadc689c807024ef99",
+      "sha256": "88be8ed739478cb06cd76be721bf805ae1b8e0a29e25cbd3b65c9bb9cef8bf25",
       "origin": "integration"
     },
     {
@@ -3118,12 +3119,12 @@
     },
     {
       "path": "tests/NativeMetalPrimitiveShaders.inc",
-      "sha256": "fc25f6e2558ac7937c613ba2ec54bca93dac744a666fa9fefeca89dcfe3a14ad",
+      "sha256": "74c2763945ed84e928dbc87b9a2b879aeac3121abb2adabd7e79004f298a2b47",
       "origin": "integration"
     },
     {
       "path": "tests/NativeMetalPrimitiveTests.inc",
-      "sha256": "95438f8f481cb6719381467379f29e19dde7450bcda05e4cecd408bb30e9e613",
+      "sha256": "49f9e823a894893e735e0a36113f09e0c9f2871cfde9469677de32101f5de188",
       "origin": "integration"
     },
     {
@@ -3229,7 +3230,7 @@
     },
     {
       "path": "tests/ShaderRecompilerComputeTests.cpp",
-      "sha256": "f7d839f8f3149a48ee5dbb1b7a36532ace2fc6e65a0d7ec366f30743c6eda49f",
+      "sha256": "33df8ef266278b7b62437dc351c0949958d57305986aef70d5ed36c31bc64498",
       "upstream_sha256": "b811b1966ca00f70cdce49763a4026716a9292bebe19c32f6b473a93c34c8acd",
       "origin": "host-adapted"
     },
@@ -3291,7 +3292,7 @@
     },
     {
       "path": "tests/native_metal_shaders/generate.py",
-      "sha256": "8a2f4beae801b6427fc2694f7b97ea96715e088b5a0fc4d12000ccfa10d732be",
+      "sha256": "87a2368bc15bf3324bd2e93f3d8e9b789ec46c3a58d3b41fd002281d7a8a4306",
       "origin": "integration"
     },
     {
@@ -3311,7 +3312,7 @@
     },
     {
       "path": "tests/native_metal_shaders/primitive.vert",
-      "sha256": "6db2b1fd08f5d9369d28b4463571f0e317bc704d4bbf1636564de98fe7508a07",
+      "sha256": "2678eea2828e8102c4c5001aead1d6756cfdcb31975256f7b434ef03e0341f67",
       "origin": "integration"
     },
     {

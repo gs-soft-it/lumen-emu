@@ -8,10 +8,10 @@
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
-#include "common/systemInfo.h"
 #include "common/threads.h"
 #include "common/timer.h"
 #include "common/stringUtils.h"
+#include "gen4/gen5/desktopWindowInfo.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -20,7 +20,6 @@
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/window/hostInput.h"
 #include "graphics/presentation/window/windowInternal.h"
-#include "kytyGitVersion.h"
 #include "libs/controller.h"
 #include "loader/systemContent.h"
 
@@ -29,7 +28,6 @@
 #endif
 
 #include <cstdlib>
-#include <fmt/format.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -158,8 +156,6 @@ namespace {
 std::unique_ptr<WindowContext> g_window;
 
 } // namespace
-
-constexpr const char* KYTY_SDL_WINDOW_CAPTION = "Game";
 
 static void SetPause(WindowLoopState& game, bool flag) {
 	LOGF("Pause: %s\n", flag ? "true" : "false");
@@ -474,6 +470,9 @@ void WindowContext::ProcessEvent(double time_s) {
 	if (ProcessSystemOverlayInput(*event)) {
 		return;
 	}
+	if (DesktopWindowInfo::HandleFpsKey(*event)) {
+		return;
+	}
 	if (event->type >= SDL_EVENT_WINDOW_FIRST && event->type <= SDL_EVENT_WINDOW_LAST) {
 		ProcessWindowEvent(event->window);
 		return;
@@ -786,7 +785,8 @@ static void WindowCreate(WindowContext& context) {
 		window_flags |= static_cast<uint32_t>(SDL_WINDOW_BORDERLESS);
 	}
 #endif
-	context.window = SDL_CreateWindow(KYTY_SDL_WINDOW_CAPTION, width, height, window_flags);
+	const auto title = DesktopWindowInfo::Title();
+	context.window = SDL_CreateWindow(title.c_str(), width, height, window_flags);
 
 	if (context.window == nullptr) {
 		EXIT("%s\n", SDL_GetError());
@@ -913,59 +913,6 @@ void WindowContext::UpdateIcon() {
 	if (icon.surface != nullptr) {
 		SDL_SetWindowIcon(window, icon.surface);
 	}
-}
-
-void WindowContext::UpdateTitle() {
-	static char title[128];
-	static char title_id[12];
-	static char app_ver[12];
-	static bool has_title = Loader::SystemContentParamSfoGetString("TITLE", title, sizeof(title));
-	static bool has_title_id =
-	    Loader::SystemContentParamSfoGetString("TITLE_ID", title_id, sizeof(title_id));
-	static bool has_app_ver =
-	    Loader::SystemContentParamSfoGetString("APP_VER", app_ver, sizeof(app_ver));
-	static const std::string processor_name = Common::GetSystemInfo().ProcessorName;
-	static uint64_t fps_start   = Common::Timer::QueryPerformanceCounter();
-	static uint64_t frame_num   = 0;
-	static uint64_t fps_frames  = 0;
-	static double   current_fps = 0.0;
-
-#if KYTY_BUILD == KYTY_BUILD_DEBUG
-	static constexpr auto build_type = "Debug";
-#elif KYTY_BUILD == KYTY_BUILD_RELEASE
-	static constexpr auto build_type = "Release";
-#else
-	static constexpr auto build_type = "Unknown";
-#endif
-
-	const auto now       = Common::Timer::QueryPerformanceCounter();
-	const auto frequency = Common::Timer::QueryPerformanceFrequency();
-	frame_num++;
-	fps_frames++;
-	if (now - fps_start >= frequency) {
-		current_fps = static_cast<double>(fps_frames) * static_cast<double>(frequency) /
-		              static_cast<double>(now - fps_start);
-		fps_start   = now;
-		fps_frames  = 0;
-	}
-
-	const auto* device_name = graphic_ctx.GetPhysicalDeviceProperties().deviceName.data();
-	auto text = fmt::format(
-	    "[{} | {}] {}{}{}{}{}{}[{}] [{}], frame: {}, fps: {:.0f}", KYTY_BUILD_LABEL, build_type,
-	    (has_title ? title : ""), (has_title ? ", " : ""), (has_title_id ? title_id : ""),
-	    (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""), (has_app_ver ? " " : ""),
-	    device_name, processor_name, frame_num, current_fps);
-
-	struct TitleUpdate {
-		SDL_Window*  window;
-		std::string* text;
-	} update {window, &text};
-	EXIT_IF(!SDL_RunOnMainThread(
-	    [](void* data) {
-		    auto& title = *static_cast<TitleUpdate*>(data);
-		    SDL_SetWindowTitle(title.window, title.text->c_str());
-	    },
-	    &update, true));
 }
 
 } // namespace Libs::Graphics

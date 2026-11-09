@@ -118,12 +118,13 @@ public:
 #endif
     }
 private:
-    uint64_t m_address = 0, m_host = 0;
+    uint64_t m_address = 0;
+    [[maybe_unused]] uint64_t m_host = 0;
     size_t m_bytes = 0;
     Vm::GuestDataLease m_lease;
 };
 
-bool ManagedWritableRange(uint64_t address, uint64_t bytes)
+[[maybe_unused]] bool ManagedWritableRange(uint64_t address, uint64_t bytes)
 {
 #if LUMEN_PLATFORM == LUMEN_PLATFORM_OSX || LUMEN_PLATFORM == LUMEN_PLATFORM_ANDROID
 #if LUMEN_PLATFORM == LUMEN_PLATFORM_ANDROID
@@ -269,7 +270,7 @@ InputAccess PublishFinished()
         session.revoked = true;
         return InputAccess::Revoked;
     }
-    const size_t bytes = (units + 1) * sizeof(char16_t);
+    [[maybe_unused]] const size_t bytes = (units + 1) * sizeof(char16_t);
 #if LUMEN_PLATFORM == LUMEN_PLATFORM_OSX || LUMEN_PLATFORM == LUMEN_PLATFORM_ANDROID
     std::memcpy(reinterpret_cast<void*>(lease.HostBegin()), session.shadow.data(), bytes);
 #elif LUMEN_PLATFORM == LUMEN_PLATFORM_WINDOWS && LUMEN_ABI == LUMEN_ABI_X86_64

@@ -82,6 +82,10 @@ bool HandleGuestSignal(int signal, siginfo_t* info, void* rawContext) noexcept;
 bool DeliverGuestOrbisSignal(int orbis_sig, siginfo_t* info, void* rawContext,
                             std::uintptr_t guest_handler, bool siginfo_arguments = false,
                             std::uintptr_t work_rsp = 0) noexcept;
+
+// Best-effort fatal-fault diagnostic for the active direct FEX thread.
+// FEX can return the spilled RIP if it cannot map this PC to the current block.
+bool LumenHostQueryGuestRipFromHostPc(std::uintptr_t host_pc, std::uint64_t* guest_rip) noexcept;
 #else
 int SendGuestOrbisSignal(std::uintptr_t host_thread, int native_signal, int orbis_signal,
                         std::uintptr_t guest_handler) noexcept;

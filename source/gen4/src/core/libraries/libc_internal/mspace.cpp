@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/libraries/libc_internal/mspace.h"
+#include "core/loader/mspace_malloc_veneer.h"
 
 // common/assert.h transitively requires spdlog which is absent from the
 // minimal test build (libc_mspace_test links only GTest). Use
@@ -348,7 +349,11 @@ void* MspaceMalloc(void* handle, std::size_t size) {
     if (!arena) {
         return nullptr;
     }
-    return arena->Allocate(size, DefaultAlignment);
+    void* pointer = arena->Allocate(size, DefaultAlignment);
+    if (pointer != nullptr && size != 0 && Core::Loader::ZeroMspaceAllocationsEnabled()) {
+        std::memset(pointer, 0, size);
+    }
+    return pointer;
 }
 
 s32 MspaceFree(void* handle, void* pointer) {

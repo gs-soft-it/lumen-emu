@@ -9,6 +9,7 @@
 #include "common/logging/formatter.h"
 #include "common/logging/log.h"
 #include "common/path_util.h"
+#include "common/scope_exit.h"
 #include "common/singleton.h"
 #include "common/string_util.h"
 #include "common/thread.h"
@@ -40,11 +41,15 @@
 #include "core/file_sys/backends/host_fs.h"
 #include "core/file_sys/fs.h"
 #endif
+#include "core/loader/mspace_malloc_veneer.h"
 #include "core/memory.h"
 #include "core/tls.h"
 #include "ipc/ipc.h"
+#include <stdexcept>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <signal.h>
 #endif
 
@@ -924,7 +929,7 @@ void Linker::Relocate(Module* module) {
             case STB_GLOBAL:
             case STB_WEAK: {
                 rel_name = names_tlb + sym.st_name;
-                if (Resolve(rel_name, rel_sym_type, module, &symrec)) {
+                if (Resolve(rel_name, rel_sym_type, module, &symrec, addend == 0)) {
                     // Only set the rela bit if the symbol was actually resolved and not stubbed.
                     module->SetRelaBit(bit_idx);
                 }
@@ -984,8 +989,55 @@ void Linker::Relocate(Module* module) {
 #endif
 }
 
+VAddr Linker::GetZeroMspaceMallocVeneer(VAddr target) {
+    // Resolution runs under the linker lock. Once an import is bound, all
+    // subsequent imports of the same export use the same guest address.
+    if (const auto found = m_zero_mspace_malloc_veneers.find(target);
+        found != m_zero_mspace_malloc_veneers.end()) {
+        return found->second;
+    }
+    u32 target_protection{};
+    if (target == 0 || memory->QueryProtection(target, nullptr, nullptr, &target_protection) != ORBIS_OK ||
+        (target_protection & static_cast<u32>(MemoryProt::CpuExec)) == 0) {
+        throw std::runtime_error("Mspace allocation policy requires an executable guest export");
+    }
+
+    constexpr u64 size = 16_KB;
+    constexpr auto final_protection = MemoryProt::CpuRead | MemoryProt::CpuExec;
+    void* mapping{};
+    const auto result = memory->MapMemory(&mapping, 0, size, MemoryProt::CpuReadWrite,
+                                          MemoryMapFlags::NoCoalesce, VMAType::Code,
+                                          "zero mspace malloc veneer");
+    if (result != ORBIS_OK) {
+        throw std::runtime_error("Unable to map the mspace allocation policy veneer");
+    }
+    const auto address = reinterpret_cast<VAddr>(mapping);
+    auto rollback = SCOPE_GUARD {
+        if (const auto error = memory->UnmapMemory(address, size); error != ORBIS_OK) {
+            LOG_ERROR(Core_Linker, "Unable to unmap zero-initialized mspace veneer: {}", error);
+        }
+    };
+    const auto code = Loader::MakeZeroMspaceMallocVeneer(target);
+    std::memcpy(mapping, code.data(), code.size());
+    if (memory->Protect(address, size, final_protection) != ORBIS_OK ||
+        memory->SealGuestExecutable(address, size) != ORBIS_OK) {
+        throw std::runtime_error("Unable to protect the mspace allocation policy veneer");
+    }
+#ifdef _WIN32
+    if (!::FlushInstructionCache(::GetCurrentProcess(), mapping, code.size())) {
+        throw std::runtime_error("Unable to flush instructions for the mspace allocation policy veneer");
+    }
+#endif
+
+    m_zero_mspace_malloc_veneers.emplace(target, address);
+    rollback.Cancel();
+    LOG_INFO(Core_Linker, "Zero-initialized mspace veneer {:#x} for export {:#x}", address,
+             target);
+    return address;
+}
+
 bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Module* m,
-                     Loader::SymbolRecord* return_info) {
+                     Loader::SymbolRecord* return_info, bool allow_allocation_policy) {
     const auto ids = Common::SplitString(name, '#');
     if (ids.size() != 3) {
         return_info->virtual_address = 0;
@@ -1028,6 +1080,13 @@ bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Modul
         record = mod->export_sym.FindSymbol(sr);
         if (record) {
             *return_info = *record;
+            if (allow_allocation_policy && sr.type == Loader::SymbolType::Function &&
+                sr.library_version == 1 &&
+                sr.name == "OJjm-QOIHlI" && sr.library == sr.module &&
+                (sr.library == "libc" || sr.library == "libSceLibcInternal") &&
+                Loader::ZeroMspaceAllocationsEnabled()) {
+                return_info->virtual_address = GetZeroMspaceMallocVeneer(record->virtual_address);
+            }
             return true;
         }
     }

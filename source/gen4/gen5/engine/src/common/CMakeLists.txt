@@ -44,7 +44,7 @@ target_link_libraries(common
 		ZArchive::zarchive
 		nlohmann_json::nlohmann_json
 )
-if(APPLE)
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	# hostStats.cpp reads GPU utilization from the IOAccelerator registry entries.
 	target_link_libraries(common PRIVATE "-framework CoreFoundation" "-framework IOKit")
 endif()

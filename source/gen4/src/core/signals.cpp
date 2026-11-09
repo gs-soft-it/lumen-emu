@@ -104,6 +104,15 @@ static std::string DisassembleInstruction(void* code_address) {
 }
 
 #if defined(LUMEN_GEN4_DIRECT_FEX)
+static void ReportGuestJitRip(const void* code_address) {
+    if (!Common::IsCrashReporterEnabled()) return;
+    const auto host_pc = reinterpret_cast<std::uintptr_t>(code_address);
+    std::uint64_t guest_rip = 0;
+    if (::Core::Fex::LumenHostQueryGuestRipFromHostPc(host_pc, &guest_rip)) {
+        Common::ReportGuestCrashJitRip(host_pc, guest_rip);
+    }
+}
+
 static s32 NativeSiCodeToGuest(s32 sig, s32 code) {
     using namespace Libraries::Kernel;
     switch (sig) {
@@ -209,6 +218,7 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
         const bool is_write = Common::IsWriteError(raw_context);
         if (!signals->DispatchAccessViolation(raw_context, info->si_addr)) {
             Common::ReportCrash(raw_context, sig, info);
+            ReportGuestJitRip(code_address);
             u64 guest_rip = 0;
             u64 guest_rax = 0;
             if (::Core::Fex::LumenHostQueryGuestRipSyscall(&guest_rip, &guest_rax)) {
@@ -230,6 +240,14 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
     case SIGSYS: {
 
         Common::ReportCrash(raw_context, sig, info);
+        ReportGuestJitRip(code_address);
+        if (Common::IsCrashReporterEnabled()) {
+            u64 guest_rip = 0;
+            u64 guest_rax = 0;
+            if (::Core::Fex::LumenHostQueryGuestRipSyscall(&guest_rip, &guest_rax)) {
+                Common::ReportGuestCrashSnapshot(guest_rip, guest_rax);
+            }
+        }
         UNREACHABLE_MSG("Unhandled signal {} at code address {}", sig, fmt::ptr(code_address));
     }
     case SIGSLEEP: {
@@ -244,6 +262,7 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
         break;
     default:
         Common::ReportCrash(raw_context, sig, info);
+        ReportGuestJitRip(code_address);
         UNREACHABLE_MSG("Unhandled signal {} at code address {}", sig, fmt::ptr(code_address));
     }
 }

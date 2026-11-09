@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -63,6 +64,8 @@ struct UniqueBuffer {
 
     void Create(const vk::BufferCreateInfo& image_ci, MemoryUsage usage,
                 VmaAllocationInfo* out_alloc_info);
+    bool Create(const vk::BufferCreateInfo& buffer_ci, MemoryUsage usage,
+                VmaAllocationInfo* out_alloc_info, bool allow_failure);
 
     operator vk::Buffer() const {
         return buffer;
@@ -151,6 +154,10 @@ public:
     u8* MapReadback();
     void InvalidateReadback();
 
+protected:
+    Buffer(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler, MemoryUsage usage,
+           VAddr cpu_addr, vk::BufferUsageFlags flags, u64 size_bytes, bool allow_failure);
+
 public:
     VAddr cpu_addr = 0;
     bool is_picked{};
@@ -178,6 +185,11 @@ public:
     explicit StreamBuffer(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
                           MemoryUsage usage, u64 size_bytes_);
 
+    /// Attempts to allocate a mapped, coherent stream without requiring it for the runtime.
+    static std::unique_ptr<StreamBuffer> TryCreateCoherent(const Vulkan::Instance& instance,
+                                                           Vulkan::Scheduler& scheduler,
+                                                           u64 size_bytes);
+
     /// Reserves a region of memory from the stream buffer.
     std::pair<u8*, u64> Map(u64 size, u64 alignment = 0, bool allow_wait = true);
 
@@ -193,6 +205,9 @@ public:
     }
 
 private:
+    StreamBuffer(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler, MemoryUsage usage,
+                 u64 size_bytes, bool allow_failure);
+
     struct Watch {
         u64 tick{};
         u64 upper_bound{};

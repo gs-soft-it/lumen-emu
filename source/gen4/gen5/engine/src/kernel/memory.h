@@ -139,6 +139,9 @@ bool QueryTranslatedGuestAccess(uint64_t guest, uint64_t size, bool write) noexc
 // Signal-safe native-view permissions, including temporary GPU watch state.
 bool QueryTranslatedHostAccess(uint64_t guest, uint64_t size, bool write) noexcept;
 bool QueryGuestAccess(uint64_t address, uint64_t size, Common::VirtualMemory::Mode mode) noexcept;
+// Exclusive maximum of the immutable guest reservations, including translated
+// arenas. Zero when Memory is not initialized; this is not a mapping/rights check.
+[[nodiscard]] uint64_t GetGuestAddressSpaceLimit() noexcept;
 uint32_t QueryGuestExecutable(void*, uint64_t address, uint64_t* base, uint64_t* size,
                               uint32_t* writable) noexcept;
 bool ReadGuestMemory(void*, uint64_t address, void* destination, size_t size) noexcept;

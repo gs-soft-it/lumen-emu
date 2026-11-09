@@ -11,6 +11,7 @@ struct SessionOptions {
     std::filesystem::path data;
     std::filesystem::path executable;
     std::filesystem::path entry{"eboot.bin"};
+    std::filesystem::path succi_private_root;
     std::vector<std::string> guest_args;
     std::string eboot_digest;
     std::string param_digest;

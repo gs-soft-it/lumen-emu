@@ -5,6 +5,7 @@
 
 #import <TargetConditionals.h>
 #import <dispatch/dispatch.h>
+#include <mach/mach.h>
 
 #include <algorithm>
 #include <chrono>
@@ -74,11 +75,9 @@ bool InstanceExtensionSupported(const char* name)
 
 bool SupportsFragmentBarycentric(id<MTLDevice> device)
 {
-#if TARGET_OS_IPHONE
-	return false;
-#else
+	// Both supported Apple deployment targets expose this Metal capability.
+	// Admit the existing native shader path only when the actual GPU supports it.
 	return device != nil && device.supportsShaderBarycentricCoordinates;
-#endif
 }
 
 bool DeviceExtensionSupported(const char* name, id<MTLDevice> device)
@@ -104,18 +103,27 @@ VkDeviceSize AlignUp(VkDeviceSize value, VkDeviceSize alignment)
 	           : (value + alignment - 1) & ~(alignment - 1);
 }
 
-uint64_t DeviceWorkingSetSize(id<MTLDevice> device)
+uint64_t RecommendedWorkingSetSize(id<MTLDevice> device)
 {
-	uint64_t size = 512ULL * 1024ULL * 1024ULL;
 #if TARGET_OS_IPHONE
 	if (@available(iOS 16.0, *))
 	{
-		size = std::max(size, device.recommendedMaxWorkingSetSize);
+		return device.recommendedMaxWorkingSetSize;
 	}
+	return 0;
 #else
-	size = std::max(size, device.recommendedMaxWorkingSetSize);
+	return device.recommendedMaxWorkingSetSize;
 #endif
-	return size;
+}
+
+uint64_t DeviceWorkingSetSize(id<MTLDevice> device)
+{
+	const auto recommended = RecommendedWorkingSetSize(device);
+	// Simulator can report no recommended working set. Its Metal resources
+	// still use the host's shared physical memory; a fabricated 512 MiB heap
+	// makes VMA reject small allocations after valid initial buffers exist.
+	const uint64_t available = recommended != 0 ? recommended : NSProcessInfo.processInfo.physicalMemory;
+	return std::max<uint64_t>(512ULL * 1024ULL * 1024ULL, available);
 }
 
 uint32_t BytesPerPixel(VkFormat format)
@@ -573,14 +581,51 @@ VkResult AcquireTimeoutResult(uint64_t timeout)
 	return timeout == 0 ? VK_NOT_READY : VK_TIMEOUT;
 }
 
-void ObserveMetalCompletion(VkDevice device, id<MTLCommandBuffer> commandBuffer)
+void LogMetalMemory(VkDevice device, const char* phase, VkQueue queue = VK_NULL_HANDLE, long error = 0)
 {
-	if (device == VK_NULL_HANDLE || commandBuffer == nil || commandBuffer.status != MTLCommandBufferStatusError)
+	task_vm_info_data_t info {};
+	mach_msg_type_number_t count = TASK_VM_INFO_REV4_COUNT;
+	const auto status = task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count);
+	const bool footprintKnown = status == KERN_SUCCESS && count >= TASK_VM_INFO_REV1_COUNT;
+	const bool remainingKnown = status == KERN_SUCCESS && count >= TASK_VM_INFO_REV4_COUNT;
+	uint64_t inFlight = 0;
+	size_t pendingSubmits = 0;
+	if (queue != VK_NULL_HANDLE)
+	{
+		std::lock_guard lock(queue->mutex);
+		inFlight = queue->inFlightCount;
+		pendingSubmits = queue->pendingSubmits.size();
+	}
+	std::fprintf(stderr,
+	             "[LUMEN_METAL_MEMORY] phase=%s error=%ld allocated_bytes=%llu recommended_bytes=%llu "
+	             "phys_footprint_bytes=%llu limit_remaining_bytes=%llu footprint_known=%d remaining_known=%d "
+	             "mach_status=%d queues=%zu queue_index=%d in_flight=%llu pending_submits=%zu\n",
+	             phase, error, static_cast<unsigned long long>(device->metalDevice.currentAllocatedSize),
+	             static_cast<unsigned long long>(RecommendedWorkingSetSize(device->metalDevice)),
+	             static_cast<unsigned long long>(footprintKnown ? info.phys_footprint : 0),
+	             static_cast<unsigned long long>(remainingKnown ? info.limit_bytes_remaining : 0),
+	             footprintKnown, remainingKnown, status, device->queues.size(),
+	             queue != VK_NULL_HANDLE ? static_cast<int>(queue->queueIndex) : -1,
+	             static_cast<unsigned long long>(inFlight), pendingSubmits);
+}
+
+void ObserveMetalCompletion(VkQueue queue, id<MTLCommandBuffer> commandBuffer, const char* phase)
+{
+	if (commandBuffer.status != MTLCommandBufferStatusError)
 	{
 		return;
 	}
+	const VkDevice device = queue->device;
+	if (!device->completionFailureReported.exchange(true, std::memory_order_relaxed))
+	{
+		@autoreleasepool
+		{
+			NSError* error = commandBuffer.error;
+			LogMetalMemory(device, phase, queue, static_cast<long>(error.code));
+			NSLog(@"Lumen Metal command buffer failed: %@", error);
+		}
+	}
 	Lumen::MetalVulkan::MarkDeviceLost(device);
-	NSLog(@"Lumen Metal command buffer failed: %@", commandBuffer.error);
 }
 
 void ResetCommandRecordingState(VkCommandBuffer commandBuffer)
@@ -900,9 +945,7 @@ constexpr bool IsVertexBufferFormat(VkFormat format)
 		case VK_FORMAT_R32G32B32_SFLOAT:
 		case VK_FORMAT_R32G32B32A32_SFLOAT:
 		case VK_FORMAT_R8G8B8A8_UNORM:
-#if !TARGET_OS_IPHONE
 		case VK_FORMAT_R8G8B8A8_SNORM:
-#endif
 		case VK_FORMAT_R16G16_UNORM:
 		case VK_FORMAT_R16G16B16A16_SFLOAT:
 		case VK_FORMAT_R16G16_SINT: return true;
@@ -916,11 +959,7 @@ static_assert(IsVertexBufferFormat(VK_FORMAT_R16G16B16A16_SFLOAT));
 static_assert(IsVertexBufferFormat(VK_FORMAT_R16G16_SINT));
 static_assert(IsVertexBufferFormat(VK_FORMAT_R16G16B16A16_SINT));
 static_assert(IsVertexBufferFormat(VK_FORMAT_R32G32B32_SFLOAT));
-#if !TARGET_OS_IPHONE
 static_assert(IsVertexBufferFormat(VK_FORMAT_R8G8B8A8_SNORM));
-#else
-static_assert(!IsVertexBufferFormat(VK_FORMAT_R8G8B8A8_SNORM));
-#endif
 static_assert(!IsVertexBufferFormat(VK_FORMAT_R16G16_SNORM));
 static_assert(!IsVertexBufferFormat(VK_FORMAT_R16G16_SSCALED));
 static_assert(!IsVertexBufferFormat(VK_FORMAT_R16G16B16A16_SNORM));
@@ -1001,48 +1040,42 @@ void EndEncoding(EncodingContext& context, bool preserveAttachments)
 
 VkResult WaitSemaphore(VkSemaphore semaphore, uint64_t timeoutNanoseconds, bool consume)
 {
-	if (semaphore == VK_NULL_HANDLE)
+	if (semaphore == VK_NULL_HANDLE || !semaphore->binary)
 	{
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
-	std::unique_lock lock(semaphore->mutex);
-	const VkResult result = WaitWithNanosecondTimeout(semaphore->condition, lock, timeoutNanoseconds,
-	                                                [semaphore] { return semaphore->signaled || !semaphore->alive; });
+	const auto state = semaphore->binary;
+	std::unique_lock lock(state->mutex);
+	const VkResult result = WaitWithNanosecondTimeout(state->condition, lock, timeoutNanoseconds,
+	                                                [&] { return state->signaled || !state->alive; });
 	if (result != VK_SUCCESS)
 	{
 		return result;
 	}
-	if (!semaphore->alive)
+	if (!state->alive)
 	{
 		return VK_ERROR_DEVICE_LOST;
 	}
 	if (consume)
 	{
-		semaphore->signaled = false;
+		state->signaled = false;
 	}
 	return VK_SUCCESS;
 }
 
 void SignalSemaphore(VkSemaphore semaphore)
 {
-	if (semaphore == VK_NULL_HANDLE)
+	if (semaphore == VK_NULL_HANDLE || !semaphore->binary)
 	{
 		return;
 	}
-	std::lock_guard lock(semaphore->mutex);
-	if (semaphore->alive)
+	const auto state = semaphore->binary;
+	std::lock_guard lock(state->mutex);
+	if (state->alive)
 	{
-		semaphore->signaled = true;
-		semaphore->condition.notify_all();
+		state->signaled = true;
+		state->condition.notify_all();
 	}
-}
-
-void NotifyTimelineSemaphore(VkSemaphore semaphore)
-{
-	// Use the same lock as the host wait predicate to avoid losing a completion
-	// between reading the shared-event counter and entering the condition wait.
-	std::lock_guard lock(semaphore->device->semaphoreCompletionMutex);
-	semaphore->device->semaphoreCompletionCondition.notify_all();
 }
 
 void SignalFence(VkFence fence)
@@ -1064,10 +1097,6 @@ void SignalFence(VkFence fence)
 		std::lock_guard lock(device->fenceCompletionMutex);
 	}
 	device->fenceCompletionCondition.notify_all();
-	{
-		std::lock_guard lock(device->semaphoreCompletionMutex);
-		device->semaphoreCompletionCondition.notify_all();
-	}
 }
 
 void MarkDeviceLost(VkDevice device)
@@ -1080,6 +1109,10 @@ void MarkDeviceLost(VkDevice device)
 	// Wake every fence set, including fences submitted on a different queue
 	// that will never receive their own successful completion notification.
 	device->fenceCompletionCondition.notify_all();
+	{
+		std::lock_guard lock(device->semaphoreCompletionMutex);
+	}
+	device->semaphoreCompletionCondition.notify_all();
 }
 
 void ResetFence(VkFence fence)
@@ -1182,6 +1215,132 @@ void CompleteCommandBuffer(VkCommandBuffer commandBuffer)
 }
 
 } // namespace Lumen::MetalVulkan
+
+namespace Lumen::MetalVulkan {
+
+struct SubmitSignal
+{
+	__strong id<MTLSharedEvent> event = nil;
+	std::shared_ptr<MetalBinarySemaphoreState> binary;
+	uint64_t value = 0;
+};
+
+struct QueueSubmitRetirement
+{
+	VkCommandBuffer commandBuffer;
+	std::shared_ptr<std::vector<SubmitSignal>> signals;
+	VkFence fence;
+	bool completed = false;
+	bool failed = false;
+};
+
+} // namespace Lumen::MetalVulkan
+
+namespace {
+
+using Lumen::MetalVulkan::QueueSubmitRetirement;
+using Lumen::MetalVulkan::SubmitSignal;
+
+void EncodeBinarySubmitSignals(VkQueue queue, id<MTLCommandBuffer> commandBuffer,
+                               std::vector<SubmitSignal>& signals)
+{
+	for (auto& signal : signals)
+	{
+		const auto& binary = signal.binary;
+		if (!binary) continue;
+		std::lock_guard lock(binary->mutex);
+		signal.value = ++binary->generation;
+		if (signal.value == 0)
+			binary->event = nil; // Keep the blocking path after event counter wrap.
+		signal.event = binary->event;
+		binary->pendingProducer = queue;
+		if (signal.event != nil)
+			[commandBuffer encodeSignalEvent:signal.event value:signal.value];
+	}
+}
+
+void CompleteSubmitSignals(VkDevice device, const std::vector<SubmitSignal>& signals, bool failed)
+{
+	bool notifyTimeline = false;
+	for (const auto& signal : signals)
+	{
+		const auto& binary = signal.binary;
+		if (!binary)
+		{
+			// Publish after host retirement so dependent GPU submissions cannot
+			// signal host completion while earlier buffers are still pending.
+			// On device loss this also drains waits on this Metal event. The
+			// Vulkan host APIs report device loss before reading the counter.
+			std::lock_guard lock(device->semaphoreCompletionMutex);
+			if (signal.event.signaledValue < signal.value)
+			{
+				signal.event.signaledValue = signal.value;
+				notifyTimeline = true;
+			}
+			continue;
+		}
+		std::lock_guard lock(binary->mutex);
+		// A failed command may have skipped its signal. Drain a present
+		// already waiting on this private event before destroying the queue.
+		if (failed && signal.event != nil && signal.event.signaledValue < signal.value)
+			signal.event.signaledValue = signal.value;
+		if (!binary->alive || binary->generation != signal.value ||
+		    binary->pendingProducer == VK_NULL_HANDLE)
+			continue;
+		binary->pendingProducer = VK_NULL_HANDLE;
+		binary->signaled = true;
+		binary->condition.notify_all();
+	}
+	if (notifyTimeline) device->semaphoreCompletionCondition.notify_all();
+}
+
+void CommitSubmitCommand(VkQueue queue, id<MTLCommandBuffer> encoded, VkCommandBuffer commandBuffer,
+                         const std::shared_ptr<std::vector<SubmitSignal>>& signals, VkFence fence)
+{
+	const auto retirement = std::make_shared<QueueSubmitRetirement>(QueueSubmitRetirement{
+		.commandBuffer = commandBuffer, .signals = signals, .fence = fence,
+	});
+	{
+		std::lock_guard lock(queue->mutex);
+		queue->pendingSubmits.push_back(retirement);
+		++queue->inFlightCount;
+	}
+	[encoded addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+		ObserveMetalCompletion(queue, completed, "submit-error");
+		std::lock_guard lock(queue->mutex);
+		retirement->completed = true;
+		retirement->failed = completed.status == MTLCommandBufferStatusError;
+		// Metal may deliver the CPU handlers out of order. Retire command
+		// buffers in queue order before publishing timeline signals or fences.
+		while (!queue->pendingSubmits.empty() && queue->pendingSubmits.front()->completed)
+		{
+			const auto& ready = queue->pendingSubmits.front();
+			Lumen::MetalVulkan::CompleteCommandBuffer(ready->commandBuffer);
+			if (ready->signals) CompleteSubmitSignals(queue->device, *ready->signals, ready->failed);
+			Lumen::MetalVulkan::SignalFence(ready->fence);
+			queue->pendingSubmits.pop_front();
+			--queue->inFlightCount;
+		}
+		queue->idleCondition.notify_all();
+	}];
+	[encoded commit];
+}
+
+bool EncodePendingPresentWait(VkQueue queue, VkSemaphore semaphore, id<MTLCommandBuffer> commandBuffer)
+{
+	const auto& binary = semaphore->binary;
+	if (!binary) return false;
+	std::lock_guard lock(binary->mutex);
+	if (!binary->alive || binary->signaled || binary->pendingProducer != queue || binary->event == nil)
+		return false;
+	[commandBuffer encodeWaitForEvent:binary->event value:binary->generation];
+	// Consume the reserved signal. A late CPU completion handler must not
+	// restore it or interfere with a subsequent reuse of this semaphore.
+	binary->pendingProducer = VK_NULL_HANDLE;
+	return true;
+}
+
+} // namespace
 
 extern "C" {
 
@@ -1833,6 +1992,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, c
 		}
 		created->queues.push_back(std::move(queue));
 	}
+	LogMetalMemory(created.get(), "create-device");
 	*device = created.release();
 	return VK_SUCCESS;
 }
@@ -2405,7 +2565,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(VkDevice device, VkSwapchai
 	return VK_SUCCESS;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* presentInfo)
+static VkResult QueuePresent(VkQueue queue, const VkPresentInfoKHR* presentInfo)
 {
 	if (queue == VK_NULL_HANDLE || presentInfo == nullptr || presentInfo->sType != VK_STRUCTURE_TYPE_PRESENT_INFO_KHR)
 	{
@@ -2421,6 +2581,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentI
 	{
 		return VK_ERROR_DEVICE_LOST;
 	}
+	const bool singleWait = presentInfo->waitSemaphoreCount == 1 && presentInfo->swapchainCount == 1;
+	const auto waitForSemaphore = [queue](VkSemaphore semaphore) {
+		const VkResult wait = Lumen::MetalVulkan::WaitSemaphore(semaphore, UINT64_MAX);
+		if (wait != VK_SUCCESS) return wait;
+		return queue->device->lost.load(std::memory_order_acquire) ? VK_ERROR_DEVICE_LOST : VK_SUCCESS;
+	};
 	for (uint32_t index = 0; index < presentInfo->waitSemaphoreCount; ++index)
 	{
 		if (presentInfo->pWaitSemaphores[index] == VK_NULL_HANDLE ||
@@ -2428,14 +2594,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentI
 		{
 			return VK_ERROR_INITIALIZATION_FAILED;
 		}
-		const VkResult wait = Lumen::MetalVulkan::WaitSemaphore(presentInfo->pWaitSemaphores[index], UINT64_MAX);
-		if (wait != VK_SUCCESS)
+		if (!singleWait)
 		{
-			return wait;
-		}
-		if (queue->device->lost.load(std::memory_order_acquire))
-		{
-			return VK_ERROR_DEVICE_LOST;
+			const VkResult wait = waitForSemaphore(presentInfo->pWaitSemaphores[index]);
+			if (wait != VK_SUCCESS) return wait;
 		}
 	}
 
@@ -2446,6 +2608,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentI
 		VkSwapchainKHR swapchain = presentInfo->pSwapchains[index];
 		const uint32_t imageIndex = presentInfo->pImageIndices[index];
 		id<CAMetalDrawable> drawable = nil;
+		id<MTLCommandBuffer> commandBuffer = nil;
 		if (swapchain == VK_NULL_HANDLE || swapchain->device != queue->device)
 		{
 			result = VK_ERROR_INITIALIZATION_FAILED;
@@ -2478,37 +2641,58 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentI
 				}
 			}
 		}
+		if (result == VK_SUCCESS && (commandBuffer = [queue->metalQueue commandBuffer]) == nil)
+		{
+			// Restore the acquired image on allocation failure before the
+			// single-swapchain path consumes its semaphore.
+			std::lock_guard lock(swapchain->mutex);
+			swapchain->states[imageIndex] = Lumen::MetalVulkan::SwapchainImageState::Acquired;
+			--swapchain->presentationsInFlight;
+			swapchain->imageCondition.notify_all();
+			result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+		}
+		if (singleWait && result != VK_ERROR_OUT_OF_DEVICE_MEMORY)
+		{
+			const auto semaphore = presentInfo->pWaitSemaphores[0];
+			VkResult wait = VK_SUCCESS;
+			if (queue->device->lost.load(std::memory_order_acquire))
+				wait = VK_ERROR_DEVICE_LOST;
+			else if (commandBuffer == nil || !EncodePendingPresentWait(queue, semaphore, commandBuffer))
+				wait = waitForSemaphore(semaphore);
+			if (wait != VK_SUCCESS)
+			{
+				if (commandBuffer != nil) CompletePresent(swapchain, imageIndex);
+				result = wait;
+			}
+		}
 		if (result == VK_SUCCESS)
 		{
-			id<MTLCommandBuffer> commandBuffer = [queue->metalQueue commandBuffer];
-			if (commandBuffer == nil)
 			{
-				CompletePresent(swapchain, imageIndex);
-				result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
-			} else
-			{
-				{
-					std::lock_guard queueLock(queue->mutex);
-					++queue->inFlightCount;
-				}
-#if !TARGET_OS_SIMULATOR
-				[(id<MTLDrawable>)drawable addPresentedHandler:^(__unused id<MTLDrawable> presentedDrawable) {
-					NotifyPresentCompleted();
-				}];
-#endif
-				[commandBuffer presentDrawable:drawable];
-				[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-					ObserveMetalCompletion(queue->device, completed);
-					CompletePresent(swapchain, imageIndex);
-					std::lock_guard queueLock(queue->mutex);
-					if (queue->inFlightCount != 0)
-					{
-						--queue->inFlightCount;
-					}
-					queue->idleCondition.notify_all();
-				}];
-				[commandBuffer commit];
+				std::lock_guard queueLock(queue->mutex);
+				++queue->inFlightCount;
 			}
+#if !TARGET_OS_SIMULATOR
+			[(id<MTLDrawable>)drawable addPresentedHandler:^(__unused id<MTLDrawable> presentedDrawable) {
+				NotifyPresentCompleted();
+			}];
+#endif
+			[commandBuffer presentDrawable:drawable];
+			[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+				ObserveMetalCompletion(queue, completed, "present-error");
+#if TARGET_OS_SIMULATOR
+				// Simulator does not expose drawable presentation handlers. Its
+				// HUD tracks successful GPU completion of the present command.
+				if (completed.status == MTLCommandBufferStatusCompleted) NotifyPresentCompleted();
+#endif
+				CompletePresent(swapchain, imageIndex);
+				std::lock_guard queueLock(queue->mutex);
+				if (queue->inFlightCount != 0)
+				{
+					--queue->inFlightCount;
+				}
+				queue->idleCondition.notify_all();
+			}];
+			[commandBuffer commit];
 		}
 		if (presentInfo->pResults != nullptr)
 		{
@@ -2520,6 +2704,14 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentI
 		}
 	}
 	return aggregate;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* presentInfo)
+{
+	@autoreleasepool
+	{
+		return QueuePresent(queue, presentInfo);
+	}
 }
 
 extern "C" void LumenMetalSetPresentCompletionCallback(PresentCompletionCallback callback, void* context)
@@ -3312,7 +3504,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandBuffer(VkCommandBuffer commandBuffe
 	return VK_SUCCESS;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* submits, VkFence fence)
+static VkResult QueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* submits, VkFence fence)
 {
 	if (queue == VK_NULL_HANDLE || (submitCount != 0 && submits == nullptr) ||
 	    (fence != VK_NULL_HANDLE && fence->device != queue->device))
@@ -3329,7 +3521,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t submitCount
 	}
 	if (submitCount == 0)
 	{
-		Lumen::MetalVulkan::SignalFence(fence);
+		if (fence == VK_NULL_HANDLE) return VK_SUCCESS;
+		id<MTLCommandBuffer> encoded = [queue->metalQueue commandBuffer];
+		if (encoded == nil) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+		CommitSubmitCommand(queue, encoded, VK_NULL_HANDLE, nullptr, fence);
 		return VK_SUCCESS;
 	}
 
@@ -3385,26 +3580,23 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t submitCount
 		// A timeline wait must be queued, not performed on the submitting CPU:
 		// Vulkan permits another queue or host thread to supply its future signal.
 		if (timelineWaits != nil) [timelineWaits commit];
-		auto signalSemaphores = std::make_shared<std::vector<VkSemaphore>>();
-		auto signalValues = std::make_shared<std::vector<uint64_t>>(submit.signalSemaphoreCount, 0);
-		if (submit.signalSemaphoreCount != 0)
+		auto signals = std::make_shared<std::vector<SubmitSignal>>();
+		signals->reserve(submit.signalSemaphoreCount);
+		for (uint32_t semaphoreIndex = 0; semaphoreIndex < submit.signalSemaphoreCount; ++semaphoreIndex)
 		{
-			for (uint32_t semaphoreIndex = 0; semaphoreIndex < submit.signalSemaphoreCount; ++semaphoreIndex)
+			const auto semaphore = submit.pSignalSemaphores[semaphoreIndex];
+			if (semaphore == VK_NULL_HANDLE || semaphore->device != queue->device)
+				return VK_ERROR_INITIALIZATION_FAILED;
+			SubmitSignal signal;
+			if (semaphore->type == VK_SEMAPHORE_TYPE_TIMELINE)
 			{
-				if (submit.pSignalSemaphores[semaphoreIndex] == VK_NULL_HANDLE ||
-				    submit.pSignalSemaphores[semaphoreIndex]->device != queue->device)
-				{
+				if (timeline == nullptr || timeline->signalSemaphoreValueCount != submit.signalSemaphoreCount)
 					return VK_ERROR_INITIALIZATION_FAILED;
-				}
-				if (submit.pSignalSemaphores[semaphoreIndex]->type == VK_SEMAPHORE_TYPE_TIMELINE)
-				{
-					if (timeline == nullptr || timeline->signalSemaphoreValueCount != submit.signalSemaphoreCount)
-						return VK_ERROR_INITIALIZATION_FAILED;
-					(*signalValues)[semaphoreIndex] = timeline->pSignalSemaphoreValues[semaphoreIndex];
-				}
+				signal.event = semaphore->sharedEvent;
+				signal.value = timeline->pSignalSemaphoreValues[semaphoreIndex];
 			}
-			signalSemaphores->assign(submit.pSignalSemaphores,
-			                         submit.pSignalSemaphores + submit.signalSemaphoreCount);
+			else signal.binary = semaphore->binary;
+			signals->push_back(std::move(signal));
 		}
 		const bool isFinalSubmit = submitIndex + 1 == submitCount;
 		if (submit.commandBufferCount == 0)
@@ -3414,33 +3606,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t submitCount
 			{
 				return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 			}
-			for (size_t i = 0; i < signalSemaphores->size(); ++i)
-				if ((*signalSemaphores)[i]->type == VK_SEMAPHORE_TYPE_TIMELINE)
-					[encoded encodeSignalEvent:(*signalSemaphores)[i]->sharedEvent value:(*signalValues)[i]];
-			{
-				std::lock_guard queueLock(queue->mutex);
-				++queue->inFlightCount;
-			}
-			[encoded addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-				ObserveMetalCompletion(queue->device, completed);
-				for (VkSemaphore semaphore: *signalSemaphores)
-				{
-					if (semaphore->type == VK_SEMAPHORE_TYPE_TIMELINE)
-						Lumen::MetalVulkan::NotifyTimelineSemaphore(semaphore);
-					else Lumen::MetalVulkan::SignalSemaphore(semaphore);
-				}
-				if (isFinalSubmit)
-				{
-					Lumen::MetalVulkan::SignalFence(fence);
-				}
-				std::lock_guard queueLock(queue->mutex);
-				if (queue->inFlightCount != 0)
-				{
-					--queue->inFlightCount;
-				}
-				queue->idleCondition.notify_all();
-			}];
-			[encoded commit];
+			EncodeBinarySubmitSignals(queue, encoded, *signals);
+			CommitSubmitCommand(queue, encoded, VK_NULL_HANDLE, signals, isFinalSubmit ? fence : VK_NULL_HANDLE);
 			continue;
 		}
 		for (uint32_t commandIndex = 0; commandIndex < submit.commandBufferCount; ++commandIndex)
@@ -3471,40 +3638,20 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t submitCount
 			}
 			const bool isFinalCommandInSubmit = commandIndex + 1 == submit.commandBufferCount;
 			if (isFinalCommandInSubmit)
-				for (size_t i = 0; i < signalSemaphores->size(); ++i)
-					if ((*signalSemaphores)[i]->type == VK_SEMAPHORE_TYPE_TIMELINE)
-						[encoded encodeSignalEvent:(*signalSemaphores)[i]->sharedEvent value:(*signalValues)[i]];
-			{
-				std::lock_guard queueLock(queue->mutex);
-				++queue->inFlightCount;
-			}
-			[encoded addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-				ObserveMetalCompletion(queue->device, completed);
-				Lumen::MetalVulkan::CompleteCommandBuffer(commandBuffer);
-				if (isFinalCommandInSubmit)
-				{
-					for (VkSemaphore semaphore: *signalSemaphores)
-					{
-						if (semaphore->type == VK_SEMAPHORE_TYPE_TIMELINE)
-							Lumen::MetalVulkan::NotifyTimelineSemaphore(semaphore);
-						else Lumen::MetalVulkan::SignalSemaphore(semaphore);
-					}
-					if (isFinalSubmit)
-					{
-						Lumen::MetalVulkan::SignalFence(fence);
-					}
-				}
-				std::lock_guard queueLock(queue->mutex);
-				if (queue->inFlightCount != 0)
-				{
-					--queue->inFlightCount;
-				}
-				queue->idleCondition.notify_all();
-			}];
-			[encoded commit];
+				EncodeBinarySubmitSignals(queue, encoded, *signals);
+			CommitSubmitCommand(queue, encoded, commandBuffer, isFinalCommandInSubmit ? signals : nullptr,
+			                    isFinalCommandInSubmit && isFinalSubmit ? fence : VK_NULL_HANDLE);
 		}
 	}
 	return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* submits, VkFence fence)
+{
+	@autoreleasepool
+	{
+		return QueueSubmit(queue, submitCount, submits, fence);
+	}
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueWaitIdle(VkQueue queue)
@@ -3656,6 +3803,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSemaphore(VkDevice device, const VkSemaph
 			created->sharedEvent.signaledValue = type->initialValue;
 		}
 	}
+	if (created->type == VK_SEMAPHORE_TYPE_BINARY)
+	{
+		created->binary = std::make_shared<MetalBinarySemaphoreState>();
+		created->binary->event = [device->metalDevice newSharedEvent];
+	}
 	*semaphore = created.release();
 	return VK_SUCCESS;
 }
@@ -3666,6 +3818,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetSemaphoreCounterValue(VkDevice device, VkSem
 	if (device == VK_NULL_HANDLE || semaphore == VK_NULL_HANDLE || semaphore->device != device ||
 	    semaphore->type != VK_SEMAPHORE_TYPE_TIMELINE || value == nullptr)
 		return VK_ERROR_INITIALIZATION_FAILED;
+	std::lock_guard lock(device->semaphoreCompletionMutex);
 	if (device->lost.load(std::memory_order_acquire)) return VK_ERROR_DEVICE_LOST;
 	*value = semaphore->sharedEvent.signaledValue;
 	return VK_SUCCESS;
@@ -3677,8 +3830,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkSignalSemaphore(VkDevice device, const VkSemaph
 	    info->semaphore == VK_NULL_HANDLE || info->semaphore->device != device ||
 	    info->semaphore->type != VK_SEMAPHORE_TYPE_TIMELINE)
 		return VK_ERROR_INITIALIZATION_FAILED;
-	if (device->lost.load(std::memory_order_acquire)) return VK_ERROR_DEVICE_LOST;
 	std::lock_guard lock(device->semaphoreCompletionMutex);
+	if (device->lost.load(std::memory_order_acquire)) return VK_ERROR_DEVICE_LOST;
 	if (info->value <= info->semaphore->sharedEvent.signaledValue) return VK_ERROR_INITIALIZATION_FAILED;
 	info->semaphore->sharedEvent.signaledValue = info->value;
 	device->semaphoreCompletionCondition.notify_all();
@@ -3714,10 +3867,11 @@ VKAPI_ATTR void VKAPI_CALL vkDestroySemaphore(VkDevice device, VkSemaphore semap
 	{
 		return;
 	}
+	if (const auto state = semaphore->binary)
 	{
-		std::lock_guard lock(semaphore->mutex);
-		semaphore->alive = false;
-		semaphore->condition.notify_all();
+		std::lock_guard lock(state->mutex);
+		state->alive = false;
+		state->condition.notify_all();
 	}
 	delete semaphore;
 }

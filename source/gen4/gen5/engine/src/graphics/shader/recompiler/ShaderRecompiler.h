@@ -12,6 +12,10 @@
 #include <span>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 namespace Libs::Graphics::ShaderRecompiler {
 
 struct CompileOptions {
@@ -29,6 +33,11 @@ struct CompileOptions {
 	ShaderStageInputInfo        input_info;
 	// Request only: final IR must independently earn the partition certificate.
 	bool                       fragment_quad_control_enabled = false;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	bool                       bounded_bda_pagetable = true;
+#else
+	bool                       bounded_bda_pagetable = false;
+#endif
 };
 
 struct TranslateResult {

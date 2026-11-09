@@ -13,6 +13,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
 #include <map>
+#include <memory>
 #include <span>
 #include <utility>
 #include <vector>
@@ -33,6 +34,10 @@ public:
 	static constexpr uint64_t CACHING_NUMPAGES  = (LOWER_ADDRESS_SIZE + LibKernel::Memory::kExtendedMemorySize) >> CACHING_PAGEBITS;
 	static constexpr uint64_t BDA_PAGETABLE_SIZE =
 	    CACHING_NUMPAGES * sizeof(vk::DeviceAddress);
+	// One extra workgroup of bitmap words keeps the parser dispatch aligned and
+	// gives unrepresentable addresses a fault bit outside every legal guest page.
+	static constexpr uint64_t BDA_INVALID_FAULT_PAGE = CACHING_NUMPAGES;
+	static constexpr uint64_t BDA_FAULT_BUFFER_SIZE = CACHING_NUMPAGES / 8 + 64 * sizeof(uint32_t);
 
 	static constexpr uint64_t PageIndex(uint64_t address) {
 		return (address < LOWER_ADDRESS_SIZE
@@ -44,6 +49,10 @@ public:
 		return offset < LOWER_ADDRESS_SIZE
 		           ? offset
 		           : offset - LOWER_ADDRESS_SIZE + LibKernel::Memory::kExtendedMemoryBase;
+	}
+	static constexpr uint64_t BdaPageTableSizeForGuestLimit(uint64_t limit) {
+		if (limit == 0 || !GuestRange {limit - 1, 1}.Valid()) return 0;
+		return (PageIndex(limit - 1) + 1) * sizeof(vk::DeviceAddress);
 	}
 
 	BufferCache(GraphicContext& graphics, CommandScheduler& scheduler, PageManager& page_manager,
@@ -59,6 +68,11 @@ public:
 	                                                        bool     is_written,
 	                                                        bool     is_texel_buffer = false,
 	                                                        BufferId id              = {});
+	[[nodiscard]] std::pair<Buffer*, uint64_t> TrySnapshotReadOnlyBuffer(uint64_t vaddr,
+	                                                                    uint64_t size,
+	                                                                    uint64_t alignment,
+	                                                                    BufferId id);
+	void CommitReadOnlyBufferSnapshot();
 	[[nodiscard]] StreamBuffer&                GetUtilityBuffer(MemoryUsage usage) noexcept {
 		switch (usage) {
 			case MemoryUsage::Upload: return m_staging_buffer;
@@ -152,6 +166,9 @@ private:
 	StreamBuffer                                      m_stream_buffer;
 	StreamBuffer                                      m_download_buffer;
 	StreamBuffer                                      m_device_buffer;
+	std::unique_ptr<StreamBuffer>                     m_read_only_snapshot_ring;
+	bool                                              m_read_only_snapshot_ring_attempted = false;
+	bool                                              m_read_only_snapshot_pending        = false;
 	TextureCache&                                     m_texture_cache;
 	uint64_t                                          m_total_used_memory  = 0;
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;

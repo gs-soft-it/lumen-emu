@@ -212,7 +212,7 @@ public:
 
     void Relocate(Module* module);
     bool Resolve(const std::string& name, Loader::SymbolType type, Module* module,
-                 Loader::SymbolRecord* return_info);
+                 Loader::SymbolRecord* return_info, bool allow_allocation_policy = true);
     void Execute(const std::vector<std::string>& args = {});
     void DebugDump();
 #ifdef LUMEN_GEN4_ENABLE_FEX_GUEST_CPU
@@ -233,6 +233,8 @@ private:
     std::optional<GuestExecutionFailure> InitializeFexRuntime();
 #endif
     void* CallAppHeapMalloc(u64 size);
+    VAddr GetZeroMspaceMallocVeneer(VAddr target);
+    std::unordered_map<VAddr, VAddr> m_zero_mspace_malloc_veneers;
 #ifdef LUMEN_GEN4_DIRECT_FEX
     void CallAppHeapFree(void* pointer);
 #else

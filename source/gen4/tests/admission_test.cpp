@@ -3,6 +3,7 @@
 #include "common/sha256.h"
 #include "lumen/path_boundary.h"
 #include "core/loader/elf.h"
+#include <nlohmann/json.hpp>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -158,6 +159,44 @@ int main(int argc, char** external_arguments) {
         require(options.startup_modules.size() == 1, "module policy not preserved");
         auto writable_rom = options; writable_rom.data = base / "rom";
         require(!ValidateContent(writable_rom, error), "ROM used for writable runtime data");
+
+        const auto demo_root = base / "benchmarks/succi-v1/roms/SUCC00001";
+        const auto demo_data = base / "RuntimeData/succi-benchmark-v1";
+        fs::create_directories(demo_root / "sce_sys");
+        fs::create_directories(demo_data);
+        write(demo_root / "eboot.bin", elf);
+        write(demo_root / "sce_sys/param.sfo", sfo);
+        const auto marker_path = demo_root / "succi-benchmark.json";
+        nlohmann::json marker{{"version", 2}, {"mode", "succi-demo-v2"}, {"level", 8},
+            {"controllerLevel", 1}, {"benchmarkOnly", true}, {"warmupSeconds", 5},
+            {"measurementSeconds", 30}, {"ebootSha256", options.eboot_digest}};
+        write(marker_path, marker.dump());
+        auto demo = options;
+        demo.root = demo_root; demo.data = demo_data; demo.known_system = false;
+        demo.executable = fs::absolute("runtime"); demo.event_token = "test-token";
+        require(ValidateContent(demo, error) && !demo.succi_benchmark,
+                "A marker without the managed demo option enabled benchmarking");
+        demo.succi_private_root = base;
+        auto demo_args = ManagedArguments(demo);
+        std::vector<char*> demo_argv; for (auto& value : demo_args) demo_argv.push_back(value.data());
+        SessionOptions demo_parsed;
+        require(ParseCommand(demo_argv.size(), demo_argv.data(), demo_parsed, error), error.c_str());
+        require(demo_parsed.succi_private_root == base, "Managed restart lost the private demo root");
+        require(ValidateContent(demo_parsed, error), error.c_str());
+        require(demo_parsed.succi_benchmark, "Verified bundled demo did not enable benchmarking");
+        marker["ebootSha256"] = std::string(64, 'a');
+        write(marker_path, marker.dump());
+        require(!ValidateContent(demo_parsed, error) && !demo_parsed.succi_benchmark,
+                "Demo marker was allowed to replace the dashboard executable digest");
+        marker["ebootSha256"] = options.eboot_digest;
+        write(marker_path, marker.dump());
+        write(demo_root / "alternate.elf", elf);
+        demo_parsed.entry = "alternate.elf";
+        require(!ValidateContent(demo_parsed, error), "Alternate executable enabled benchmark mode");
+        demo_parsed.entry = "eboot.bin";
+        demo_parsed.data = base / "data";
+        require(!ValidateContent(demo_parsed, error), "Demo accepted ordinary runtime data path");
+
         std::vector<std::string> args = {"runtime", "--preflight-managed", options.root.string(),
             "--eboot-sha256", options.eboot_digest, "--param-sha256", options.param_digest,
             "--module-policy", "eboot-only", "--width", "1280", "--height", "720", "--event-token", "test-token"};

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <condition_variable>
+#include <cstdlib>
+#include <limits>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -64,8 +66,18 @@ static bool PthreadSemTryAcquire(PthreadSem* sem) {
     return false;
 }
 
+static bool SemTimedWaitCarryEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("LUMEN_EXPERIMENTAL_POSIX_SEM_TIMEDWAIT_CARRY");
+        return value == nullptr || value[0] != '0' || value[1] != '\0';
+    }();
+    return enabled;
+}
+
 static s32 PthreadSemWait(PthreadSem* sem, const OrbisKernelTimespec* abstime, u64 usec = 0) {
+    constexpr s64 NanosecondsPerSecond = 1'000'000'000;
     const bool is_reltime = abstime == THR_RELTIME;
+    OrbisKernelTimespec normalized{};
     auto reltime_deadline = std::chrono::steady_clock::time_point{};
     bool first_sleep = true;
 
@@ -75,9 +87,16 @@ static s32 PthreadSemWait(PthreadSem* sem, const OrbisKernelTimespec* abstime, u
             return 0;
         }
         if (!is_reltime && abstime != nullptr &&
-            (abstime->tv_nsec < 0 || abstime->tv_nsec >= 1'000'000'000)) {
-            *__Error() = POSIX_EINVAL;
-            return -1;
+            (abstime->tv_nsec < 0 || abstime->tv_nsec >= NanosecondsPerSecond)) {
+            if (abstime->tv_nsec != NanosecondsPerSecond ||
+                abstime->tv_sec == std::numeric_limits<s64>::max() ||
+                !SemTimedWaitCarryEnabled()) {
+                *__Error() = POSIX_EINVAL;
+                return -1;
+            }
+            // Some guest callers leave the exact whole-second carry in tv_nsec.
+            normalized = {abstime->tv_sec + 1, 0};
+            abstime = &normalized;
         }
 
         ASSERT_MSG(g_curthread != nullptr, "POSIX semaphore wait requires a guest pthread");

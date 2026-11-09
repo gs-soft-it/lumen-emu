@@ -13,6 +13,10 @@ if((APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android" AND
 	set(CMAKE_AR "${CMAKE_CURRENT_LIST_DIR}/tools/macos-ar.sh" CACHE FILEPATH "Archiver wrapper for macOS" FORCE)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "17.4" CACHE STRING "Minimum iOS version for public FEX JIT callbacks")
+endif()
+
 project(LumenEmu)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
@@ -576,7 +580,7 @@ option(LUMEN_WITH_CONTROLLER_INPUT_TEST "Build the standalone guest digital-inpu
 option(LUMEN_WITH_PAD_HANDLE_TEST "Build the opt-in shared Pad handle-validation test" OFF)
 option(LUMEN_WITH_PAD_ANALOG_INPUT_TEST "Build the opt-in shared Pad analog-input test" OFF)
 option(LUMEN_WITH_APPLE_VALIDATION "Require and expose the complete native Apple validation gate" OFF)
-option(LUMEN_WITH_IOS_RUNTIME "Link the complete in-process emulator runtime into the UIKit application" OFF)
+option(LUMEN_WITH_IOS_RUNTIME "Build the PS4 and PS5 DIRECT FEX frameworks for iOS" OFF)
 
 if(LUMEN_AV_SYNC_TELEMETRY)
 	if(NOT APPLE_PLATFORM)
@@ -889,17 +893,10 @@ if(ANDROID)
 	return()
 endif()
 
-# The core distribution retains the standalone iOS CPU/VM bootstrap. The
-# full runtime needs an application-supplied window and input integration.
+# The public core exposes its native frameworks and the standalone CPU/VM bootstrap.
 if(IOS)
-	if(LUMEN_WITH_IOS_RUNTIME)
-		message(FATAL_ERROR "The full iOS runtime requires the application shell omitted from this core source distribution")
-	endif()
-	if(LUMEN_WITH_RUNTIME_LIFECYCLE_TEST AND NOT LUMEN_WITH_IOS_RUNTIME)
-		message(FATAL_ERROR "LUMEN_WITH_RUNTIME_LIFECYCLE_TEST requires LUMEN_WITH_IOS_RUNTIME on iOS")
-	endif()
-	if(LUMEN_WITH_PAD_HANDLE_TEST AND NOT LUMEN_WITH_IOS_RUNTIME)
-		message(FATAL_ERROR "LUMEN_WITH_PAD_HANDLE_TEST requires LUMEN_WITH_IOS_RUNTIME on iOS")
+	if(LUMEN_WITH_RUNTIME_LIFECYCLE_TEST OR LUMEN_WITH_PAD_HANDLE_TEST)
+		message(FATAL_ERROR "These legacy interpreter runtime tests do not cover the iOS DIRECT FEX frameworks")
 	endif()
 	if(NOT CMAKE_OSX_ARCHITECTURES)
 		message(FATAL_ERROR "iOS requires -DCMAKE_OSX_ARCHITECTURES=arm64")
@@ -938,12 +935,24 @@ if(IOS)
 		target_link_libraries(lumen_x64_cpu_backend PRIVATE lumen_apple_virtual_memory)
 	endif()
 
+	if(LUMEN_WITH_IOS_RUNTIME)
+		set(LUMEN_GEN4_DEPS_DIR "${PROJECT_SOURCE_DIR}/../../lumen-deps/gen4/sources"
+			CACHE PATH "Pinned PS4 dependencies")
+		set(LUMEN_METAL_VULKAN_HEADERS_DIR "${LUMEN_GEN4_DEPS_DIR}/vulkan-headers/include"
+			CACHE PATH "Pinned Vulkan headers for native Metal")
+		add_subdirectory(3rdparty)
+		include("${PROJECT_SOURCE_DIR}/ios_fex_runtime.cmake")
+	endif()
 
 	add_executable(lumen_ios_production_smoke AppleBootstrapSmoke.cpp)
 	target_link_libraries(lumen_ios_production_smoke PRIVATE
 		lumen_x64_cpu_backend lumen_apple_virtual_memory)
 	add_custom_target(lumen_ios_bootstrap DEPENDS lumen_ios_production_smoke)
-	message(STATUS "iOS core: standalone CPU/VM bootstrap; application shell is not included")
+	if(LUMEN_WITH_IOS_RUNTIME)
+		message(STATUS "iOS core: PS4 + PS5 DIRECT FEX frameworks, native Metal")
+	else()
+		message(STATUS "iOS core: standalone CPU/VM bootstrap")
+	endif()
 	return()
 endif()
 

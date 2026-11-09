@@ -26,6 +26,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #if defined(__APPLE__)
+#include "gen4/src/core/darwin_vm.h"
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <mach-o/dyld.h>
@@ -94,6 +95,73 @@ vm_prot_t NativeProtection(uint64_t address) {
     if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
     Check(status == KERN_SUCCESS && region <= address, "query native mapping rights");
     return info.protection;
+}
+
+void CheckDarwinBackingZeroReuse() {
+    constexpr uint64_t offset = (1ull << 30) - Page;
+    constexpr uint64_t size = 4 * Page;
+    const auto backing = space->GetBackingBase() + offset;
+    const auto no_resident_pages = [](uint64_t address, uint64_t bytes) {
+        std::array<char, size / Page> pages {};
+        return mincore(reinterpret_cast<const void*>(address), bytes, pages.data()) == 0 &&
+               std::none_of(pages.begin(), pages.end(), [](char state) {
+                   return (state & MINCORE_INCORE) != 0;
+               });
+    };
+    const auto generation = Memory::ReadBackingMutationGeneration();
+    Check(no_resident_pages(backing, size) && space->ZeroBacking(offset, size) &&
+          no_resident_pages(backing, size),
+          "zeroing never-exposed physical pages leaves their backing nonresident");
+    const auto after_zero = Memory::ReadBackingMutationGeneration();
+    Check(Common::UniformMetadata::Enabled()
+              ? after_zero != generation && (after_zero & 1) == 0
+              : after_zero == generation,
+          "skipping first zero preserves backing mutation generation semantics");
+
+    const auto address = space->ReserveAligned(0x360000000ull, 3 * Page, Page);
+    const auto alias = address + Page;
+    const auto tail = address + 2 * Page;
+    Check(address != 0 && space->MapBacking(address, Page, offset, Mode::ReadWrite) &&
+          space->MapBacking(alias, Page, offset, Mode::Read) &&
+          space->MapBacking(tail, Page, offset + 3 * Page, Mode::NoAccess) &&
+          no_resident_pages(backing, size),
+          "first mappings with mixed protections leave virgin backing nonresident");
+    Check(NativeProtection(tail) == VM_PROT_NONE && space->Protect(tail, Page, Mode::ReadWrite),
+          "initially inaccessible backing alias can become writable");
+    const auto* alias_bytes = reinterpret_cast<const uint8_t*>(alias);
+    const auto* tail_bytes = reinterpret_cast<const uint8_t*>(tail);
+    const auto all_bytes = [](const uint8_t* begin, const uint8_t* end, uint8_t expected) {
+        return std::all_of(begin, end, [expected](uint8_t byte) { return byte == expected; });
+    };
+    Check(all_bytes(alias_bytes, alias_bytes + Page, 0) && all_bytes(tail_bytes, tail_bytes + Page, 0),
+          "first shared mappings read as zero");
+    std::memset(reinterpret_cast<void*>(address), 0xa5, Page);
+    std::memset(reinterpret_cast<void*>(tail), 0x6b, Page);
+    const uint8_t alias_write = 0x21;
+    Check(space->TryWriteBacking(alias + 8, &alias_write, 1) && alias_bytes[0] == 0xa5 &&
+          reinterpret_cast<const uint8_t*>(address)[8] == alias_write,
+          "guest stores and backing writes remain visible through shared aliases");
+
+    Memory::GuestBackingStore::FailureReason reason {};
+    Check(!space->MapBacking(alias, Page, BackingSize, Mode::ReadWrite, &reason) &&
+          reason == Memory::GuestBackingStore::FailureReason::PhysicalRangeOutOfBounds &&
+          alias_bytes[0] == 0xa5 && NativeProtection(alias) == VM_PROT_READ,
+          "failed replacement preserves the old alias contents and read-only rights");
+    Check(no_resident_pages(backing + Page, 2 * Page) &&
+          space->ZeroBacking(offset + 3, size - 6) && no_resident_pages(backing + Page, 2 * Page) &&
+          all_bytes(alias_bytes, alias_bytes + 3, 0xa5) &&
+          all_bytes(alias_bytes + 3, alias_bytes + Page, 0) &&
+          all_bytes(tail_bytes, tail_bytes + Page - 3, 0) &&
+          all_bytes(tail_bytes + Page - 3, tail_bytes + Page, 0x6b) &&
+          NativeProtection(alias) == VM_PROT_READ,
+          "mixed partial zero clears exposed pages only and preserves adjacent bytes and alias rights");
+
+    std::memset(reinterpret_cast<void*>(address), 0x4c, Page);
+    Check(space->UnmapBacking(address, Page) && space->UnmapBacking(alias, Page) &&
+          space->ZeroBacking(offset, Page) && space->MapBacking(alias, Page, offset, Mode::Read) &&
+          all_bytes(alias_bytes, alias_bytes + Page, 0) &&
+          space->UnmapBacking(alias, Page) && space->UnmapBacking(tail, Page),
+          "reused dirty backing is zeroed after every alias was retired");
 }
 
 void CheckDarwinPermanentReservationAdmission(uint64_t temporary_guard) {
@@ -741,6 +809,13 @@ int main() {
     auto owner = std::make_unique<Memory::GuestAddressSpace>(BackingSize);
     space = owner.get();
     Check(space->GetBackingSize() == BackingSize, "full PS5 13824 MiB backing");
+    const auto address_limit = space->GetAddressLimit();
+    Check(address_limit >= Page && address_limit % Page == 0 &&
+          space->Owns(address_limit - Page, Page) && !space->OverlapsOwned(address_limit, Page),
+          "guest address limit excludes the first page after the last reservation");
+#if defined(__APPLE__)
+    CheckDarwinBackingZeroReuse();
+#endif
 #if defined(__ANDROID__)
     Check(Memory::HOST_USER_MAX == 0x3fffffffffull, "Gen4 Android 256 GiB host user boundary");
 #endif

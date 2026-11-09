@@ -27,7 +27,6 @@ struct WindowLoopState {
 	SDL_Event        event {};
 	bool             need_exit = false;
 	std::atomic_bool paused    = false;
-	std::atomic<uint64_t> presented_frames {0};
 };
 
 struct WindowContext {
@@ -44,7 +43,6 @@ struct WindowContext {
 	[[nodiscard]] bool                                      RefreshSurfaceCapabilities();
 	[[nodiscard]] bool                                      IsPresentationSurfaceAvailable() const;
 	void                                                    UpdateIcon();
-	void UpdateTitle(uint64_t frame_num, double current_fps);
 	void                                                    Resize(int width, int height);
 	void ProcessWindowEvent(const SDL_WindowEvent& event);
 	void ProcessDisplayEvent(const SDL_DisplayEvent& event);

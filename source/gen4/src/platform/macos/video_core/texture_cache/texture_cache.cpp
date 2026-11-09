@@ -952,6 +952,16 @@ ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure
     return {};
 }
 
+bool TextureCache::HasImageOverlap(VAddr address, size_t size) {
+    std::scoped_lock lock{mutex};
+    bool overlaps = false;
+    ForEachImageInRegion(address, size, [&](ImageId, Image&) {
+        overlaps = true;
+        return true;
+    });
+    return overlaps;
+}
+
 ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc) {
     Image& image = slot_images[image_id];
     LogViewDimensionMismatch(desc, image);

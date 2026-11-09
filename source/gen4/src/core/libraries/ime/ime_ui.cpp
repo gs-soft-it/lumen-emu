@@ -396,15 +396,8 @@ void ImeUi::Draw() {
     u32 panel_req_h = 0;
     (void)sceImeGetPanelSize(ime_param, &panel_req_w, &panel_req_h);
 
-    ImVec2 window_size{};
-    if (panel_req_w > 0 && panel_req_h > 0) {
-        window_size = {panel_req_w * scale_x, panel_req_h * scale_y};
-    } else {
-        window_size = {std::min(std::max(0.0f, viewport.size.x - 40.0f), 640.0f),
-                       std::min(std::max(0.0f, viewport.size.y - 40.0f), 420.0f)};
-        window_size.x = std::max(window_size.x, 320.0f);
-        window_size.y = std::max(window_size.y, 240.0f);
-    }
+    const ImVec2 window_size =
+        Libraries::Ime::ComputeImePanelSize(viewport, panel_req_w, panel_req_h);
 
     float pos_x = viewport.offset.x + ime_param->posx * scale_x;
     float pos_y = viewport.offset.y + ime_param->posy * scale_y;

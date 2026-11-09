@@ -15,7 +15,7 @@
 
 #if defined(__APPLE__)
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include "gen4/src/core/darwin_vm.h"
 #endif
 
 // IWYU pragma: no_include <asm/mman-common.h>
@@ -246,12 +246,12 @@ static void* map_fixed_no_replace(uintptr_t address, size_t size, int protection
 	if (address == 0 || size == 0 || address % page != 0 || size > UINTPTR_MAX - address ||
 	    size > SIZE_MAX - (page - 1)) return MAP_FAILED;
 	const auto mapped_size = (size + page - 1) & ~(page - 1);
-	mach_vm_address_t target = address;
+	Lumen::DarwinVM::Address target = address;
 	// VM_FLAGS_FIXED, without VM_FLAGS_OVERWRITE, atomically rejects a collision.
-	if (mach_vm_allocate(mach_task_self(), &target, mapped_size, VM_FLAGS_FIXED) != KERN_SUCCESS)
+	if (Lumen::DarwinVM::Allocate(mach_task_self(), &target, mapped_size, VM_FLAGS_FIXED) != KERN_SUCCESS)
 		return MAP_FAILED;
 	if (mprotect(reinterpret_cast<void*>(target), mapped_size, protection) != 0) {
-		mach_vm_deallocate(mach_task_self(), target, mapped_size);
+		Lumen::DarwinVM::Deallocate(mach_task_self(), target, mapped_size);
 		return MAP_FAILED;
 	}
 	return reinterpret_cast<void*>(target);
@@ -261,15 +261,15 @@ static void* map_fixed_no_replace(uintptr_t address, size_t size, int protection
 // the first mapped region at or above `region_addr`; if it begins before the end of the
 // requested range, the range overlaps an existing mapping.
 static bool is_mapped(void* ptr, size_t length) {
-	auto                           query_addr  = reinterpret_cast<mach_vm_address_t>(ptr);
-	mach_vm_address_t              region_addr = query_addr;
-	mach_vm_size_t                 region_size = 0;
+	auto                           query_addr  = reinterpret_cast<Lumen::DarwinVM::Address>(ptr);
+	Lumen::DarwinVM::Address              region_addr = query_addr;
+	Lumen::DarwinVM::Size                 region_size = 0;
 	vm_region_basic_info_data_64_t info {};
 	mach_msg_type_number_t         count       = VM_REGION_BASIC_INFO_COUNT_64;
 	mach_port_t                    object_name = MACH_PORT_NULL;
 
 	kern_return_t kr =
-	    mach_vm_region(mach_task_self(), &region_addr, &region_size, VM_REGION_BASIC_INFO_64,
+	    Lumen::DarwinVM::Region(mach_task_self(), &region_addr, &region_size, VM_REGION_BASIC_INFO_64,
 	                   reinterpret_cast<vm_region_info_t>(&info), &count, &object_name);
 	if (kr != KERN_SUCCESS) {
 		return false; // no region at or above the address → unmapped

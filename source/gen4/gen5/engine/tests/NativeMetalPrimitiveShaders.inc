@@ -290,6 +290,82 @@ inline constexpr const char *CullVertex = R"SPV(
                OpFunctionEnd
 
 )SPV";
+inline constexpr const char *FixedVertexInput = R"SPV(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %4 "main" %10 %14 %26 %37 %38 %gl_InstanceIndex
+               OpDecorate %_struct_8 Block
+               OpMemberDecorate %_struct_8 0 BuiltIn Position
+               OpDecorate %14 Location 0
+               OpDecorate %_struct_24 Block
+               OpMemberDecorate %_struct_24 0 Offset 0
+               OpMemberDecorate %_struct_24 1 Offset 16
+               OpDecorate %37 Location 0
+               OpDecorate %38 Location 1
+               OpDecorate %gl_InstanceIndex BuiltIn InstanceIndex
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+  %_struct_8 = OpTypeStruct %v4float
+%_ptr_Output__struct_8 = OpTypePointer Output %_struct_8
+         %10 = OpVariable %_ptr_Output__struct_8 Output
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+         %14 = OpVariable %_ptr_Input_v4float Input
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+       %uint = OpTypeInt 32 0
+     %uint_0 = OpConstant %uint 0
+%_ptr_Output_float = OpTypePointer Output %float
+     %v4uint = OpTypeVector %uint 4
+ %_struct_24 = OpTypeStruct %v4float %v4uint
+%_ptr_PushConstant__struct_24 = OpTypePointer PushConstant %_struct_24
+         %26 = OpVariable %_ptr_PushConstant__struct_24 PushConstant
+     %uint_1 = OpConstant %uint 1
+%_ptr_PushConstant_float = OpTypePointer PushConstant %float
+     %uint_2 = OpConstant %uint 2
+         %37 = OpVariable %_ptr_Output_v4float Output
+         %38 = OpVariable %_ptr_Input_v4float Input
+%_ptr_Input_int = OpTypePointer Input %int
+%gl_InstanceIndex = OpVariable %_ptr_Input_int Input
+      %int_1 = OpConstant %int 1
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+%float_0_125 = OpConstant %float 0.125
+          %4 = OpFunction %void None %3
+          %5 = OpLabel
+         %15 = OpLoad %v4float %14
+         %17 = OpAccessChain %_ptr_Output_v4float %10 %int_0
+               OpStore %17 %15
+         %21 = OpAccessChain %_ptr_Output_float %10 %int_0 %uint_0
+         %22 = OpLoad %float %21
+         %29 = OpAccessChain %_ptr_PushConstant_float %26 %int_0 %uint_1
+         %30 = OpLoad %float %29
+         %31 = OpFMul %float %22 %30
+         %33 = OpAccessChain %_ptr_PushConstant_float %26 %int_0 %uint_2
+         %34 = OpLoad %float %33
+         %35 = OpFAdd %float %31 %34
+         %36 = OpAccessChain %_ptr_Output_float %10 %int_0 %uint_0
+               OpStore %36 %35
+         %39 = OpLoad %v4float %38
+               OpStore %37 %39
+         %42 = OpLoad %int %gl_InstanceIndex
+         %43 = OpBitcast %uint %42
+         %46 = OpAccessChain %_ptr_PushConstant_uint %26 %int_1 %uint_1
+         %47 = OpLoad %uint %46
+         %48 = OpISub %uint %43 %47
+         %49 = OpConvertUToF %float %48
+         %51 = OpFMul %float %49 %float_0_125
+         %52 = OpAccessChain %_ptr_Output_float %37 %uint_2
+         %53 = OpLoad %float %52
+         %54 = OpFAdd %float %53 %51
+         %55 = OpAccessChain %_ptr_Output_float %37 %uint_2
+               OpStore %55 %54
+               OpReturn
+               OpFunctionEnd
+
+)SPV";
 inline constexpr const char *Control3 = R"SPV(
                OpCapability Tessellation
           %1 = OpExtInstImport "GLSL.std.450"

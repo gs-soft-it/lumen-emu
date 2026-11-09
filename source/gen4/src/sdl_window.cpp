@@ -36,6 +36,9 @@
 #include "core/libraries/mouse/sdl_mouse.h"
 
 CMRC_DECLARE(res);
+#if defined(LUMEN_IOS_FEX_MODULE)
+extern "C" void LumenIOSFexModuleWindowReadyV1(SDL_Window*);
+#endif
 
 #ifdef __ANDROID__
 extern "C" void LumenGen4OnControllerState(bool connected);
@@ -139,6 +142,12 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, SDL_WINDOW_VULKAN);
 #endif
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
+#if defined(LUMEN_IOS_FEX_MODULE)
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN, true);
+    // UIKit prepares the opaque surface and scene while the dashboard still
+    // owns focus, then performs the visible window handoff.
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIDDEN_BOOLEAN, true);
+#endif
     LOG_INFO(Input, "Creating SDL Vulkan window");
     window = SDL_CreateWindowWithProperties(props);
     LOG_INFO(Input, "SDL Vulkan window creation returned");
@@ -210,13 +219,16 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
         window_info.render_surface = SDL_GetPointerProperty(
             SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
     }
-#elif defined(SDL_PLATFORM_MACOS)
+#elif defined(SDL_PLATFORM_MACOS) || defined(SDL_PLATFORM_IOS)
     window_info.type = WindowSystemType::Metal;
     metal_view = SDL_Metal_CreateView(window);
     if (metal_view == nullptr) {
         UNREACHABLE_MSG("Failed to create SDL Metal view: {}", SDL_GetError());
     }
     window_info.render_surface = SDL_Metal_GetLayer(metal_view);
+#endif
+#if defined(LUMEN_IOS_FEX_MODULE)
+    LumenIOSFexModuleWindowReadyV1(window);
 #endif
     input_profile = input_profile_.empty() ? std::string(Common::ElfInfo::Instance().GameSerial()) : std::string(input_profile_);
     // input handler init-s

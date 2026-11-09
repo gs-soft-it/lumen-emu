@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 # SPDX-License-Identifier: GPL-2.0-or-later
 cmake_minimum_required(VERSION 3.25)
-if(APPLE)
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(CMAKE_OSX_DEPLOYMENT_TARGET 12.0 CACHE STRING "Minimum macOS target")
 endif()
 project(lumen_gen4 LANGUAGES C CXX ASM)
@@ -26,6 +26,10 @@ set(LUMEN_GEN4_DEPS_DIR "${LUMEN_REPOSITORY_ROOT}/../lumen-deps/gen4/sources" CA
 set(LUMEN_GEN4_FFMPEG_PREBUILT_DIR "" CACHE PATH "Native FFmpeg static package")
 set(LUMEN_GEN4_PARENT_BUILD "" CACHE PATH "Parent Lumen CPU and renderer build")
 set(LUMEN_GEN4_ENTRY_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp" CACHE STRING "Runtime entry point sources")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(LUMEN_GEN4_ENTRY_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/lumen/ios_module.cpp")
+    add_compile_definitions(LUMEN_IOS_FEX_MODULE=1 LUMEN_IOS_CONSOLE_PS4=1)
+endif()
 set(ENABLE_DISCORD_RPC OFF)
 set(ENABLE_UPDATER OFF)
 set(ENABLE_TESTS OFF)
@@ -1078,7 +1082,12 @@ endif()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CMakeRC.cmake")
 
-if(ANDROID)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_library(lumen_gen4_runtime SHARED)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/gen5/cmake/IOSRuntimeModule.cmake")
+    lumen_configure_ios_runtime_module(lumen_gen4_runtime LumenPS4Runtime)
+    add_custom_target(lumen_ios_ps4_fex_runtime DEPENDS lumen_gen4_runtime)
+elseif(ANDROID)
     set(LUMEN_GEN4_LIBRARY_TYPE SHARED)
     add_library(lumen_gen4_runtime ${LUMEN_GEN4_LIBRARY_TYPE})
 else()
@@ -1154,7 +1163,8 @@ if(ENABLE_FEX_GUEST_CPU)
         ${LUMEN_GEN4_FEX_ENGINE_SOURCE}
         src/core/guest_cpu/fex_guest_cpu.cpp
         src/core/guest_cpu/hle_call_adapter.cpp
-        src/core/guest_cpu/fex_hle_bridge.cpp)
+        src/core/guest_cpu/fex_hle_bridge.cpp
+        src/core/libraries/libc_internal/mspace.cpp)
     target_compile_definitions(lumen_gen4_guest_runtime_test PRIVATE LUMEN_GEN4_ENABLE_FEX_GUEST_CPU=1)
     target_link_libraries(lumen_gen4_guest_runtime_test PRIVATE lumen_gen4_guest_cpu)
     add_test(NAME lumen_gen4_guest_runtime COMMAND lumen_gen4_guest_runtime_test)
@@ -1173,9 +1183,10 @@ add_test(NAME lumen_gen4_frame_ledger COMMAND lumen_gen4_frame_ledger_test)
 set_tests_properties(lumen_gen4_frame_ledger PROPERTIES TIMEOUT 20)
 
 add_executable(lumen_gen4_admission_test EXCLUDE_FROM_ALL
-    tests/admission_test.cpp src/lumen/admission.cpp)
+    tests/admission_test.cpp src/lumen/admission.cpp src/lumen/succi_benchmark.cpp)
 target_include_directories(lumen_gen4_admission_test PRIVATE
     "${LUMEN_REPOSITORY_ROOT}/source/emulator/include")
+target_link_libraries(lumen_gen4_admission_test PRIVATE nlohmann_json::nlohmann_json)
 add_test(NAME lumen_gen4_admission COMMAND lumen_gen4_admission_test)
 
 add_executable(lumen_gen4_succi_benchmark_test EXCLUDE_FROM_ALL
@@ -1515,7 +1526,7 @@ if (ENABLE_DISCORD_RPC)
 endif()
 
 # Install rules
-install(TARGETS lumen_gen4_runtime BUNDLE DESTINATION .)
+install(TARGETS lumen_gen4_runtime BUNDLE DESTINATION . FRAMEWORK DESTINATION .)
 
 # Build the complete engine once. The runtime entry and the graphics contract
 # executable both link these exact objects and the same dependency closure.

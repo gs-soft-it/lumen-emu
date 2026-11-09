@@ -351,6 +351,9 @@ void GameController::CheckActive() {
 		for (const auto id: m_connected_ids) {
 			if (id != HOST_INPUT_CONTROLLER_ID) {
 				new_active_id = id;
+#if defined(LUMEN_IOS_FEX_MODULE)
+				if (SDL_IsJoystickVirtual(static_cast<SDL_JoystickID>(id))) continue;
+#endif
 				break;
 			}
 		}

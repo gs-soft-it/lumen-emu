@@ -24,6 +24,7 @@
 #include <mutex>
 #include <type_traits>
 #include <vector>
+#define XXH_INLINE_ALL
 #include <xxhash/xxhash.h>
 #ifdef LUMEN_GRAPHICS_STATE_TEST_HOOK
 #include "Lumen/Core/Threads.h"

@@ -3,7 +3,7 @@
 
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0000040000ull;
 static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x07ffffbfffull;
-#if defined(__APPLE__) && (defined(__x86_64__) || defined(_M_X64))
+#if defined(__APPLE__) && (defined(__x86_64__) || defined(_M_X64) || TARGET_OS_IPHONE)
 static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x0fbfffffffull;
 static constexpr uint64_t HOST_USER_MIN            = 0x7000000000ull;
 #else
@@ -74,12 +74,12 @@ static bool DarwinPermanentTranslationEnd(uint64_t address, uint64_t size,
 	}
 	// Require the live Mach reservation to still match the known OS layout.
 	// A changed layout fails closed instead of aliasing an unrelated mapping.
-	mach_vm_address_t region = address;
-	mach_vm_size_t bytes = 0;
+	Lumen::DarwinVM::Address region = address;
+	Lumen::DarwinVM::Size bytes = 0;
 	vm_region_extended_info_data_t info {};
 	mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
 	mach_port_t object = MACH_PORT_NULL;
-	const auto status = mach_vm_region(mach_task_self(), &region, &bytes, VM_REGION_EXTENDED_INFO,
+	const auto status = Lumen::DarwinVM::Region(mach_task_self(), &region, &bytes, VM_REGION_EXTENDED_INFO,
 	    reinterpret_cast<vm_region_info_t>(&info), &count, &object);
 	if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
 	if (status != KERN_SUCCESS || region != address || bytes != size ||
@@ -281,7 +281,11 @@ public:
 		AddressRangeUnavailable,
 	};
 
-	explicit GuestBackingStore(uint64_t size): m_size(size) {
+	explicit GuestBackingStore(uint64_t size): m_size(size)
+#if defined(__APPLE__)
+	    , m_exposed_backing_pages(size / BackingBytesPerWord + (size % BackingBytesPerWord != 0), 0)
+#endif
+	{
 		BackingMutationScope backing_mutation;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		m_handle = CreateFileMappingA(
@@ -303,6 +307,15 @@ public:
 			m_handle = nullptr;
 		}
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		const auto status = m_anonymous_backing.Create(m_size);
+		if (status != KERN_SUCCESS) {
+			LOGF_COLOR(Log::Color::Red,
+			           "\t direct-memory backing: Mach allocation failed: %d\n", status);
+			return;
+		}
+		m_backing_base = static_cast<uint8_t*>(m_anonymous_backing.Base());
+#else
 #if defined(__APPLE__)
 		{
 			char shm_name[64];
@@ -337,6 +350,7 @@ public:
 		}
 		m_backing_base = static_cast<uint8_t*>(backing);
 #endif
+#endif
 	}
 
 	~GuestBackingStore() {
@@ -358,12 +372,16 @@ public:
 			    !UnmapViewPreservePlaceholder(reinterpret_cast<void*>(entry.vaddr), entry.size));
 		}
 		m_maps.clear();
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		EXIT_IF(m_anonymous_backing.Release() != KERN_SUCCESS);
+#else
 		if (m_backing_base != nullptr) {
 			munmap(m_backing_base, m_size);
 		}
 		if (m_fd >= 0) {
 			close(m_fd);
 		}
+#endif
 #endif
 	}
 
@@ -387,7 +405,11 @@ public:
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		return m_handle != nullptr && m_backing_base != nullptr;
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		return m_anonymous_backing.IsAvailable() && m_backing_base != nullptr;
+#else
 		return m_fd >= 0 && m_backing_base != nullptr;
+#endif
 #else
 		return false;
 #endif
@@ -406,7 +428,11 @@ public:
 		}
 		DirectCodeMutation mutation(0, 0);
 		std::lock_guard lock(m_mutex);
+#if defined(__APPLE__)
+		ZeroPreviouslyExposedPagesUnlocked(backing_offset, size);
+#else
 		std::memset(m_backing_base + backing_offset, 0, size);
+#endif
 		InvalidatePhysicalAliasesUnlocked(backing_offset, size, mutation);
 		return true;
 	}
@@ -448,6 +474,9 @@ public:
 			const auto& entry  = mapping->second;
 			const auto  bytes  = std::min(end, entry.vaddr + entry.size) - current;
 			const auto  offset = entry.backing_offset + current - entry.vaddr;
+#if defined(__APPLE__)
+			MarkBackingExposedUnlocked(offset, bytes);
+#endif
 			std::memcpy(m_backing_base + offset, source + (current - vaddr), bytes);
 			InvalidatePhysicalAliasesUnlocked(offset, bytes, mutation);
 			current += bytes;
@@ -560,6 +589,12 @@ public:
 		return true;
 #else
 		std::lock_guard lock(m_mutex);
+#if defined(__APPLE__)
+		// Record exposure before a native alias can become writable, including
+		// read-only/no-access views whose protection may change later. Failed
+		// maps and rollback conservatively retain these bits.
+		MarkBackingExposedUnlocked(backing_offset, size);
+#endif
 		void* mapped = MapView(vaddr, size, backing_offset, mode, failure_reason);
 		uint64_t host = 0;
 		if (mapped == nullptr || !TranslateGuestMemory(vaddr, size, &host) ||
@@ -791,6 +826,43 @@ public:
 	}
 
 private:
+#if defined(__APPLE__)
+	// iOS creates a new anonymous Mach object; macOS creates an exclusive,
+	// initially empty shm object and extends it with ftruncate. Both supply
+	// zeros on demand until a page is exposed through an alias or raw writer.
+	// Never clear exposure on unmap/reuse, and never remap the shared backing.
+	static constexpr uint64_t BackingPageSize = 0x4000;
+	static constexpr uint64_t BackingBytesPerWord = BackingPageSize * 64;
+
+	void MarkBackingExposedUnlocked(uint64_t offset, uint64_t size) {
+		const auto last_page = (offset + size - 1) / BackingPageSize;
+		for (auto page = offset / BackingPageSize; page <= last_page; ++page) {
+			m_exposed_backing_pages[page / 64] |= uint64_t {1} << (page % 64);
+		}
+	}
+
+	void ZeroPreviouslyExposedPagesUnlocked(uint64_t offset, uint64_t size) {
+		const auto end = offset + size;
+		auto current = offset;
+		auto zero_start = offset;
+		while (current < end) {
+			const auto page = current / BackingPageSize;
+			const auto bytes = std::min(end - current, BackingPageSize - current % BackingPageSize);
+			const bool exposed = (m_exposed_backing_pages[page / 64] & (uint64_t {1} << (page % 64))) != 0;
+			if (!exposed) {
+				if (zero_start < current) {
+					std::memset(m_backing_base + zero_start, 0, current - zero_start);
+				}
+				zero_start = current + bytes;
+			}
+			current += bytes;
+		}
+		if (zero_start < end) {
+			std::memset(m_backing_base + zero_start, 0, end - zero_start);
+		}
+	}
+#endif
+
 	void InvalidatePhysicalAliasesUnlocked(uint64_t offset, uint64_t size,
 	                                       const DirectCodeMutation& mutation) const {
 		for (const auto& [_, alias]: m_maps) {
@@ -955,12 +1027,22 @@ private:
 			SetFailure(failure_reason, FailureReason::AddressRangeUnavailable);
 			return nullptr;
 		}
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		const auto status = m_anonymous_backing.MapAliasAt(host, size, backing_offset,
+		                                                  GetProtect(mode));
+		if (status != KERN_SUCCESS) {
+			SetFailure(failure_reason, FailureReason::FixedMapViewFailed);
+			return nullptr;
+		}
+		void* ptr = reinterpret_cast<void*>(host);
+#else
 		void* ptr = mmap(reinterpret_cast<void*>(host), size, GetProtect(mode),
 		                 MAP_SHARED | MAP_FIXED, m_fd, static_cast<off_t>(backing_offset));
 		if (ptr == MAP_FAILED) {
 			SetFailure(failure_reason, FailureReason::FixedMapViewFailed);
 			return nullptr;
 		}
+#endif
 		PublishTranslatedHostRights(vaddr, size, mode);
 		return ptr;
 	}
@@ -970,18 +1052,30 @@ private:
 	static bool UnmapViewPreservePlaceholder(void* vaddr, uint64_t size) {
 		uint64_t host = 0;
 		if (!TranslateGuestMemory(reinterpret_cast<uint64_t>(vaddr), size, &host)) return false;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		if (Lumen::DarwinVM::AnonymousBacking::ReplaceWithAnonymous(host, size, VM_PROT_NONE) !=
+		    KERN_SUCCESS) return false;
+#else
 		void* ptr = mmap(reinterpret_cast<void*>(host), size, PROT_NONE,
 		                 MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
 		if (ptr == MAP_FAILED || reinterpret_cast<uint64_t>(ptr) != host) return false;
+#endif
 		PublishTranslatedHostRights(reinterpret_cast<uint64_t>(vaddr), size, VirtualMemory::Mode::NoAccess);
 		return true;
 	}
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	Lumen::DarwinVM::AnonymousBacking m_anonymous_backing;
+#else
 	int m_fd = -1;
+#endif
 #endif
 
 	uint8_t*                     m_backing_base = nullptr;
 	uint64_t                     m_size         = 0;
+#if defined(__APPLE__)
+	std::vector<uint64_t>        m_exposed_backing_pages;
+#endif
 	std::shared_mutex            m_mutex;
 	std::map<uint64_t, MapEntry> m_maps;
 };
@@ -995,7 +1089,7 @@ public:
 		GetSystemInfo(&info);
 		m_granularity = info.dwAllocationGranularity;
 #endif
-		ReserveGuestRegions();
+		ReserveGuestRegions(backing_size);
 		EXIT_IF(g_translation_arenas.exchange(&m_translation_arenas, std::memory_order_acq_rel) != nullptr);
 		m_backing = new GuestBackingStore(backing_size);
 		if (!m_backing->IsAvailable()) {
@@ -1050,6 +1144,12 @@ public:
 	[[nodiscard]] uint64_t GetGranularity() const { return m_granularity; }
 	[[nodiscard]] uint64_t GetBackingBase() const { return m_backing->GetBackingBase(); }
 	[[nodiscard]] uint64_t GetBackingSize() const { return m_backing->GetBackingSize(); }
+	[[nodiscard]] uint64_t GetAddressLimit() const noexcept {
+		// Reservations are fixed by construction and outlive all guest/GPU users.
+		uint64_t limit = 0;
+		for (const auto& [start, size]: m_owned) limit = std::max(limit, start + size);
+		return limit;
+	}
 
 	bool QueryUniqueBackingGeneration(uint64_t vaddr, uint64_t size, uint64_t* generation) {
 		return m_backing->QueryUniqueBackingGeneration(vaddr, size, generation);
@@ -1667,12 +1767,36 @@ private:
 	}
 #endif
 
-	void ReserveGuestRegions() {
-		const std::array<std::pair<uint64_t, uint64_t>, 3> regions {{
+	void ReserveGuestRegions([[maybe_unused]] uint64_t backing_size) {
+		std::array<std::pair<uint64_t, uint64_t>, 3> regions {{
 		    {HOST_SYSTEM_MANAGED_MIN, HOST_SYSTEM_RESERVED_MAX + 1u},
 		    {HOST_USER_MIN, HOST_USER_MAX + 1u},
 		    {kExtendedMemoryBase, kExtendedMemoryBase + kExtendedMemorySize},
 		}};
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		Lumen::DarwinVM::AddressBounds host_bounds;
+		const auto bounds_result = Lumen::DarwinVM::QueryAddressBounds(host_bounds);
+		if (bounds_result != KERN_SUCCESS) {
+			EXIT("could not query iOS host VM bounds: Mach error %d\n", bounds_result);
+		}
+		for (auto& [begin, end]: regions) {
+			begin = std::max<uint64_t>(begin, host_bounds.begin);
+			end = std::min<uint64_t>(end, host_bounds.end);
+			if (begin >= end) begin = end = 0;
+		}
+		if (regions[0].first == regions[0].second || regions[1].first == regions[1].second) {
+			EXIT("iOS host VM bounds do not contain the required guest address ranges\n");
+		}
+		Lumen::DarwinVM::NativeHeadroomReservation native_headroom;
+		// FEX lookup caches reserve 272 MiB of VA per thread. Leave four 8 GiB
+		// spans for native thread caches, translation arenas and graphics.
+		const auto headroom_result = native_headroom.ReserveForBacking(backing_size, 4);
+		if (headroom_result != KERN_SUCCESS) {
+			EXIT("could not preserve iOS native VM headroom: Mach error %d\n", headroom_result);
+		}
+		LOGF("IOS_HOST_VM_BOUNDS begin=0x%016" PRIx64 " end=0x%016" PRIx64 "\n",
+		     uint64_t(host_bounds.begin), uint64_t(host_bounds.end));
+#endif
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		constexpr uint64_t MinimumRegionSize = 0x1000000;
@@ -1742,14 +1866,14 @@ private:
 			commands += command->cmdsize;
 			remaining -= command->cmdsize;
 		}
-		mach_vm_address_t cursor = 0;
+		Lumen::DarwinVM::Address cursor = 0;
 		for (;;) {
-			mach_vm_address_t address = cursor;
-			mach_vm_size_t size = 0;
+			Lumen::DarwinVM::Address address = cursor;
+			Lumen::DarwinVM::Size size = 0;
 			vm_region_basic_info_data_64_t info {};
 			mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
 			mach_port_t object = MACH_PORT_NULL;
-			const auto status = mach_vm_region(mach_task_self(), &address, &size,
+			const auto status = Lumen::DarwinVM::Region(mach_task_self(), &address, &size,
 			    VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object);
 			if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
 			if (status == KERN_INVALID_ADDRESS) break;
@@ -1761,7 +1885,13 @@ private:
 			// User guards, readable commpage PTEs and PAGEZERO remain host-owned.
 			uint64_t translation_end = 0;
 			if (DarwinPermanentTranslationEnd(address, size, info, &translation_end)) {
-				for (const auto& [guest_begin, guest_end]: regions) {
+				auto translation_regions = regions;
+#if TARGET_OS_IPHONE
+				// The native iOS reservations stop before the commpage. Its verified
+				// permanent prefix can still supply logical guest system addresses.
+				translation_regions[0].second = std::min<uint64_t>(host_bounds.end, DarwinCommpageNativeStart);
+#endif
+				for (const auto& [guest_begin, guest_end]: translation_regions) {
 					const auto begin = AlignUp(std::max({uint64_t(address), guest_begin, pagezero_end}), PageSize());
 					const auto end = AlignDown(std::min(translation_end, guest_end), PageSize());
 					if (begin < end) inaccessible.emplace_back(begin, end);
@@ -1796,11 +1926,11 @@ private:
 
 			const auto size = end - start;
 #if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX)
-			mach_vm_address_t target = start;
-			if (mach_vm_allocate(mach_task_self(), &target, size, VM_FLAGS_FIXED) != KERN_SUCCESS)
+			Lumen::DarwinVM::Address target = start;
+			if (Lumen::DarwinVM::Allocate(mach_task_self(), &target, size, VM_FLAGS_FIXED) != KERN_SUCCESS)
 				return; // a new host mapping won this gap; never replace it
-			if (mach_vm_protect(mach_task_self(), target, size, false, VM_PROT_NONE) != KERN_SUCCESS) {
-				mach_vm_deallocate(mach_task_self(), target, size);
+			if (Lumen::DarwinVM::Protect(mach_task_self(), target, size, false, VM_PROT_NONE) != KERN_SUCCESS) {
+				Lumen::DarwinVM::Deallocate(mach_task_self(), target, size);
 				return;
 			}
 #else
@@ -1825,6 +1955,7 @@ private:
 		};
 
 		for (const auto& [region_start, region_end]: regions) {
+			if (region_start >= region_end) continue;
 			auto current = region_start;
 
 			for (const auto& [mapping_start, mapping_end]: occupied) {
@@ -1849,19 +1980,35 @@ private:
 				reserve_range(current, region_end);
 			}
 		}
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		if (native_headroom.ReleaseNativeSpans() != KERN_SUCCESS) {
+			EXIT("could not release iOS native VM headroom\n");
+		}
+#endif
 #if defined(__APPLE__) && defined(LUMEN_PS5_DIRECT_FEX) && defined(__aarch64__)
 		for (const auto& [guest_begin, guest_end]: inaccessible) {
 			const auto bytes = guest_end - guest_begin;
-			mach_vm_address_t host = HOST_USER_MAX + 1;
-			if (mach_vm_allocate(mach_task_self(), &host, bytes, VM_FLAGS_ANYWHERE) != KERN_SUCCESS)
+#if TARGET_OS_IPHONE
+			Lumen::DarwinVM::Address host = 0;
+#else
+			Lumen::DarwinVM::Address host = HOST_USER_MAX + 1;
+#endif
+			if (Lumen::DarwinVM::Allocate(mach_task_self(), &host, bytes, VM_FLAGS_ANYWHERE) != KERN_SUCCESS)
 				EXIT("guest translation arena allocation failed: guest=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
 				     guest_begin, bytes);
-			const bool overlaps_guest = std::any_of(regions.begin(), regions.end(), [&](const auto& range) {
+			const bool overlaps_guest =
+#if TARGET_OS_IPHONE
+			    std::any_of(m_owned.begin(), m_owned.end(), [&](const auto& range) {
+				return host < range.first + range.second && range.first < host + bytes;
+			});
+#else
+			    std::any_of(regions.begin(), regions.end(), [&](const auto& range) {
 				return host < range.second && range.first < host + bytes;
 			});
+#endif
 			if (overlaps_guest || (host & (PageSize() - 1)) != 0 ||
-			    mach_vm_protect(mach_task_self(), host, bytes, false, VM_PROT_NONE) != KERN_SUCCESS) {
-				mach_vm_deallocate(mach_task_self(), host, bytes);
+			    Lumen::DarwinVM::Protect(mach_task_self(), host, bytes, false, VM_PROT_NONE) != KERN_SUCCESS) {
+				Lumen::DarwinVM::Deallocate(mach_task_self(), host, bytes);
 				EXIT("guest translation arena native reservation is not representable\n");
 			}
 			GuestTranslationArena arena {guest_begin, host, bytes,
@@ -1873,6 +2020,13 @@ private:
 			m_owned.emplace_back(guest_begin, bytes);
 			LOGF("PS5_GUEST_VA_ARENA guest=0x%016" PRIx64 " host=0x%016" PRIx64
 			     " size=0x%016" PRIx64 " source=darwin-permanent-reservation\n", guest_begin, uint64_t(host), bytes);
+		}
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		// Keep the contiguous backing span protected from smaller arena
+		// reservations until immediately before GuestBackingStore creation.
+		if (native_headroom.Release() != KERN_SUCCESS) {
+			EXIT("could not release iOS guest backing VM headroom\n");
 		}
 #endif
 #else

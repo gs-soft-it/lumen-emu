@@ -10,6 +10,150 @@
 #define REQUIRE(condition) do { if (!(condition)) { std::fprintf(stderr, "line %d: %s\n", __LINE__, #condition); std::abort(); } } while (false)
 #define SUCCESS(call) REQUIRE((call) == VK_SUCCESS)
 
+// Keep Metal execution real while counting the adapter's explicit residency calls.
+@interface LumenMetalResidencyProbe : NSProxy
+- (instancetype)initWithTarget:(id)target declarations:(unsigned*)declarations;
+@end
+
+@implementation LumenMetalResidencyProbe {
+    id _target;
+    unsigned* _declarations;
+}
+
+- (instancetype)initWithTarget:(id)target declarations:(unsigned*)declarations {
+    _target = target;
+    _declarations = declarations;
+    return self;
+}
+
+- (id<MTLComputeCommandEncoder>)computeCommandEncoder {
+    id<MTLComputeCommandEncoder> encoder = [_target computeCommandEncoder];
+    return encoder == nil ? nil : (id<MTLComputeCommandEncoder>)
+        [[LumenMetalResidencyProbe alloc] initWithTarget:encoder declarations:_declarations];
+}
+
+- (void)useResource:(id<MTLResource>)resource usage:(MTLResourceUsage)usage {
+    ++*_declarations;
+    [_target useResource:resource usage:usage];
+}
+
+- (NSMethodSignature*)methodSignatureForSelector:(SEL)selector {
+    return [_target methodSignatureForSelector:selector];
+}
+
+- (void)forwardInvocation:(NSInvocation*)invocation {
+    [invocation invokeWithTarget:_target];
+}
+
+@end
+
+// Compiled with glslangValidator --target-env vulkan1.2 -V -g0.
+// The first shader does no work. The second stores a specialization constant
+// through a buffer_reference passed in push constants, without a descriptor.
+static constexpr uint32_t kOrdinaryCompute[] = {
+    0x07230203, 0x00010500, 0x0008000b, 0x0000000a, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0005000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x00060010, 0x00000004, 0x00000011,
+    0x00000001, 0x00000001, 0x00000001, 0x00040047, 0x00000009, 0x0000000b, 0x00000019, 0x00020013,
+    0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00040015, 0x00000006, 0x00000020, 0x00000000,
+    0x00040017, 0x00000007, 0x00000006, 0x00000003, 0x0004002b, 0x00000006, 0x00000008, 0x00000001,
+    0x0006002c, 0x00000007, 0x00000009, 0x00000008, 0x00000008, 0x00000008, 0x00050036, 0x00000002,
+    0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x000100fd, 0x00010038,
+};
+
+static constexpr uint32_t kPhysicalAddressCompute[] = {
+    0x07230203, 0x00010500, 0x0008000b, 0x00000017, 0x00000000, 0x00020011, 0x00000001, 0x00020011,
+    0x000014e3, 0x0006000b, 0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e,
+    0x000014e4, 0x00000001, 0x0006000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000b,
+    0x00060010, 0x00000004, 0x00000011, 0x00000001, 0x00000001, 0x00000001, 0x00030047, 0x00000007,
+    0x00000002, 0x00050048, 0x00000007, 0x00000000, 0x00000023, 0x00000000, 0x00030047, 0x00000009,
+    0x00000002, 0x00050048, 0x00000009, 0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x00000011,
+    0x00000001, 0x00000000, 0x00040047, 0x00000016, 0x0000000b, 0x00000019, 0x00020013, 0x00000002,
+    0x00030021, 0x00000003, 0x00000002, 0x00030027, 0x00000006, 0x000014e5, 0x0003001e, 0x00000007,
+    0x00000006, 0x00040015, 0x00000008, 0x00000020, 0x00000000, 0x0003001e, 0x00000009, 0x00000008,
+    0x00040020, 0x00000006, 0x000014e5, 0x00000009, 0x00040020, 0x0000000a, 0x00000009, 0x00000007,
+    0x0004003b, 0x0000000a, 0x0000000b, 0x00000009, 0x00040015, 0x0000000c, 0x00000020, 0x00000001,
+    0x0004002b, 0x0000000c, 0x0000000d, 0x00000000, 0x00040020, 0x0000000e, 0x00000009, 0x00000006,
+    0x00040032, 0x00000008, 0x00000011, 0x00000000, 0x00040020, 0x00000012, 0x000014e5, 0x00000008,
+    0x00040017, 0x00000014, 0x00000008, 0x00000003, 0x0004002b, 0x00000008, 0x00000015, 0x00000001,
+    0x0006002c, 0x00000014, 0x00000016, 0x00000015, 0x00000015, 0x00000015, 0x00050036, 0x00000002,
+    0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x00050041, 0x0000000e, 0x0000000f,
+    0x0000000b, 0x0000000d, 0x0004003d, 0x00000006, 0x00000010, 0x0000000f, 0x00050041, 0x00000012,
+    0x00000013, 0x00000010, 0x0000000d, 0x0005003e, 0x00000013, 0x00000011, 0x00000002, 0x00000004,
+    0x000100fd, 0x00010038,
+};
+
+static void CheckPhysicalAddressDispatch(VkDevice device, VkQueue queue, VkCommandBuffer command,
+                                         VkBuffer buffer, VkDeviceAddress address) {
+    const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(address)};
+    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &range;
+    VkPipelineLayout layout{};
+    SUCCESS(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &layout));
+
+    const auto dispatch = [&](const auto& words, const VkSpecializationInfo* specialization) {
+        VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        moduleInfo.codeSize = sizeof(words);
+        moduleInfo.pCode = words;
+        VkShaderModule module{};
+        SUCCESS(vkCreateShaderModule(device, &moduleInfo, nullptr, &module));
+        VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pipelineInfo.layout = layout;
+        pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipelineInfo.stage.module = module;
+        pipelineInfo.stage.pName = "main";
+        pipelineInfo.stage.pSpecializationInfo = specialization;
+        VkPipeline pipeline{};
+        SUCCESS(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline));
+        vkDestroyShaderModule(device, module, nullptr);
+
+        const VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        SUCCESS(vkBeginCommandBuffer(command, &begin));
+        unsigned declarations = 0;
+        id<MTLCommandBuffer> nativeCommand = nil;
+        command->operations.push_back({"install-residency-probe", [&](auto& context) {
+            nativeCommand = context.commandBuffer;
+            context.commandBuffer = (id<MTLCommandBuffer>)[[LumenMetalResidencyProbe alloc]
+                initWithTarget:nativeCommand declarations:&declarations];
+            return VK_SUCCESS;
+        }});
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        if (specialization != nullptr)
+            vkCmdPushConstants(command, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(address), &address);
+        vkCmdDispatch(command, 1, 1, 1);
+        command->operations.push_back({"restore-native-command", [&](auto& context) {
+            context.commandBuffer = nativeCommand;
+            return VK_SUCCESS;
+        }});
+        SUCCESS(vkEndCommandBuffer(command));
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &command;
+        SUCCESS(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE));
+        SUCCESS(vkQueueWaitIdle(queue));
+        SUCCESS(vkResetCommandBuffer(command, 0));
+        vkDestroyPipeline(device, pipeline, nullptr);
+        return declarations;
+    };
+
+    REQUIRE(!buffer->hostGpuWriteSeen);
+    REQUIRE(dispatch(kOrdinaryCompute, nullptr) == 0);
+    REQUIRE(buffer->hostGpuWriteSeen);
+
+    constexpr uint32_t expected = 0xBDA12345;
+    const VkSpecializationMapEntry entry{0, 0, sizeof(expected)};
+    const VkSpecializationInfo specialization{1, &entry, sizeof(expected), &expected};
+    REQUIRE(dispatch(kPhysicalAddressCompute, &specialization) == 1);
+    void* mapped{};
+    SUCCESS(vkMapMemory(device, buffer->memory, buffer->memoryOffset, sizeof(expected), 0, &mapped));
+    REQUIRE(*static_cast<const uint32_t*>(mapped) == expected);
+    vkUnmapMemory(device, buffer->memory);
+    vkDestroyPipelineLayout(device, layout, nullptr);
+    std::puts("native Metal ordinary dispatch skips BDA residency and specialized physical dispatch writes: PASS");
+}
+
 int main() {
     @autoreleasepool {
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -144,6 +288,7 @@ int main() {
         commandInfo.commandPool = pool; commandInfo.commandBufferCount = 1;
         VkCommandBuffer command{};
         SUCCESS(vkAllocateCommandBuffers(device, &commandInfo, &command));
+        CheckPhysicalAddressDispatch(device, queue, command, buffer, address);
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         SUCCESS(vkBeginCommandBuffer(command, &begin));
         vkCmdFillBuffer(command, buffer, 0, 4096, 0x1234ABCD);

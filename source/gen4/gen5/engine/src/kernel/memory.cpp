@@ -54,7 +54,7 @@
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include "gen4/src/core/darwin_vm.h"
 #include <mach-o/dyld.h>
 #endif
 #endif
@@ -902,6 +902,10 @@ bool QueryGuestAccess(uint64_t address, uint64_t size, VirtualMemory::Mode mode)
 	return std::all_of(ranges.begin(), ranges.end(), [requested](const auto& range) {
 		return IsCommittedRangeType(range.type) && (range.protection & requested) == requested;
 	});
+}
+
+uint64_t GetGuestAddressSpaceLimit() noexcept {
+	return g_guest_address_space != nullptr ? g_guest_address_space->GetAddressLimit() : 0;
 }
 
 uint32_t QueryGuestExecutable(void*, uint64_t address, uint64_t* base, uint64_t* size,

@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <filesystem>
+#include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
 #include <Cocoa/Cocoa.h>
+#endif
 #include <SDL3/SDL_video.h>
 
 #include "sdl_window.h"
@@ -10,6 +13,7 @@
 namespace Frontend {
 
 void SetWindowIcon(SDL_Window* window, const std::vector<u8>& png) {
+#if !TARGET_OS_IPHONE
     @autoreleasepool {
         NSData* pngData = [NSData dataWithBytes:png.data() length:png.size()];
         NSImage* baseIcon = [[[NSImage alloc] initWithData:pngData] autorelease];
@@ -43,6 +47,11 @@ void SetWindowIcon(SDL_Window* window, const std::vector<u8>& png) {
 
         [NSApp setApplicationIconImage:nativeIcon];
     }
+#else
+    // UIKit uses the signed bundle icon; SDL windows cannot replace it.
+    (void)window;
+    (void)png;
+#endif
 }
 
 } // namespace Frontend

@@ -115,6 +115,11 @@ static bool IsDrawCall(AmdGpu::PM4ItOpcode opcode) {
 }
 
 inline std::optional<std::string> exec_cli(const char* cli) {
+#if defined(LUMEN_IOS_FEX_MODULE)
+    // iOS cannot spawn the optional external shader disassembler.
+    (void)cli;
+    return {};
+#else
     std::array<char, 64> buffer{};
     std::string output;
     const auto f = popen(cli, "r");
@@ -127,6 +132,7 @@ inline std::optional<std::string> exec_cli(const char* cli) {
     }
     pclose(f);
     return output;
+#endif
 }
 
 template <typename T>

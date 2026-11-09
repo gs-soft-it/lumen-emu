@@ -19,6 +19,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_hle.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 
@@ -329,6 +330,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         cmdbuf.draw(draw_count, regs.num_instances.NumInstances(), vertex_offset,
                     instance_offset);
     }
+    buffer_cache.CommitReadOnlyBufferSnapshot();
     if (expanded_indices) {
         scheduler.DeferOperation([buffer = std::move(expanded_indices)]() mutable { buffer.reset(); });
     }
@@ -415,6 +417,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         }
     }
 
+    buffer_cache.CommitReadOnlyBufferSnapshot();
     DrawDiagnostic::Emitted(liverpool->regs, state);
     ResetBindings();
     RetireIsolatedReadConstSnapshots();
@@ -590,6 +593,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
 
     bool uses_dma = false;
     bool writes_guest_buffers = false;
+    const bool can_snapshot_buffers = CanSnapshotGraphicsBuffers(*pipeline);
 
     // Bind resource buffers and textures.
     Shader::Backend::Bindings binding{};
@@ -601,7 +605,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
         set_writes.resize(set_writes.size() + stage->buffers.size() + stage->images.size() +
                           stage->samplers.size());
         stage->PushUd(binding, push_data);
-        BindBuffers(*stage, binding, push_data);
+        BindBuffers(*stage, binding, push_data, can_snapshot_buffers);
         BindTextures(*stage, binding);
         uses_dma |= stage->uses_dma;
         for (const auto& buffer : stage->buffers) {
@@ -643,6 +647,47 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     pending_gpu_write |= writes_guest_buffers;
 
     return true;
+}
+
+bool Rasterizer::CanSnapshotGraphicsBuffers(const Pipeline& pipeline) const {
+#if defined(LUMEN_GEN4_NATIVE_METAL) && LUMEN_GEN4_NATIVE_METAL
+    if (pipeline.IsCompute()) {
+        return false;
+    }
+    for (const auto* stage : pipeline.GetStages()) {
+        if (stage && (stage->uses_dma || !stage->images.empty() ||
+                      !std::ranges::all_of(stage->buffers, [](const auto& buffer) {
+                          return !buffer.is_written &&
+                                 (!buffer.IsSpecial() ||
+                                  buffer.buffer_type == Shader::BufferType::Flatbuf);
+                      }))) {
+            return false;
+        }
+    }
+
+    // The texture cache checks color/depth backing ranges. Attachment metadata and a separate
+    // stencil or depth write plane do not necessarily have a range registered at this point.
+    const auto& graphics = static_cast<const GraphicsPipeline&>(pipeline);
+    const auto color_count = std::bit_width(graphics.GetGraphicsKey().mrt_mask);
+    for (const auto& [id, desc] : std::span{cb_descs}.first(color_count)) {
+        if (id && (desc.info.guest_address == 0 || desc.info.guest_size == 0 ||
+                   desc.info.meta_info.cmask_addr || desc.info.meta_info.fmask_addr)) {
+            return false;
+        }
+    }
+    const auto& [depth_id, depth_desc] = db_desc;
+    if (depth_id) {
+        const auto& depth = depth_desc.info;
+        if (depth.guest_address == 0 || depth.guest_size == 0 || depth.props.has_stencil ||
+            depth.meta_info.htile_addr ||
+            depth.guest_address != liverpool->regs.depth_buffer.DepthWriteAddress()) {
+            return false;
+        }
+    }
+    return true;
+#else
+    return false;
+#endif
 }
 
 bool Rasterizer::IsComputeMetaClear(const Pipeline* pipeline) {
@@ -837,7 +882,7 @@ void Rasterizer::RefreshStageSources(Shader::Info& stage) {
 }
 
 void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
-                             Shader::PushData& push_data) {
+                             Shader::PushData& push_data, bool can_snapshot_buffers) {
     buffer_bindings.clear();
 
     for (const auto& desc : stage.buffers) {
@@ -914,8 +959,15 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                 buffer_infos.emplace_back(null_buffer.Handle(), 0, VK_WHOLE_SIZE);
             }
         } else {
-            const auto [vk_buffer, offset] = buffer_cache.ObtainBuffer(
-                vsharp.base_address, size, desc.is_written, desc.is_formatted, buffer_id);
+            const auto snapshot = can_snapshot_buffers && !desc.is_formatted
+                                      ? buffer_cache.TrySnapshotReadOnlyBuffer(
+                                            vsharp.base_address, size, alignment)
+                                      : std::pair<VideoCore::Buffer*, u32>{};
+            const auto [vk_buffer, offset] =
+                snapshot.first ? snapshot
+                               : buffer_cache.ObtainBuffer(vsharp.base_address, size,
+                                                           desc.is_written, desc.is_formatted,
+                                                           buffer_id);
             const u32 offset_aligned = Common::AlignDown(offset, alignment);
             const u32 adjust = offset - offset_aligned;
             ASSERT(adjust % 4 == 0);

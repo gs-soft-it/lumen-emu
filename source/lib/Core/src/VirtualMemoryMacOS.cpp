@@ -2316,7 +2316,7 @@ GetVirtualRangeTransactionStateForTest()
 }
 #endif
 
-#if LUMEN_PLATFORM == LUMEN_PLATFORM_OSX
+#if LUMEN_PLATFORM == LUMEN_PLATFORM_OSX || LUMEN_PLATFORM == LUMEN_PLATFORM_IOS
 bool CurrentThreadHasMemoryLease() noexcept
 {
 	return g_vm_readers != 0;
@@ -4295,11 +4295,13 @@ bool Protect(uint64_t address, uint64_t size, Mode mode, Mode* old_mode)
 	std::lock_guard<std::mutex> lock(registry.mutex);
 	ImmutableSnapshotMutation snapshot_mutation(registry);
 	ProtectionRange range {};
-	Mode previous_mode = Mode::NoAccess;
 	const bool resolved =
 	    ResolveProtectionRange(registry, address, size, &range);
+#if LUMEN_PLATFORM == LUMEN_PLATFORM_OSX
+	Mode previous_mode = Mode::NoAccess;
 	if (resolved)
 		previous_mode = range.mapping->page_modes[static_cast<size_t>(range.first_page)];
+#endif
 	const bool result = resolved &&
 	                    ApplyProtection(registry, range, mode, old_mode);
 #if LUMEN_PLATFORM == LUMEN_PLATFORM_OSX

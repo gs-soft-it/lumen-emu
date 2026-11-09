@@ -26,6 +26,9 @@
 #include <vector>
 #include <fmt/format.h>
 #include <magic_enum.hpp>
+#if defined(LUMEN_IOS_FEX_MODULE)
+#include "../../../../frontend/ios/RuntimeDefaults.h"
+#endif
 
 using namespace Common;
 using namespace Emulator;
@@ -573,7 +576,19 @@ static int Main(int argc, char* argv[]) {
 	return 0;
 }
 
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#if defined(LUMEN_IOS_FEX_MODULE)
+
+int LumenIOSGen5Run(const char* root) {
+	std::vector<std::string> args {"LumenPS5Runtime", "--game", root,
+	    "--cpu-translator", "fex", "--upstream-import-fallback", "--present-mode", "Fifo",
+	    "--screen-width", std::to_string(LumenIOSStandardRuntimeWidth),
+	    "--screen-height", std::to_string(LumenIOSStandardRuntimeHeight)};
+	std::vector<char*> argv;
+	for (auto& arg: args) argv.push_back(arg.data());
+	return Main(static_cast<int>(argv.size()), argv.data());
+}
+
+#elif KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 
 int wmain(int argc, wchar_t* argv[]) {
     std::vector<std::string> utf8_args;

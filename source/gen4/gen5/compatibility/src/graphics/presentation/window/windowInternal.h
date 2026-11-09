@@ -43,7 +43,6 @@ struct WindowContext {
 	[[nodiscard]] bool                                      RefreshSurfaceCapabilities();
 	[[nodiscard]] bool                                      IsPresentationSurfaceAvailable() const;
 	void                                                    UpdateIcon();
-	void                                                    UpdateTitle();
 	void                                                    Resize(uint32_t width, uint32_t height);
 	void ProcessWindowEvent(const SDL_WindowEvent& event);
 	void ProcessDisplayEvent(const SDL_DisplayEvent& event);

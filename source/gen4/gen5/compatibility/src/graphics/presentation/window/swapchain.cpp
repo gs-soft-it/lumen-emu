@@ -7,6 +7,7 @@
 #include "common/renderTiming.h"
 #include "common/threads.h"
 #include "common/timer.h"
+#include "gen4/gen5/desktopWindowInfo.h"
 #include "gpu_blit_shaders/gpu_blit_fs_triangle_spv.h"
 #include "gpu_blit_shaders/gpu_video_out_overlay_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -1186,7 +1187,9 @@ void Presenter::Impl::Present(PresentationSource source, std::span<const Layer> 
 				Common::LockGuard render_lock(renderer.GetMutex());
 				auto&             command = present_scheduler.BeginCommand();
 				const bool        draw_system_overlay =
-				    overlay_visual.active && swapchain.PrepareSystemOverlay();
+				    (overlay_visual.active ||
+				     (source == PresentationSource::GuestSubmission && DesktopWindowInfo::FpsEnabled())) &&
+				    swapchain.PrepareSystemOverlay();
 				swapchain.RecordPresentCommands(command, layers[0].frame, layers[1],
 				                                draw_system_overlay);
 				const auto tick = swapchain.Submit(present_scheduler);
@@ -1236,7 +1239,6 @@ void Presenter::Impl::Present(PresentationSource source, std::span<const Layer> 
 			Common::LoadingTrace::FirstGuestPresent();
 		}
 		presented_overlay_revision.store(overlay_visual.revision, std::memory_order_release);
-		window.UpdateTitle();
 		return;
 	}
 	EXIT_IF(outcome == PresentationCycle::Fatal);

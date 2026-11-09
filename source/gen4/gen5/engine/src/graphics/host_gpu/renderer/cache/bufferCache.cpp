@@ -24,12 +24,37 @@
 #include <utility>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 namespace Libs::Graphics {
 
 namespace {
 
 constexpr uint64_t MiB           = 1024 * 1024;
 constexpr uint64_t GdsBufferSize = 64 * 1024;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+// Metal backs this entire host-visible ring immediately. Keep its persistent
+// footprint bounded on iOS; larger uploads retain the exact-size temporary
+// allocation below, and ring reuse still waits for the owning GPU work.
+constexpr uint64_t StagingBufferSize = 64 * MiB;
+#else
+constexpr uint64_t StagingBufferSize = 512 * MiB;
+#endif
+
+uint64_t BdaPageTableSize() {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	// iOS clips guest reservations to its live VM bounds. Keep indices unchanged,
+	// but do not allocate entries for addresses the guest can never reserve.
+	const auto limit = LibKernel::Memory::GetGuestAddressSpaceLimit();
+	const auto bytes = BufferCache::BdaPageTableSizeForGuestLimit(limit);
+	EXIT_IF(bytes == 0);
+	return bytes;
+#else
+	return BufferCache::BDA_PAGETABLE_SIZE;
+#endif
+}
 
 std::pair<Buffer*, uint64_t> UploadMemory(GraphicContext& graphics, CommandScheduler& scheduler,
                                         StreamBuffer& staging, uint64_t size, uint64_t alignment,
@@ -281,9 +306,9 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
     : m_graphics(graphics), m_scheduler(scheduler), m_fault_manager(graphics, scheduler, *this),
       m_gds_buffer(graphics, scheduler, MemoryUsage::Stream, 0, AllFlags, GdsBufferSize),
       m_bda_pagetable_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 0, AllFlags,
-                             BDA_PAGETABLE_SIZE),
+                             BdaPageTableSize()),
       m_memory_tracker(page_manager),
-      m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 512 * MiB),
+      m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, StagingBufferSize),
       m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
@@ -360,6 +385,9 @@ BufferId BufferCache::FindBuffer(uint64_t vaddr, uint64_t size) {
 	if (!GuestRange {vaddr, size}.Valid()) {
 		EXIT("BufferCache: invalid buffer discovery request\n");
 	}
+	if (PageIndex(vaddr + size - 1) >= m_bda_pagetable_buffer.Size() / sizeof(vk::DeviceAddress)) {
+		EXIT("BufferCache: guest buffer lies beyond the reserved address space\n");
+	}
 	const auto* owner = m_page_table.Find(vaddr >> PageTable::kPageBits);
 	if (owner != nullptr && *owner) {
 		auto& buffer = m_slot_buffers[*owner];
@@ -404,9 +432,12 @@ BufferCache::OverlapResult BufferCache::ResolveOverlaps(uint64_t vaddr, uint64_t
 			// Reserve space in the incoming stream's direction of growth.
 			// The old buffer extending left of the request predicts growth to the right, and vice versa.
 			if (expands_left) {
-				end += std::min(StreamLeapSize, (vaddr < LOWER_ADDRESS_SIZE ? LOWER_ADDRESS_SIZE
+				const auto table_end = GuestAddress(m_bda_pagetable_buffer.Size() /
+				    sizeof(vk::DeviceAddress) * CACHING_PAGESIZE - 1) + 1;
+				const auto region_end = vaddr < LOWER_ADDRESS_SIZE ? LOWER_ADDRESS_SIZE
 				                                       : LibKernel::Memory::kExtendedMemoryBase +
-				                                             LibKernel::Memory::kExtendedMemorySize) - end);
+				                                             LibKernel::Memory::kExtendedMemorySize;
+				end += std::min(StreamLeapSize, std::min(table_end, region_end) - end);
 			}
 			if (expands_right) {
 				const auto minimum = vaddr < LOWER_ADDRESS_SIZE
@@ -494,6 +525,12 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		                       vk::PipelineStageFlagBits::eAllCommands,
 		                       vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &after, 0, nullptr);
 	}
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	if (buffer.read_only_snapshot_end != 0 && vaddr <= buffer.read_only_snapshot_begin &&
+	    vaddr + size >= buffer.read_only_snapshot_end) {
+		buffer.read_only_snapshot_end = 0;
+	}
+#endif
 	if (is_texel_buffer && !is_written) {
 		return SynchronizeBufferFromImage(buffer, vaddr, size);
 	}
@@ -560,6 +597,61 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		m_gpu_modified_ranges.Add(vaddr, size);
 	}
 	return {&buffer, buffer.Offset(vaddr)};
+}
+
+std::pair<Buffer*, uint64_t>
+BufferCache::TrySnapshotReadOnlyBuffer([[maybe_unused]] uint64_t vaddr,
+                                       [[maybe_unused]] uint64_t size,
+                                       [[maybe_unused]] uint64_t alignment,
+                                       [[maybe_unused]] BufferId id) {
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	if (m_read_only_snapshot_pending || size <= CACHING_PAGESIZE || size > 4 * MiB ||
+	    (vaddr & 3u) != 0 || !GuestRange {vaddr, size}.Valid() || IsBufferInvalid(id)) {
+		return {};
+	}
+	auto& canonical = m_slot_buffers[id];
+	// A snapshot leaves the canonical upload pending. Route the next use through
+	// canonical synchronization to avoid repeated static uploads.
+	if (!canonical.IsInBounds(vaddr, size) || canonical.read_only_snapshot_end != 0 ||
+	    IsRegionGpuModified(vaddr, size) || HasGpuDirtyBytes(vaddr, size) ||
+	    !IsRegionCpuModified(vaddr, size) || m_texture_cache.IsRegionRegistered(vaddr, size)) {
+		return {};
+	}
+
+	uint64_t generation = 0;
+	if (!LibKernel::Memory::QueryUniqueBackingGeneration(vaddr, size, &generation)) {
+		return {};
+	}
+	if (!m_read_only_snapshot_ring_attempted) {
+		m_read_only_snapshot_ring_attempted = true;
+		m_read_only_snapshot_ring = StreamBuffer::TryCreateCoherent(m_graphics, m_scheduler, 32 * MiB);
+	}
+	if (!m_read_only_snapshot_ring) {
+		return {};
+	}
+	const auto [mapped, offset] = m_read_only_snapshot_ring->Map(size, alignment, false);
+	if (mapped != nullptr) {
+		Common::VideoUploadProbe::SnapshotScope video_snapshot(vaddr, size);
+		if (LibKernel::Memory::TryReadBacking(vaddr, mapped, size) &&
+		    LibKernel::Memory::BackingMutationGeneration() == generation) {
+			canonical.read_only_snapshot_begin = vaddr;
+			canonical.read_only_snapshot_end   = vaddr + size;
+			m_read_only_snapshot_pending = true;
+			return {m_read_only_snapshot_ring.get(), offset};
+		}
+	}
+#endif
+	return {};
+}
+
+void BufferCache::CommitReadOnlyBufferSnapshot() {
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	if (m_read_only_snapshot_pending) {
+		// Resource discovery may have submitted another command buffer since Map.
+		m_read_only_snapshot_ring->Commit();
+		m_read_only_snapshot_pending = false;
+	}
+#endif
 }
 
 std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t size) {

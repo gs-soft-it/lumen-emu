@@ -1089,31 +1089,37 @@ ImeViewportMetrics ComputeImeViewportMetrics(bool use_over2k) {
     metrics.offset = base_pos;
 
     const auto out_res = DebugState.output_resolution;
-    if (out_res.first != 0 && out_res.second != 0) {
-        const float fb_scale_x =
-            io.DisplayFramebufferScale.x > 0.0f ? io.DisplayFramebufferScale.x : 1.0f;
-        const float fb_scale_y =
-            io.DisplayFramebufferScale.y > 0.0f ? io.DisplayFramebufferScale.y : 1.0f;
-        const float viewport_w = static_cast<float>(out_res.first) / fb_scale_x;
-        const float viewport_h = static_cast<float>(out_res.second) / fb_scale_y;
-
-        float offset_x = (base_size.x - viewport_w) * 0.5f;
-        float offset_y = (base_size.y - viewport_h) * 0.5f;
-        if (offset_x < 0.0f) {
-            offset_x = 0.0f;
-        }
-        if (offset_y < 0.0f) {
-            offset_y = 0.0f;
-        }
-
-        metrics.size = {viewport_w, viewport_h};
-        metrics.offset = {base_pos.x + offset_x, base_pos.y + offset_y};
+    if (out_res.first != 0 && out_res.second != 0 && base_size.x > 0.0f && base_size.y > 0.0f) {
+        // The presenter sizes the offscreen frame from ImGui's content area,
+        // so its extent already uses the same units as the work area and input.
+        const float viewport_w = static_cast<float>(out_res.first);
+        const float viewport_h = static_cast<float>(out_res.second);
+        const float fit = std::min({1.0f, base_size.x / viewport_w, base_size.y / viewport_h});
+        metrics.size = {viewport_w * fit, viewport_h * fit};
+        metrics.offset = {base_pos.x + (base_size.x - metrics.size.x) * 0.5f,
+                          base_pos.y + (base_size.y - metrics.size.y) * 0.5f};
     }
 
     metrics.scale_x = metrics.size.x / metrics.base_w;
     metrics.scale_y = metrics.size.y / metrics.base_h;
     metrics.ui_scale = std::min(metrics.scale_x, metrics.scale_y);
     return metrics;
+}
+
+ImVec2 ComputeImePanelSize(const ImeViewportMetrics& viewport, u32 width, u32 height) {
+    ImVec2 size = width > 0 && height > 0
+                      ? ImVec2{width * viewport.scale_x, height * viewport.scale_y}
+                      : ImVec2{std::clamp(viewport.size.x - 40.0f, 320.0f, 640.0f),
+                               std::clamp(viewport.size.y - 40.0f, 240.0f, 420.0f)};
+#if defined(ANDROID) || defined(LUMEN_IOS_FEX_MODULE)
+    if (viewport.size.x > 0.0f && viewport.size.y > 0.0f) {
+        // Enlarge touch keys uniformly while leaving space around the panel in landscape.
+        const float scale = std::min({1.5f, viewport.size.x / size.x,
+                                      viewport.size.y * 0.8f / size.y});
+        size = {size.x * scale, size.y * scale};
+    }
+#endif
+    return size;
 }
 
 ImePanelMetrics ComputeImePanelMetrics(const ImePanelMetricsConfig& config) {

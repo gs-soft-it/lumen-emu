@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -67,6 +68,8 @@ struct VkEvent_T;
 struct VkPipelineCache_T;
 
 namespace Lumen::MetalVulkan {
+
+struct QueueSubmitRetirement;
 
 // Caller holds device->mutex. Used by the macOS 12 address path and its test.
 VkDeviceAddress QueryBufferAddressFromShader(VkDevice device, VkBuffer buffer);
@@ -237,6 +240,7 @@ struct VkQueue_T
 	__strong id<MTLCommandQueue> metalQueue = nil;
 	std::mutex mutex;
 	std::condition_variable idleCondition;
+	std::deque<std::shared_ptr<Lumen::MetalVulkan::QueueSubmitRetirement>> pendingSubmits;
 	uint64_t inFlightCount = 0;
 	bool shuttingDown = false;
 };
@@ -270,6 +274,7 @@ struct VkDevice_T
 #endif
 	std::atomic<bool> alive {true};
 	std::atomic<bool> lost {false};
+	std::atomic<bool> completionFailureReported {false};
 };
 
 // Resource handles do not retain their parent VkDevice/VkDeviceMemory in the
@@ -437,15 +442,23 @@ struct VkFence_T
 	bool alive = true;
 };
 
+struct MetalBinarySemaphoreState
+{
+	std::mutex mutex;
+	std::condition_variable condition;
+	__strong id<MTLSharedEvent> event = nil;
+	VkQueue pendingProducer = VK_NULL_HANDLE;
+	uint64_t generation = 0;
+	bool signaled = false;
+	bool alive = true;
+};
+
 struct VkSemaphore_T
 {
 	VkDevice device = VK_NULL_HANDLE;
 	VkSemaphoreType type = VK_SEMAPHORE_TYPE_BINARY;
 	__strong id<MTLSharedEvent> sharedEvent = nil;
-	std::mutex mutex;
-	std::condition_variable condition;
-	bool signaled = false;
-	bool alive = true;
+	std::shared_ptr<MetalBinarySemaphoreState> binary;
 };
 
 struct VkEvent_T

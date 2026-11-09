@@ -57,6 +57,11 @@ constexpr size_t WATCHES_RESERVE_CHUNK   = 0x1000;
 
 Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
                uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size)
+    : Buffer(graphics, scheduler, usage, cpu_address, flags, size, false) {}
+
+Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
+               uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size,
+               bool try_coherent_allocation)
     : m_graphics(&graphics), m_scheduler(&scheduler), m_usage(usage), m_cpu_address(cpu_address),
       m_size(size) {
 	KYTY_PROFILER_FUNCTION();
@@ -74,6 +79,10 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 	allocation_info.preferredFlags = usage == MemoryUsage::DeviceLocal
 	                                     ? VkMemoryPropertyFlags {}
 	                                     : VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	if (try_coherent_allocation) {
+		allocation_info.requiredFlags =
+		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	}
 
 	VmaAllocationInfo allocation_result {};
 	VkBuffer          native_buffer = VK_NULL_HANDLE;
@@ -81,6 +90,9 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 	    graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &allocation_info,
 	    &native_buffer, &m_allocation, &allocation_result));
 	if (result != vk::Result::eSuccess) {
+		if (try_coherent_allocation) {
+			return;
+		}
 		graphics.LogMemoryBudget();
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
@@ -215,8 +227,23 @@ void Buffer::Fill(uint64_t offset, uint64_t size, uint32_t value) {
 
 StreamBuffer::StreamBuffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
                            uint64_t size)
-    : Buffer(graphics, scheduler, usage, 0, AllFlags, size),
+    : StreamBuffer(graphics, scheduler, usage, size, false) {}
+
+StreamBuffer::StreamBuffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
+                           uint64_t size, bool try_coherent_allocation)
+    : Buffer(graphics, scheduler, usage, 0, AllFlags, size, try_coherent_allocation),
       m_current_watches(WATCHES_INITIAL_RESERVE), m_previous_watches(WATCHES_INITIAL_RESERVE) {}
+
+std::unique_ptr<StreamBuffer> StreamBuffer::TryCreateCoherent(GraphicContext& graphics,
+                                                           CommandScheduler& scheduler,
+                                                           uint64_t size) {
+	auto buffer = std::unique_ptr<StreamBuffer>(
+	    new StreamBuffer(graphics, scheduler, MemoryUsage::Stream, size, true));
+	if (buffer->Mapped().empty() || !buffer->IsCoherent()) {
+		return {};
+	}
+	return buffer;
+}
 
 bool StreamBuffer::NormalizeReservation(bool coherent, uint64_t atom, uint64_t& size,
                                         uint64_t& alignment) {

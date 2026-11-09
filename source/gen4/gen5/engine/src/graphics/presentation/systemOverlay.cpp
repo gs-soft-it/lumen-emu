@@ -6,10 +6,12 @@
 #include "common/localization.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
+#include "gen4/gen5/desktopWindowInfo.h"
 #include "gpu_blit_shaders/gpu_imgui_hdr_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/presentation/ddsImage.h"
 #include "graphics/presentation/performanceOverlay.h"
+#include "graphics/presentation/presenter.h"
 #include "graphics/presentation/window/hostInput.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
@@ -1797,10 +1799,11 @@ struct SystemOverlay::Impl {
 	bool PrepareFrame(vk::Extent2D frame_extent, vk::Format format, uint32_t image_count) {
 		OverlaySnapshot snapshot;
 		const bool      has_overlay = GetOverlaySnapshot(&snapshot);
+		const bool      draw_fps = DesktopWindowInfo::FpsEnabled();
 		const auto now = Clock::now();
 		if (!has_overlay && !g_trophy_notification_active.load(std::memory_order_acquire) &&
 		    !g_splash_active.load(std::memory_order_acquire) &&
-		    !PerformanceOverlayEnabled()) {
+		    !PerformanceOverlayEnabled() && !draw_fps) {
 			return false;
 		}
 		const auto prepared_session = snapshot.session;
@@ -1832,6 +1835,9 @@ struct SystemOverlay::Impl {
 		ImGui::NewFrame();
 		DrawSplash(frame_extent);
 		const float performance_bottom = DrawPerformanceOverlay(graphics, frame_extent);
+		if (draw_fps && !PerformanceOverlayEnabled()) {
+			DesktopWindowInfo::DrawFps(GetPresentedGuestFrameCount());
+		}
 		GetOverlaySnapshot(&snapshot);
 		if (has_overlay && snapshot.session == prepared_session) {
 			if (snapshot.session.kind == OverlayKind::Dialog) {

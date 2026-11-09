@@ -23,7 +23,9 @@ typedef int net_socket;
 #endif
 #if defined(__APPLE__)
 #include <net/if_dl.h>
+#if !defined(LUMEN_IOS_FEX_MODULE)
 #include <net/route.h>
+#endif
 #endif
 #if defined(__linux__) || defined(__FreeBSD__)
 #include <fstream>
@@ -72,8 +74,9 @@ bool NetUtilInternal::RetrieveEthernetAddr() {
     if (getifaddrs(&ifap) == 0) {
         ifaddrs* p;
         for (p = ifap; p; p = p->ifa_next) {
-            if (p->ifa_addr->sa_family == AF_LINK) {
+            if (p->ifa_addr && p->ifa_addr->sa_family == AF_LINK) {
                 sockaddr_dl* sdp = reinterpret_cast<sockaddr_dl*>(p->ifa_addr);
+                if (sdp->sdl_alen < ether_address.size()) continue;
                 memcpy(ether_address.data(), sdp->sdl_data + sdp->sdl_nlen, 6);
                 freeifaddrs(ifap);
                 return true;
@@ -164,6 +167,10 @@ bool NetUtilInternal::RetrieveDefaultGateway() {
         }
     }
 
+    return false;
+#elif defined(LUMEN_IOS_FEX_MODULE)
+    // The public iOS SDK exposes interface addresses/netmasks through
+    // getifaddrs, but no routing socket or default-gateway enumeration API.
     return false;
 #elif defined(__APPLE__)
     // adapted from

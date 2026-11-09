@@ -1,0 +1,215 @@
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -491,6 +491,9 @@
+ }
+ 
+ void ContextImpl::ClearCodeCache(FEXCore::Core::InternalThreadState* Thread, bool NewCodeBuffer) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  return FEXCore::Allocator::WithJITWriteProtection([&]() -> void {
++#endif
+   FEXCore::Allocator::ScopedJITWriteProtection WritableJIT;
+   FEXCORE_PROFILE_INSTANT("ClearCodeCache");
+ 
+@@ -503,6 +506,9 @@
+     Thread->LookupCache->ClearCache(lk);
+   }
+   Allocator::VirtualDontNeed(Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  });
++#endif
+ }
+ 
+ static void IRDumper(FEXCore::Core::InternalThreadState* Thread, IR::IREmitter* IREmitter, uint64_t GuestRIP) {
+@@ -833,6 +839,9 @@
+ }
+ 
+ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP, uint64_t MaxInst) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  return FEXCore::Allocator::WithJITWriteProtection([&]() -> uintptr_t {
++#endif
+   FEXCore::Allocator::ScopedJITWriteProtection WritableJIT;
+   if constexpr (BLOCK_DEBUGGING) {
+     // Block debugging logic is hand-written and needs to be handled with care.
+@@ -945,6 +954,9 @@
+   }
+ 
+   return (uintptr_t)CodePtr;
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  });
++#endif
+ }
+ 
+ uintptr_t ContextImpl::CompileSingleStep(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP) {
+@@ -969,6 +981,9 @@
+ }
+ 
+ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  return FEXCore::Allocator::WithJITWriteProtection([&]() -> void {
++#endif
+   FEXCore::Allocator::ScopedJITWriteProtection WritableJIT;
+   FEXCORE_PROFILE_SCOPED("InvalidateCodeBuffersCodeRange");
+ 
+@@ -983,9 +998,15 @@
+       it = CodeBufferList.erase(it);
+     }
+   }
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  });
++#endif
+ }
+ 
+ void ContextImpl::InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  return FEXCore::Allocator::WithJITWriteProtection([&]() -> void {
++#endif
+   FEXCore::Allocator::ScopedJITWriteProtection WritableJIT;
+   LOGMAN_THROW_A_FMT(CodeInvalidationMutex.try_lock() == false, "CodeInvalidationMutex needs to be unique_locked here");
+ 
+@@ -999,6 +1020,9 @@
+     // This may cause access violations in the thread on Windows as zeroing is not atomic, this is handled by the frontend
+     Allocator::VirtualDontNeed(Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
+   }
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  });
++#endif
+ }
+ 
+ void ContextImpl::ThreadRemoveCodeEntryFromJit(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP) {
+@@ -1094,6 +1118,9 @@
+ }
+ 
+ void ContextImpl::MonoBackpatcherWrite(FEXCore::Core::CpuStateFrame* Frame, uint8_t Size, uint64_t Address, uint64_t Value) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  return FEXCore::Allocator::WithJITWriteProtection([&]() -> void {
++#endif
+   FEXCore::Allocator::ScopedJITWriteProtection WritableJIT;
+   auto Thread = Frame->Thread;
+   auto CTX = static_cast<ContextImpl*>(Thread->CTX);
+@@ -1110,6 +1137,9 @@
+   }
+ 
+   CTX->SyscallHandler->InvalidateGuestCodeRange(Thread, Address, Size);
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  });
++#endif
+ }
+ 
+ void ContextImpl::ConfigureAOTGen(FEXCore::Core::InternalThreadState* Thread, fextl::set<uint64_t>* ExternalBranches, uint64_t SectionMaxAddress) {
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -63,6 +63,9 @@
+ }
+ 
+ void Dispatcher::EmitDispatcher() {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  return FEXCore::Allocator::WithJITWriteProtection([&]() -> void {
++#endif
+   FEXCore::Allocator::ScopedJITWriteProtection WritableJIT;
+   // Don't modify TMP3 since it contains our RIP once the block doesn't exist
+   auto RipReg = TMP3;
+@@ -640,6 +643,9 @@
+       LogMan::Msg::IFmt("{}", Output);
+     }
+   }
++#endif
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  });
+ #endif
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -498,6 +498,9 @@
+ }
+ 
+ static void DirectBlockDelinker(FEXCore::Context::ExitFunctionLinkData* Record, bool Call) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  return FEXCore::Allocator::WithJITWriteProtection([&]() -> void {
++#endif
+   FEXCore::Allocator::ScopedJITWriteProtection WritableJIT;
+   uintptr_t JumpThunkStartAddress = reinterpret_cast<uintptr_t>(Record) - 0x10;
+   uintptr_t CallerAddress = JumpThunkStartAddress + Record->CallerOffset;
+@@ -514,9 +517,15 @@
+ 
+   std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).store(BranchInst, std::memory_order::relaxed);
+   ARMEmitter::Emitter::ClearICache(reinterpret_cast<void*>(CallerAddress), 4);
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  });
++#endif
+ }
+ 
+ static void IndirectBlockDelinker(FEXCore::Context::ExitFunctionLinkData* Record) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  return FEXCore::Allocator::WithJITWriteProtection([&]() -> void {
++#endif
+   FEXCore::Allocator::ScopedJITWriteProtection WritableJIT;
+   uintptr_t JumpThunkStartAddress = reinterpret_cast<uintptr_t>(Record) - 0x10;
+   uint32_t BranchInst = 0;
+@@ -528,9 +537,15 @@
+   ARMEmitter::Emitter::ClearICache(reinterpret_cast<void*>(JumpThunkStartAddress), 4);
+ 
+   // No need to reset HostCode here as the exit linker pointer is stored separately, and if the block is relinked it will be updated.
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  });
++#endif
+ }
+ 
+ uint64_t Arm64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, FEXCore::Context::ExitFunctionLinkData* Record) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  return FEXCore::Allocator::WithJITWriteProtection([&]() -> uint64_t {
++#endif
+   FEXCore::Allocator::ScopedJITWriteProtection WritableJIT;
+   auto Thread = Frame->Thread;
+   bool TFSet = Thread->CurrentFrame->State.flags[X86State::RFLAG_TF_RAW_LOC];
+@@ -612,6 +627,9 @@
+   }
+ 
+   return HostCode;
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  });
++#endif
+ }
+ 
+ void Arm64JITCore::Op_NoOp(const IR::IROp_Header* IROp, IR::Ref Node) {}
+diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+--- a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
++++ b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+@@ -10,6 +10,9 @@
+ #include <malloc/malloc.h>
+ #include <pthread.h>
+ #include <TargetConditionals.h>
++#if TARGET_OS_IPHONE
++#include "LumenDarwinJitWrite.h"
++#endif
+ #else
+ #include <malloc.h>
+ #endif
+diff --git a/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp b/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
+--- a/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
++++ b/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
+@@ -11,6 +11,9 @@
+ #include <FEXCore/Utils/ArchHelpers/Arm64.h>
+ 
+ #include <atomic>
++#ifdef __APPLE__
++#include <libkern/OSCacheControl.h>
++#endif
+ #include <cstdint>
+ 
+ namespace FEXCore::ArchHelpers::Arm64 {
+@@ -120,7 +123,11 @@
+ }
+ 
+ static void ClearICache(void* Begin, std::size_t Length) {
++#ifdef __APPLE__
++  sys_icache_invalidate(Begin, Length);
++#else
+   __builtin___clear_cache(static_cast<char*>(Begin), static_cast<char*>(Begin) + Length);
++#endif
+ }
+ 
+ static __uint128_t LoadAcquire128(uint64_t Addr) {

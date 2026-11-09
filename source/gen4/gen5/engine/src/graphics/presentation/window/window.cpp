@@ -7,9 +7,9 @@
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
-#include "common/systemInfo.h"
 #include "common/threads.h"
 #include "common/timer.h"
+#include "gen4/gen5/desktopWindowInfo.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -19,7 +19,6 @@
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/window/hostInput.h"
 #include "graphics/presentation/window/windowInternal.h"
-#include "kytyGitVersion.h"
 #include "libs/controller.h"
 #include "loader/systemContent.h"
 
@@ -30,11 +29,13 @@
 #include <SDL3/SDL.h>
 #include <cstdlib>
 #include <filesystem>
-#include <fmt/format.h>
 #include <memory>
 #include <string>
 #include <vector>
 #include <vulkan/vk_platform.h>
+#if defined(LUMEN_IOS_FEX_MODULE)
+extern "C" void LumenIOSFexModuleWindowReadyV1(SDL_Window*);
+#endif
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_SIMD
@@ -160,7 +161,6 @@ std::unique_ptr<WindowContext> g_window;
 
 } // namespace
 
-constexpr const char* KYTY_SDL_WINDOW_CAPTION = "Game";
 
 static void SetPause(WindowLoopState& game, bool flag) {
 	LOGF("Pause: %s\n", flag ? "true" : "false");
@@ -311,12 +311,22 @@ static void GameEventController([[maybe_unused]] const EventController& f) {
 
 	if (f.added) {
 		auto* pad = SDL_OpenGamepad(f.id);
+#if defined(LUMEN_IOS_FEX_MODULE)
+		if (pad == nullptr) {
+			LOGF("Controller %d could not be opened; retaining the virtual pad\n", f.id);
+			return;
+		}
+#else
 		EXIT_NOT_IMPLEMENTED(pad == nullptr);
+#endif
 		int id = SDL_GetJoystickID(SDL_GetGamepadJoystick(pad));
 		Controller::Connect(id);
 	}
 
 	if (f.removed) {
+#if defined(LUMEN_IOS_FEX_MODULE)
+		if (SDL_GetGamepadFromID(f.id) == nullptr) return;
+#endif
 		Controller::Disconnect(f.id);
 		SDL_CloseGamepad(SDL_GetGamepadFromID(f.id));
 	}
@@ -474,7 +484,7 @@ void WindowContext::ProcessEvent(double time_s) {
 		}
 		return;
 	}
-	if (ProcessSystemOverlayInput(*event)) {
+	if (ProcessSystemOverlayInput(*event) || DesktopWindowInfo::HandleFpsKey(*event)) {
 		return;
 	}
 	if (event->type >= SDL_EVENT_WINDOW_FIRST && event->type <= SDL_EVENT_WINDOW_LAST) {
@@ -727,10 +737,6 @@ void WindowContext::Run() {
 	loop.need_exit = false;
 	loop.paused.store(false, std::memory_order_release);
 
-	constexpr uint64_t title_interval_ms = 1000;
-	auto               title_time        = SDL_GetTicks();
-	auto               title_frames      = loop.presented_frames.load(std::memory_order_relaxed);
-
 	while (!loop.need_exit) {
 		if (loop.paused.load(std::memory_order_acquire)) {
 			if (!timer.IsPaused()) {
@@ -740,18 +746,6 @@ void WindowContext::Run() {
 			timer.Resume();
 		}
 
-		// Refresh the title on the main thread without making presentation wait for it.
-		const auto now     = SDL_GetTicks();
-		const auto elapsed = now - title_time;
-		if (elapsed >= title_interval_ms) {
-			const auto frames = loop.presented_frames.load(std::memory_order_relaxed);
-			if (frames != 0) {
-				UpdateTitle(frames, static_cast<double>(frames - title_frames) * 1000.0 /
-				                        static_cast<double>(elapsed));
-			}
-			title_time   = now;
-			title_frames = frames;
-		}
 		if (!HostInputWaitEvent(&loop.event)) {
 			continue;
 		}
@@ -808,7 +802,8 @@ static void WindowCreate(WindowContext& context) {
 		window_flags |= static_cast<uint32_t>(SDL_WINDOW_BORDERLESS);
 	}
 #endif
-	context.window = SDL_CreateWindow(KYTY_SDL_WINDOW_CAPTION, width, height, window_flags);
+	const auto title = DesktopWindowInfo::Title();
+	context.window = SDL_CreateWindow(title.c_str(), width, height, window_flags);
 
 	if (context.window == nullptr) {
 		EXIT("%s\n", SDL_GetError());
@@ -825,6 +820,10 @@ uint32_t WindowContext::InitialWindowFlags(bool fullscreen) noexcept {
 	auto flags = static_cast<uint32_t>(SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE);
 #else
 	auto flags = static_cast<uint32_t>(SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+#endif
+#if defined(LUMEN_IOS_FEX_MODULE)
+	// The UIKit host prepares the surface before transferring window focus.
+	flags |= static_cast<uint32_t>(SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN);
 #endif
 	if (fullscreen) {
 		flags |= static_cast<uint32_t>(SDL_WINDOW_FULLSCREEN);
@@ -843,6 +842,9 @@ Presenter& WindowInit(uint32_t width, uint32_t height) {
 
 	WindowCreate(*window);
 	window->CreateVulkan();
+#if defined(LUMEN_IOS_FEX_MODULE)
+	LumenIOSFexModuleWindowReadyV1(window->window);
+#endif
 	auto& presenter = *window->presenter;
 	g_window        = std::move(window);
 	return presenter;
@@ -853,8 +855,10 @@ void WindowRun() {
 	EXIT_IF(g_window == nullptr);
 
 	g_window->Run();
+#if !defined(LUMEN_IOS_FEX_MODULE)
 	Common::LockGuard lock(g_window->render_context->GetMutex());
 	g_window->render_context->GetPipelineCache().Save();
+#endif
 }
 
 void WindowShutdown() {
@@ -939,35 +943,6 @@ void WindowContext::UpdateIcon() {
 	if (icon.surface != nullptr) {
 		SDL_SetWindowIcon(window, icon.surface);
 	}
-}
-
-void WindowContext::UpdateTitle(uint64_t frame_num, double current_fps) {
-	static char title[128];
-	static char title_id[12];
-	static char app_ver[12];
-	static bool has_title = Loader::SystemContentParamSfoGetString("TITLE", title, sizeof(title));
-	static bool has_title_id =
-	    Loader::SystemContentParamSfoGetString("TITLE_ID", title_id, sizeof(title_id));
-	static bool has_app_ver =
-	    Loader::SystemContentParamSfoGetString("APP_VER", app_ver, sizeof(app_ver));
-	static const std::string processor_name = Common::GetSystemInfo().ProcessorName;
-
-#if KYTY_BUILD == KYTY_BUILD_DEBUG
-	static constexpr auto build_type = "Debug";
-#elif KYTY_BUILD == KYTY_BUILD_RELEASE
-	static constexpr auto build_type = "Release";
-#else
-	static constexpr auto build_type = "Unknown";
-#endif
-
-	const auto* device_name = graphic_ctx.GetPhysicalDeviceProperties().deviceName.data();
-	auto text = fmt::format(
-	    "[{} | {}] {}{}{}{}{}{}[{}] [{}], frame: {}, fps: {:.0f}", KYTY_BUILD_LABEL, build_type,
-	    (has_title ? title : ""), (has_title ? ", " : ""), (has_title_id ? title_id : ""),
-	    (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""), (has_app_ver ? " " : ""),
-	    device_name, processor_name, frame_num, current_fps);
-
-	SDL_SetWindowTitle(window, text.c_str());
 }
 
 } // namespace Libs::Graphics

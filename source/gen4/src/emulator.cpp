@@ -7,6 +7,7 @@
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <fmt/core.h>
 #include <fmt/xchar.h>
 #include <hwinfo/hwinfo.h>
@@ -54,6 +55,9 @@
 #include <unistd.h>
 #endif
 #include <core/file_format/npbind.h>
+#if defined(LUMEN_IOS_FEX_MODULE)
+extern "C" [[noreturn]] void LumenIOSFexModuleParkV1();
+#endif
 
 Frontend::WindowSDL* g_window = nullptr;
 
@@ -276,7 +280,11 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     if (!Lumen::HostFileSystem::exists(file)) {
         LOG_CRITICAL(Loader, "eboot.bin does not exist: {}",
                      std::filesystem::absolute(file).string());
+#if defined(LUMEN_IOS_FEX_MODULE)
+        throw std::runtime_error("The PS4 runtime rejected this executable format");
+#else
         std::quick_exit(3);
+#endif
     }
 
     LOG_INFO(Loader, "Starting Lumen PS4 runtime v{}", Common::g_version);
@@ -459,7 +467,11 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         if (onRuntimeStopped) {
             onRuntimeStopped(1);
         }
+#if defined(LUMEN_IOS_FEX_MODULE)
+        throw std::runtime_error("The PS4 runtime could not load eboot.bin");
+#else
         std::quick_exit(1);
+#endif
     }
 
 #ifdef ENABLE_DISCORD_RPC
@@ -494,13 +506,18 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         window->WaitEvent();
     }
 
+#if defined(LUMEN_IOS_FEX_MODULE)
+    // The direct engine has process lifetime guest workers. Preserve every
+    // owner and the surface until the user terminates this one-shot app.
+    LumenIOSFexModuleParkV1();
+#else
     UpdatePlayTime(id);
     Storage::DataBase::Instance().Close();
-
     if (onRuntimeStopped) {
         onRuntimeStopped(0);
     }
     std::quick_exit(0);
+#endif
 }
 
 bool Emulator::Restart(const std::filesystem::path& eboot_path,

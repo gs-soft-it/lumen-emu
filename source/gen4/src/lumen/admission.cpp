@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "host/DocumentFileSystem.h"
 #include "lumen/session.h"
+#include "lumen/succi_benchmark.h"
 #include "common/sha256.h"
 #include "core/loader/elf_validation.h"
 #include <algorithm>
@@ -155,6 +156,8 @@ bool ParseCommand(int argc, char** argv, SessionOptions& options, std::string& e
     options.root = fs::u8path(argv[2]);
     options.executable = fs::absolute(fs::u8path(argv[0]));
     options.data = fs::current_path();
+    options.succi_private_root.clear();
+    options.succi_benchmark = false;
     std::set<std::string> seen;
     for (int i = 3; i < argc; i += 2) {
         if (i + 1 >= argc || (std::string_view(argv[i]) != "--guest-arg" && !seen.insert(argv[i]).second)) {
@@ -175,6 +178,10 @@ bool ParseCommand(int argc, char** argv, SessionOptions& options, std::string& e
                 [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_' || c == '.'; });
             if (valid) options.event_token = value;
         } else if (key == "--data-path") options.data = fs::u8path(value);
+        else if (key == "--succi-private-root") {
+            options.succi_private_root = fs::u8path(value);
+            valid = options.succi_private_root.is_absolute();
+        }
         else if (key == "--entry") options.entry = fs::u8path(value);
         else if (key == "--guest-arg") {
             valid = value.size() <= 4096 && options.guest_args.size() < 33;
@@ -185,6 +192,10 @@ bool ParseCommand(int argc, char** argv, SessionOptions& options, std::string& e
     }
     for (const auto* key : {"--eboot-sha256", "--param-sha256", "--module-policy", "--width", "--height", "--event-token"}) {
         if (!seen.contains(key)) { error = std::string("Missing launch option: ") + key; return false; }
+    }
+    if (!options.succi_private_root.empty() && !seen.contains("--data-path")) {
+        error = "The Succi demo requires an explicit --data-path";
+        return false;
     }
     return true;
 }
@@ -209,10 +220,15 @@ std::vector<std::string> ManagedArguments(const SessionOptions& options) {
         "--module-policy", options.known_system ? "known-system" : "eboot-only", "--width", std::to_string(options.width),
         "--height", std::to_string(options.height), "--event-token", options.event_token, "--data-path", utf8(options.data),
         "--entry", utf8(options.entry)};
+    if (!options.succi_private_root.empty()) {
+        result.emplace_back("--succi-private-root");
+        result.push_back(utf8(options.succi_private_root));
+    }
     for (const auto& argument : options.guest_args) { result.emplace_back("--guest-arg"); result.push_back(argument); }
     return result;
 }
 bool ValidateContent(SessionOptions& options, std::string& error) {
+    if (!options.succi_private_root.empty()) options.succi_benchmark = false;
     try {
         if (!options.root.is_absolute() || !fs::is_directory(Lumen::HostFileSystem::symlink_status(options.root)))
             throw std::runtime_error("ROM root must be an absolute, existing directory without a symbolic link");
@@ -248,8 +264,20 @@ bool ValidateContent(SessionOptions& options, std::string& error) {
         if (!options.data.is_absolute() || !fs::is_directory(Lumen::HostFileSystem::symlink_status(options.data)))
             throw std::runtime_error("Runtime data must be an absolute existing directory without a symbolic link");
         options.data = Lumen::HostFileSystem::canonical(options.data);
-        if (options.data == options.root || options.data.string().starts_with(options.root.string() + fs::path::preferred_separator))
+        if (std::mismatch(options.root.begin(), options.root.end(), options.data.begin(), options.data.end()).first ==
+            options.root.end())
             throw std::runtime_error("Runtime data must be outside the ROM root");
+        if (!options.succi_private_root.empty()) {
+            if (options.entry != fs::path{"eboot.bin"} || options.eboot_digest.empty() || options.param_digest.empty())
+                throw std::runtime_error("The Succi demo requires its verified bundled executable and metadata");
+            SessionOptions benchmark;
+            benchmark.root = options.root;
+            benchmark.data = options.data;
+            SucciBenchmark::ValidateLaunch(benchmark, options.succi_private_root);
+            if (benchmark.eboot_digest != options.eboot_digest)
+                throw std::runtime_error("The Succi demo marker differs from the verified bundled executable");
+            options.succi_benchmark = benchmark.succi_benchmark;
+        }
         return true;
     } catch (const std::exception& exception) { error = exception.what(); return false; }
 }

@@ -22,13 +22,19 @@ target_include_directories(lumen_ps5_direct_fex
   PRIVATE "${LUMEN_SOURCE_ROOT}/gen4/src"
     "${direct_fex_source}/FEXCore/Source")
 target_link_libraries(lumen_ps5_direct_fex PRIVATE lumen_gen4_guest_cpu)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # The production ARM64 SRT walker shares the public iOS write callback,
+    # without importing the translator's private headers into the engine.
+    target_include_directories(lumen_ps5_direct_fex PUBLIC
+        "${LUMEN_SOURCE_ROOT}/gen4/cmake/direct_fex")
+endif()
 
 add_executable(lumen_ps5_direct_fex_smoke EXCLUDE_FROM_ALL DirectFexSmoke.cpp)
 target_link_libraries(lumen_ps5_direct_fex_smoke PRIVATE lumen_ps5_direct_fex)
 if(ANDROID)
     target_link_options(lumen_ps5_direct_fex_smoke PRIVATE
         "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
-elseif(APPLE)
+elseif(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_compile_options(lumen_ps5_direct_fex PRIVATE -ffixed-x18)
     set_property(TARGET lumen_ps5_direct_fex_smoke APPEND PROPERTY LINK_DEPENDS
         "${CMAKE_CURRENT_LIST_DIR}/../cmake/direct-macos.entitlements")

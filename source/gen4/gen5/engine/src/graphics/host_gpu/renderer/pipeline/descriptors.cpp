@@ -114,7 +114,8 @@ static bool IsMultisampledTexture(Prospero::ImageType type) {
 
 static vk::DescriptorBufferInfo
 NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource& source,
-                    const ShaderRecompiler::IR::BufferResource& resource, uint32_t& buffer_offset) {
+                    const ShaderRecompiler::IR::BufferResource& resource, uint32_t& buffer_offset,
+                    bool allow_read_only_snapshot) {
 	buffer_offset = 0;
 
 	const auto& [address, size, id] = source;
@@ -129,9 +130,19 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	const bool metadata_read = resource.read && Config::SupportZmaskEnabled() &&
 	                           (address & 0x7fffu) == 0 &&
 	                           context.GetTextureCache().IsMeta(address);
-	auto [buffer, offset]    = context.GetBufferCache().ObtainBuffer(
-	    address, size, resource.written || metadata_read,
-	    resource.formatted || (resource.read && Config::SyncRawImageBuffersEnabled()), id);
+	auto& cache = context.GetBufferCache();
+	const auto snapshot = allow_read_only_snapshot && resource.read && !resource.formatted &&
+	                              !metadata_read &&
+	                              resource.image_alias == ShaderRecompiler::IR::BufferResource::NoImageAlias
+	                          ? cache.TrySnapshotReadOnlyBuffer(address, size, alignment, id)
+	                          : std::pair<Buffer*, uint64_t> {};
+	auto [buffer, offset] = snapshot.first
+	                            ? snapshot
+	                            : cache.ObtainBuffer(
+	                                  address, size, resource.written || metadata_read,
+	                                  resource.formatted ||
+	                                      (resource.read && Config::SyncRawImageBuffersEnabled()),
+	                                  id);
 	if (metadata_read) buffer->Fill(offset, size, 0xf); // HTILE ZMask::kUncompressed.
 	const auto aligned_offset = Common::AlignDown(offset, alignment);
 	const auto adjustment     = offset - aligned_offset;
@@ -830,7 +841,7 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 	}
 }
 
-void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
+void RenderExecutor::RebindBuffers(PreparedBindings& prepared, bool allow_read_only_snapshot) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(prepared.runtime == nullptr || !*prepared.runtime);
 	const auto& program   = *prepared.runtime->program;
@@ -852,7 +863,8 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		if (index == UINT32_MAX) continue;
 		uint32_t buffer_offset = 0;
 		prepared.buffers[index] = NativeStorageBuffer(m_context, prepared.buffer_sources[index],
-		                                              resource, buffer_offset);
+		                                              resource, buffer_offset,
+		                                              allow_read_only_snapshot);
 		pack_memory_offset(index, buffer_offset);
 	}
 	if (layout.descriptor_counts[static_cast<size_t>(BindingKind::FlattenedSrt)] != 0) {
@@ -910,7 +922,8 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 }
 
 void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
-                                             std::span<RenderColorInfo> colors) {
+                                             std::span<RenderColorInfo> colors,
+                                             [[maybe_unused]] const RenderDepthInfo& depth) {
 	bool uses_dma = false;
 	FindBuffers(stages);
 	for (auto* stage: stages) {
@@ -939,8 +952,33 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 	}
 	// Discovery can read back PS5 metadata and submit the scheduler. Reserve draw buffers only
 	// after image identities are final; attachment layout transitions follow buffer alias copies.
+	bool allow_read_only_snapshot = false;
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	// Texture tracking covers the main plane. Exclude attachments whose metadata,
+	// stencil or separate depth write plane could be absent from that index.
+	const auto& depth_info = depth.desc.info;
+	const auto& depth_regs = m_context.GetCommandScheduler().Current().GetRegisters().GetDepthRenderTarget();
+	const bool safe_depth = !depth.image_id ||
+	    (depth_info.data.Valid() && !depth_info.HasMetadata() && !depth_info.HasStencil() &&
+	     depth_info.data.address == depth_regs.z_write_base_addr);
+	const bool safe_colors = std::ranges::all_of(colors, [](const auto& target) {
+		return target.desc.info.data.Valid() && !target.desc.info.HasMetadata();
+	});
+	// All active stages must exclude guest writes that could see the original storage.
+	allow_read_only_snapshot = safe_depth && safe_colors && !uses_dma &&
+	    std::ranges::all_of(stages, [](const auto* stage) {
+		    const auto& program = *stage->runtime->program;
+		    const auto& counts = program.bindings.descriptor_counts;
+		    return program.info.images.empty() &&
+		           counts[static_cast<size_t>(BindingKind::Gds)] == 0 &&
+		           counts[static_cast<size_t>(BindingKind::SharedMemory)] == 0 &&
+		           std::ranges::none_of(program.info.buffers, [](const auto& resource) {
+			           return resource.written || resource.atomic;
+		           });
+	    });
+#endif
 	for (auto* stage: stages) {
-		RebindBuffers(*stage);
+		RebindBuffers(*stage, allow_read_only_snapshot);
 	}
 }
 

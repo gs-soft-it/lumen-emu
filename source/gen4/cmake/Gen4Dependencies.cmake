@@ -48,8 +48,12 @@ foreach(part avformat avcodec swscale avutil avfilter swresample)
     target_link_libraries(lumen_gen4_ffmpeg INTERFACE "${archive}")
 endforeach()
 if(APPLE)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        target_link_libraries(lumen_gen4_ffmpeg INTERFACE
+            "-framework CoreServices" "-framework AudioUnit")
+    endif()
     target_link_libraries(lumen_gen4_ffmpeg INTERFACE
-        "-framework CoreServices" "-framework CoreFoundation" "-framework AudioUnit"
+        "-framework CoreFoundation"
         "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreMedia"
         "-framework VideoToolbox" "-framework CoreVideo" "-framework Security")
 endif()

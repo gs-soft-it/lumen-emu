@@ -26,7 +26,7 @@
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include "core/darwin_vm.h"
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #endif
@@ -671,6 +671,45 @@ struct AddressSpace::Impl {
 #endif
 
 #if defined(LUMEN_GEN4_HOST_RUNTIME)
+        system_managed_base = reinterpret_cast<u8*>(SYSTEM_MANAGED_MIN);
+        system_reserved_base = reinterpret_cast<u8*>(SYSTEM_RESERVED_MIN);
+        user_base = reinterpret_cast<u8*>(USER_MIN);
+        VAddr reservation_begin = SYSTEM_MANAGED_MIN;
+        VAddr reservation_end = USER_MAX + 1;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        Lumen::DarwinVM::AddressBounds host_bounds;
+        const auto bounds_result = Lumen::DarwinVM::QueryAddressBounds(host_bounds);
+        if (bounds_result != KERN_SUCCESS) {
+            LOG_CRITICAL(Kernel_Vmm, "Unable to query host VM bounds: Mach error {}", bounds_result);
+            throw std::bad_alloc{};
+        }
+        const auto clamp_region = [&](u8*& base, u64& size) {
+            const VAddr begin = reinterpret_cast<VAddr>(base);
+            const VAddr clipped_begin = std::max<VAddr>(begin, host_bounds.begin);
+            const VAddr clipped_end = std::min<VAddr>(begin + size, host_bounds.end);
+            if (clipped_begin >= clipped_end) {
+                LOG_CRITICAL(Kernel_Vmm, "Host VM bounds do not contain guest region {:#x}-{:#x}",
+                             begin, begin + size);
+                throw std::bad_alloc{};
+            }
+            base = reinterpret_cast<u8*>(clipped_begin);
+            size = clipped_end - clipped_begin;
+        };
+        clamp_region(system_managed_base, system_managed_size);
+        clamp_region(system_reserved_base, system_reserved_size);
+        clamp_region(user_base, user_size);
+        reservation_begin = reinterpret_cast<VAddr>(system_managed_base);
+        reservation_end = reinterpret_cast<VAddr>(user_base) + user_size;
+        Lumen::DarwinVM::NativeHeadroomReservation native_headroom;
+        // As on Gen5, keep 32 GiB available for native allocations. Each
+        // FEX thread needs a large contiguous lookup cache in this space.
+        const auto headroom_result = native_headroom.ReserveForBacking(backing_size, 4);
+        if (headroom_result != KERN_SUCCESS) {
+            LOG_CRITICAL(Kernel_Vmm, "Unable to preserve native VM headroom: Mach error {}", headroom_result);
+            throw std::bad_alloc{};
+        }
+        LOG_INFO(Kernel_Vmm, "iOS host VM bounds: {:#x}-{:#x}", host_bounds.begin, host_bounds.end);
+#endif
         std::vector<std::pair<VAddr, VAddr>> occupied_ranges;
 #if defined(__APPLE__)
         // The executable's PAGEZERO guard is not reported by mach_vm_region,
@@ -705,13 +744,13 @@ struct AddressSpace::Impl {
             command_bytes += command->cmdsize;
             remaining_commands -= command->cmdsize;
         }
-        mach_vm_address_t query = SYSTEM_MANAGED_MIN;
-        while (query <= USER_MAX) {
-            mach_vm_size_t length{};
+        Lumen::DarwinVM::Address query = reservation_begin;
+        while (query < reservation_end) {
+            Lumen::DarwinVM::Size length{};
             vm_region_basic_info_data_64_t info{};
             mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
             mach_port_t object = MACH_PORT_NULL;
-            const auto result = mach_vm_region(mach_task_self(), &query, &length,
+            const auto result = Lumen::DarwinVM::Region(mach_task_self(), &query, &length,
                 VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object);
             if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
             if (result == KERN_INVALID_ADDRESS) break;
@@ -737,15 +776,15 @@ struct AddressSpace::Impl {
         const auto reserve = [&](VAddr begin, VAddr end) {
             if (begin >= end) return;
 #if defined(__APPLE__)
-            mach_vm_address_t target = begin;
-            const auto allocation = mach_vm_allocate(mach_task_self(), &target, end - begin, VM_FLAGS_FIXED);
+            Lumen::DarwinVM::Address target = begin;
+            const auto allocation = Lumen::DarwinVM::Allocate(mach_task_self(), &target, end - begin, VM_FLAGS_FIXED);
             if (allocation != KERN_SUCCESS) {
                 LOG_CRITICAL(Kernel_Vmm, "Unable to reserve host VM range {:#x}-{:#x}: Mach error {}",
                              begin, end, allocation);
                 throw std::bad_alloc{};
             }
-            if (mach_vm_protect(mach_task_self(), target, end - begin, false, VM_PROT_NONE) != KERN_SUCCESS) {
-                mach_vm_deallocate(mach_task_self(), target, end - begin);
+            if (Lumen::DarwinVM::Protect(mach_task_self(), target, end - begin, false, VM_PROT_NONE) != KERN_SUCCESS) {
+                Lumen::DarwinVM::Deallocate(mach_task_self(), target, end - begin);
                 throw std::bad_alloc{};
             }
 #else
@@ -762,16 +801,13 @@ struct AddressSpace::Impl {
 #endif
             reserved_regions.emplace_back(begin, end - begin);
         };
-        VAddr cursor = SYSTEM_MANAGED_MIN;
+        VAddr cursor = reservation_begin;
         for (const auto [begin, end] : occupied_ranges) {
-            if (end <= cursor || begin > USER_MAX) continue;
-            reserve(cursor, std::min(begin, USER_MAX + 1));
-            cursor = std::max(cursor, std::min(end, USER_MAX + 1));
+            if (end <= cursor || begin >= reservation_end) continue;
+            reserve(cursor, std::min(begin, reservation_end));
+            cursor = std::max(cursor, std::min(end, reservation_end));
         }
-        reserve(cursor, USER_MAX + 1);
-        system_managed_base = reinterpret_cast<u8*>(SYSTEM_MANAGED_MIN);
-        system_reserved_base = reinterpret_cast<u8*>(SYSTEM_RESERVED_MIN);
-        user_base = reinterpret_cast<u8*>(USER_MIN);
+        reserve(cursor, reservation_end);
 #elif defined(__APPLE__) && defined(ARCH_X86_64)
         // On ARM64 Macs, we run into limitations due to the commpage from 0xFC0000000 - 0xFFFFFFFFF
         // and the GPU carveout region from 0x1000000000 - 0x6FFFFFFFFF. Because this creates gaps
@@ -823,19 +859,41 @@ struct AddressSpace::Impl {
         const VAddr system_managed_addr = reinterpret_cast<VAddr>(system_managed_base);
         const VAddr system_reserved_addr = reinterpret_cast<VAddr>(system_reserved_base);
         const VAddr user_addr = reinterpret_cast<VAddr>(user_base);
+#ifdef LUMEN_GEN4_HOST_RUNTIME
+        // The ownership ledger is authoritative, including the bounded iOS map
+        // and the native headroom excluded during the reservation inventory.
+        const auto add_owned = [&](VAddr range_begin, u64 range_size) {
+            for (const auto& [owned_begin, owned_size] : reserved_regions) {
+                const VAddr begin = std::max(range_begin, owned_begin);
+                const VAddr end = std::min(range_begin + range_size, owned_begin + owned_size);
+                if (begin < end) m_free_regions.insert({begin, end});
+            }
+        };
+        add_owned(system_managed_addr, system_managed_size);
+        add_owned(system_reserved_addr, system_reserved_size);
+        add_owned(user_addr, user_size);
+#else
         m_free_regions.insert({system_managed_addr, system_managed_addr + system_managed_size});
         m_free_regions.insert({system_reserved_addr, system_reserved_addr + system_reserved_size});
         m_free_regions.insert({user_addr, user_addr + user_size});
-#ifdef LUMEN_GEN4_HOST_RUNTIME
-        for (const auto [mapped_begin, mapped_end] : occupied_ranges) {
-            const VAddr begin = std::max(mapped_begin, SYSTEM_MANAGED_MIN);
-            const VAddr end = std::min(mapped_end, USER_MAX + 1);
-            if (begin < end) {
-                m_free_regions.subtract({begin, end});
-            }
-        }
 #endif
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#ifdef LUMEN_GEN4_HOST_RUNTIME
+        const auto headroom_release = native_headroom.Release();
+        if (headroom_release != KERN_SUCCESS) {
+            LOG_CRITICAL(Kernel_Vmm, "Unable to release native VM headroom: Mach error {}",
+                         headroom_release);
+            throw std::bad_alloc{};
+        }
+#endif
+        const auto backing_result = anonymous_backing.Create(backing_size);
+        if (backing_result != KERN_SUCCESS) {
+            LOG_CRITICAL(Kernel_Vmm, "Mach direct-memory backing failed: {}", backing_result);
+            throw std::bad_alloc{};
+        }
+        backing_base = static_cast<u8*>(anonymous_backing.Base());
+#else
 #ifdef __APPLE__
         const auto shm_path = fmt::format("/BackingDmem{}", getpid());
         backing_fd = shm_open(shm_path.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
@@ -874,14 +932,19 @@ struct AddressSpace::Impl {
             LOG_CRITICAL(Kernel_Vmm, "mmap failed: {}", strerror(errno));
             throw std::bad_alloc{};
         }
+#endif
         cleanup.Cancel();
     }
 
     ~Impl() { Release(); }
 
     void Release() noexcept {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        anonymous_backing.Release();
+#else
         if (backing_base != nullptr && backing_base != MAP_FAILED)
             munmap(backing_base, backing_size);
+#endif
         backing_base = nullptr;
         if (backing_fd >= 0) close(backing_fd);
         backing_fd = -1;
@@ -894,6 +957,18 @@ struct AddressSpace::Impl {
 
     void* Map(VAddr virtual_addr, PAddr phys_addr, u64 size, PosixPageProtection prot,
               int fd = -1) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        ASSERT_MSG(OwnsRange(virtual_addr, size), "Guest mapping outside owned reservation");
+        ASSERT_MSG((prot & PROT_EXEC) == 0, "Native execute permission for guest memory");
+        if (fd == -1) {
+            const auto result = phys_addr != -1
+                ? anonymous_backing.MapAliasAt(virtual_addr, size, phys_addr, prot)
+                : Lumen::DarwinVM::AnonymousBacking::ReplaceWithAnonymous(virtual_addr, size, prot);
+            ASSERT_MSG(result == KERN_SUCCESS, "Mach guest mapping failed: {}", result);
+            m_free_regions.subtract({virtual_addr, virtual_addr + size});
+            return reinterpret_cast<void*>(virtual_addr);
+        }
+#endif
         m_free_regions.subtract({virtual_addr, virtual_addr + size});
 #ifdef __APPLE__
         if ((prot & PROT_EXEC) != 0) {
@@ -911,6 +986,9 @@ struct AddressSpace::Impl {
     }
 
     void Unmap(VAddr virtual_addr, u64 size) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        ASSERT_MSG(OwnsRange(virtual_addr, size), "Guest unmapping outside owned reservation");
+#endif
         // Check to see if we are adjacent to any regions.
         VAddr start_address = virtual_addr;
         VAddr end_address = start_address + size;
@@ -922,13 +1000,19 @@ struct AddressSpace::Impl {
             end_address = std::max(end_address, it->upper());
         }
 
-        // Free the relevant region.
-        m_free_regions.insert({start_address, end_address});
-
         // Return the adjusted pointers.
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        ASSERT_MSG(OwnsRange(start_address, end_address - start_address),
+                   "Guest placeholder outside owned reservation");
+        const auto result = Lumen::DarwinVM::AnonymousBacking::ReplaceWithAnonymous(
+            start_address, end_address - start_address, VM_PROT_NONE);
+        ASSERT_MSG(result == KERN_SUCCESS, "Mach guest placeholder failed: {}", result);
+#else
         void* ret = mmap(reinterpret_cast<void*>(start_address), end_address - start_address,
                          PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
         ASSERT_MSG(ret != MAP_FAILED, "mmap failed: {}", strerror(errno));
+#endif
+        m_free_regions.insert({start_address, end_address});
     }
 
     void Protect(VAddr virtual_addr, u64 size, bool read, bool write, bool execute) {
@@ -948,6 +1032,21 @@ struct AddressSpace::Impl {
         ASSERT_MSG(ret == 0, "mprotect failed: {}", strerror(errno));
     }
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    bool OwnsRange(VAddr address, u64 size) const noexcept {
+        if (!Lumen::DarwinVM::IsPageSpan(address, size)) return false;
+        const auto end = address + size;
+        for (const auto& [base, bytes] : reserved_regions) {
+            if (base > address) return false;
+            if (address >= base && address - base < bytes) {
+                if (end - base <= bytes) return true;
+                address = base + bytes;
+            }
+        }
+        return false;
+    }
+    Lumen::DarwinVM::AnonymousBacking anonymous_backing;
+#endif
     int backing_fd{-1};
     u64 backing_size{};
     std::vector<std::pair<VAddr, u64>> reserved_regions;

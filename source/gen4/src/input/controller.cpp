@@ -1,6 +1,7 @@
 ﻿// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <sstream>
 #include <unordered_set>
 #include <SDL3/SDL.h>
@@ -285,6 +286,25 @@ void GameControllers::TryOpenSDLControllers() {
     int controller_count;
     s32 move_count = 0;
     SDL_JoystickID* new_joysticks = SDL_GetGamepads(&controller_count);
+#if defined(LUMEN_IOS_FEX_MODULE)
+    // The overlay's virtual pad stays attached across physical hotplug. Keep
+    // the real controller in player one's slot while the overlay is hidden.
+    const bool physical = new_joysticks && controller_count > 0 &&
+        std::any_of(new_joysticks, new_joysticks + controller_count,
+        [](SDL_JoystickID id) {
+            if (SDL_IsJoystickVirtual(id)) return false;
+            if (auto* pad = SDL_OpenGamepad(id)) {
+                SDL_CloseGamepad(pad);
+                return true;
+            }
+            return false;
+        });
+    if (physical) {
+        auto* end = std::remove_if(new_joysticks, new_joysticks + controller_count,
+            [](SDL_JoystickID id) { return SDL_IsJoystickVirtual(id); });
+        controller_count = static_cast<int>(end - new_joysticks);
+    }
+#endif
     LOG_INFO(Input, "{} controllers are currently connected", controller_count);
 
     std::unordered_set<SDL_JoystickID> assigned_ids;

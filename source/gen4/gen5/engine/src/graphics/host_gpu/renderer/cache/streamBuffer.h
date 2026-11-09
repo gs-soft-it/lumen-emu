@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <utility>
@@ -72,8 +73,14 @@ public:
 	bool   is_deleted   = false;
 	int    stream_score = 0;
 	size_t lru_id       = 0;
+	uint64_t read_only_snapshot_begin = 0;
+	uint64_t read_only_snapshot_end   = 0;
 
 protected:
+	Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
+	       uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size,
+	       bool try_coherent_allocation);
+
 	[[nodiscard]] GraphicContext&   Graphics() const noexcept { return *m_graphics; }
 	[[nodiscard]] CommandScheduler& Scheduler() const noexcept { return *m_scheduler; }
 
@@ -98,6 +105,8 @@ class StreamBuffer final: public Buffer {
 public:
 	StreamBuffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
 	             uint64_t size);
+	[[nodiscard]] static std::unique_ptr<StreamBuffer>
+	TryCreateCoherent(GraphicContext& graphics, CommandScheduler& scheduler, uint64_t size);
 
 	[[nodiscard]] std::pair<uint8_t*, uint64_t> Map(uint64_t size, uint64_t alignment = 0,
 	                                                bool allow_wait = true);
@@ -106,6 +115,9 @@ public:
 
 private:
 	friend struct StreamBufferTestAccess;
+
+	StreamBuffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
+	             uint64_t size, bool try_coherent_allocation);
 
 	struct Watch {
 		uint64_t tick        = 0;

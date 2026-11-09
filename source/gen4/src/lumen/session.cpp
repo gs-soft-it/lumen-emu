@@ -22,6 +22,9 @@
 #ifdef __ANDROID__
 extern "C" void LumenGen4OnRuntimeReady(bool ready);
 #endif
+#if defined(LUMEN_IOS_FEX_MODULE)
+extern "C" void LumenIOSFexModuleExecutionStartedV1();
+#endif
 
 namespace Lumen::Gen4 {
 namespace { std::atomic<bool> known_system_modules{}; }
@@ -48,7 +51,10 @@ int RunSession(const SessionOptions& options, const std::function<void(bool, int
     settings->SetPipelineCacheEnabled(true);
 #endif
     settings->SetDumpShaders(options.shader_dump);
-#ifndef __ANDROID__
+#if defined(LUMEN_IOS_FEX_MODULE)
+    // The UIKit HUD owns the user's persisted FPS preference.
+    settings->SetShowFpsCounter(false);
+#elif !defined(__ANDROID__)
     settings->SetShowFpsCounter(true);
 #endif
     settings->SetWindowWidth(options.width);
@@ -68,7 +74,7 @@ int RunSession(const SessionOptions& options, const std::function<void(bool, int
     }
 #endif
     auto* emulator = Common::Singleton<Core::Emulator>::Instance();
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(LUMEN_IOS_FEX_MODULE)
     if (!options.executable.empty()) {
         emulator->onRuntimeRestart = [options](const std::filesystem::path& entry,
                                                const std::vector<std::string>& arguments) {
@@ -95,6 +101,9 @@ int RunSession(const SessionOptions& options, const std::function<void(bool, int
         std::fprintf(stderr, "PS4 runtime: %.*s\n", static_cast<int>(error.size()), error.data());
     };
     emulator->onRuntimeRunning = [&] {
+#if defined(LUMEN_IOS_FEX_MODULE)
+        LumenIOSFexModuleExecutionStartedV1();
+#endif
         EmitEvent(options, "RUNNING");
         if (lifecycle) lifecycle(true, 0);
 #ifdef __ANDROID__

@@ -541,6 +541,7 @@ struct ImePanelMetrics {
 };
 
 ImeViewportMetrics ComputeImeViewportMetrics(bool use_over2k);
+ImVec2 ComputeImePanelSize(const ImeViewportMetrics& viewport, u32 width, u32 height);
 ImePanelMetrics ComputeImePanelMetrics(const ImePanelMetricsConfig& config);
 ImeKbLayoutId ResolveImeKeyboardLayoutId(const ImeKbLayoutSelection& selection);
 const ImeKbLayoutModel& GetImeKeyboardLayout(ImeKbLayoutId id);

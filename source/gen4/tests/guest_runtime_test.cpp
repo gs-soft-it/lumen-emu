@@ -8,6 +8,8 @@
 #include "core/guest_cpu/fex_hle_bridge.h"
 #include "core/libraries/kernel/sync/host_wait.h"
 #include "core/libraries/kernel/threads/exception.h"
+#include "core/libraries/libc_internal/mspace.h"
+#include "core/loader/mspace_malloc_veneer.h"
 #if !defined(LUMEN_GEN4_DIRECT_FEX) || defined(__APPLE__)
 #include "core/libraries/font/font_driver_abi.h"
 #endif
@@ -17,6 +19,7 @@
 #include <bit>
 #include <cassert>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <cstdio>
 #include <thread>
@@ -242,9 +245,140 @@ void Append64(std::vector<unsigned char>& code,std::uint64_t value) {
 void Call(std::vector<unsigned char>& code,std::uintptr_t target) {
     code.insert(code.end(),{0x48,0xb8}); Append64(code,target); code.insert(code.end(),{0xff,0xd0});
 }
+
+void CheckMspaceHle() {
+    using namespace Libraries::LibcInternal;
+    const char* const policy = std::getenv("LUMEN_ZERO_MSPACE_ALLOCATIONS");
+    const bool expect_zero = policy == nullptr || std::strcmp(policy, "0") != 0;
+
+    constexpr unsigned char dirty = 0xa5;
+    constexpr std::size_t size = 37;
+    alignas(16) std::array<unsigned char, 160> storage;
+    storage.fill(dirty);
+    auto* const payload = storage.data() + 16;
+    void* const arena = MspaceCreate("mspace-contract", payload, 128, 0);
+    CHECK(arena != nullptr);
+    const auto all_bytes_are = [](auto first, auto last, unsigned char value) {
+        return std::all_of(first, last, [value](auto byte) { return byte == value; });
+    };
+
+    auto* allocation = static_cast<unsigned char*>(MspaceMalloc(arena, size));
+    CHECK(allocation == payload);
+    CHECK(MspaceMallocUsableSize(allocation) == size);
+    std::fill_n(allocation, size, dirty);
+    CHECK(MspaceFree(arena, allocation) == 0);
+    CHECK(MspaceMalloc(arena, size) == allocation);
+    CHECK(all_bytes_are(storage.data(), payload, dirty));
+    CHECK(all_bytes_are(payload, payload + size, expect_zero ? 0 : dirty));
+    CHECK(all_bytes_are(payload + size, storage.data() + storage.size(), dirty));
+
+    std::fill_n(allocation, size, 0x53);
+    CHECK(MspaceRealloc(arena, allocation, 48) == allocation);
+    CHECK(all_bytes_are(allocation, allocation + size, 0x53));
+    CHECK(all_bytes_are(allocation + size, allocation + 48, dirty));
+    auto* const calloc = static_cast<unsigned char*>(MspaceCalloc(arena, 3, 7));
+    CHECK(calloc == allocation + 48);
+    CHECK(all_bytes_are(calloc, calloc + 21, 0));
+    CHECK(calloc[21] == dirty);
+    CHECK(MspaceFree(arena, calloc) == 0);
+    CHECK(MspaceFree(arena, allocation) == 0);
+
+    storage.fill(dirty);
+    CHECK(MspaceMalloc(arena, SIZE_MAX) == nullptr);
+    auto* const empty = static_cast<unsigned char*>(MspaceMalloc(arena, 0));
+    CHECK(empty == payload);
+    CHECK(all_bytes_are(storage.begin(), storage.end(), dirty));
+    CHECK(MspaceFree(arena, empty) == 0);
+    CHECK(MspaceDestroy(arena) == 0);
+    std::puts("mspace-hle=PASS reuse exact bounds failure zero-size calloc realloc free");
+}
+
+void CheckMspaceGuestVeneer(const Mapping& code, const Mapping& stack, const Mapping& scratch,
+                           const auto& run) {
+    constexpr std::size_t veneer_offset = 96;
+    constexpr std::size_t allocator_offset = 144;
+    constexpr std::size_t payload_offset = 128;
+    constexpr std::size_t canary = 16;
+    constexpr std::size_t payload_size = 37;
+    constexpr unsigned char dirty = 0xa5;
+    struct AllocationCall {
+        u64 arena;
+        u64 size;
+        u64 rsp;
+        u64 calls;
+        u64 result;
+    };
+    constexpr u64 arena = 0x1122334455667788;
+    const auto payload = scratch.Address() + payload_offset;
+    auto* const window = scratch.base + payload_offset - canary;
+
+    const auto check = [&](u64 size, u64 allocation_result) {
+        const AllocationCall initial{0, 0, 0, 0, allocation_result};
+        std::memcpy(scratch.base, &initial, sizeof(initial));
+        std::fill_n(window, canary + payload_size + canary, dirty);
+
+        // The guest caller seeds callee-saved registers and aligns the stack.
+        constexpr std::array<unsigned char, 5> mov_register{0xbb, 0xbd, 0xbd, 0xbe, 0xbf};
+        constexpr std::array<std::size_t, 5> register_index{3, 5, 13, 14, 15};
+        constexpr u64 sentinel = 0x13579bdf02468ace;
+        std::vector<unsigned char> program;
+        for (std::size_t i = 0; i < mov_register.size(); ++i) {
+            program.push_back(i < 2 ? 0x48 : 0x49);
+            program.push_back(mov_register[i]);
+            Append64(program, sentinel + i);
+        }
+        program.insert(program.end(), {0x48, 0x83, 0xec, 0x08, 0x48, 0xbe}); // sub rsp,8; movabs rsi,size
+        Append64(program, size);
+        Call(program, code.Address() + veneer_offset);
+        program.insert(program.end(), {0x48, 0x83, 0xc4, 0x08, 0xc3}); // add rsp,8; ret
+        CHECK(program.size() <= veneer_offset);
+        program.resize(veneer_offset, 0xcc);
+        const auto veneer = Loader::MakeZeroMspaceMallocVeneer(code.Address() + allocator_offset);
+        program.insert(program.end(), veneer.begin(), veneer.end());
+        CHECK(program.size() <= allocator_offset);
+        program.resize(allocator_offset, 0xcc);
+
+        // The allocator records its two arguments and stack, then clobbers
+        // caller-saved registers before returning the configured pointer.
+        program.insert(program.end(), {0x49, 0xba}); // movabs r10,scratch
+        Append64(program, scratch.Address());
+        program.insert(program.end(), {
+            0x49, 0x89, 0x3a,       // mov [r10],rdi
+            0x49, 0x89, 0x72, 0x08, // mov [r10+8],rsi
+            0x49, 0x89, 0x62, 0x10, // mov [r10+16],rsp
+            0x49, 0xff, 0x42, 0x18, // inc qword [r10+24]
+            0x31, 0xf6,             // xor esi,esi
+            0xb9, 0x7f, 0, 0, 0,   // mov ecx,127
+            0x49, 0x8b, 0x42, 0x20, // mov rax,[r10+32]
+            0xc3                    // ret
+        });
+
+        const auto returned = run(program, arena);
+        AllocationCall actual{};
+        std::memcpy(&actual, scratch.base, sizeof(actual));
+        CHECK(actual.arena == arena && actual.size == size && actual.calls == 1);
+        CHECK(actual.rsp % 16 == 8);
+        CHECK(returned.Rsp == stack.Address() + stack.size);
+        CHECK(returned.Gpr[0] == allocation_result);
+        CHECK(returned.Gpr[12] == 0xfedcba9876543210ULL);
+        for (std::size_t i = 0; i < register_index.size(); ++i) {
+            CHECK(returned.Gpr[register_index[i]] == sentinel + i);
+        }
+        for (std::size_t i = 0; i < canary + payload_size + canary; ++i) {
+            const bool cleared = allocation_result != 0 && i >= canary && i < canary + size;
+            CHECK(window[i] == (cleared ? 0 : dirty));
+        }
+    };
+
+    check(payload_size, payload);
+    check(UINT64_MAX, 0);
+    check(0, payload);
+    std::puts("mspace-guest-veneer=PASS original ABI exact bounds failure zero-size");
+}
 }
 int main() {
     using namespace Core;
+    CheckMspaceHle();
 #ifdef LUMEN_GEN4_DIRECT_FEX
     CheckMappingSnapshot();
 #endif
@@ -388,6 +522,7 @@ int main() {
         CHECK(std::holds_alternative<bool>(engine->DestroyThread(thread)));
         return std::get<GuestExecutionState>(result);
     };
+    CheckMspaceGuestVeneer(code, stack, tls, run);
     std::vector<unsigned char> sumCode{0x6a,0x07,0xbf,1,0,0,0,0xbe,2,0,0,0,0xba,3,0,0,0,0xb9,4,0,0,0,
         0x41,0xb8,5,0,0,0,0x41,0xb9,6,0,0,0};
     Call(sumCode,sumVeneer); sumCode.insert(sumCode.end(),{0x48,0x83,0xc4,8,0xc3});

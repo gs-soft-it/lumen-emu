@@ -12,8 +12,11 @@
 #include <thread>
 #include <unistd.h>
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <mach/mach.h>
+#if !TARGET_OS_IPHONE
 #include <mach/mach_vm.h>
+#endif
 #endif
 
 namespace Direct = Lumen::Ps5::DirectFex;
@@ -29,12 +32,21 @@ bool CheckVeneerMapping(std::uint64_t veneer, std::size_t hostPage) {
         !Direct::QueryOwnedExecutable(veneer, nullptr, &size) &&
         !Direct::QueryOwnedExecutable(veneer, &base, nullptr);
 #if defined(__APPLE__)
+#if TARGET_OS_IPHONE
+    vm_address_t address = veneer;
+    vm_size_t mappedSize {};
+#else
     mach_vm_address_t address = veneer;
     mach_vm_size_t mappedSize {};
+#endif
     vm_region_basic_info_data_64_t information {};
     mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
     mach_port_t object = MACH_PORT_NULL;
+#if TARGET_OS_IPHONE
+    const auto result = vm_region_64(mach_task_self(), &address, &mappedSize,
+#else
     const auto result = mach_vm_region(mach_task_self(), &address, &mappedSize,
+#endif
         VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&information), &count, &object);
     if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
     const bool sealed = result == KERN_SUCCESS && address <= veneer &&

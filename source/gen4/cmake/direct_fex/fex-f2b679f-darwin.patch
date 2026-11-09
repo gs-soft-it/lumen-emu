@@ -433,6 +433,67 @@ diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Inte
    else {
      // If on Windows and TPIDRRO isn't supported (like in wine), then this is a programming error.
      ERROR_AND_DIE_FMT("Unsupported");
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.cpp b/FEXCore/Source/Interface/Core/LookupCache.cpp
+--- a/FEXCore/Source/Interface/Core/LookupCache.cpp
++++ b/FEXCore/Source/Interface/Core/LookupCache.cpp
+@@ -12,6 +12,8 @@
+ #include "Interface/Context/Context.h"
+ #include "Interface/Core/LookupCache.h"
+ 
++#include <cerrno>
++
+ namespace FEXCore {
+ GuestToHostMap::GuestToHostMap()
+   : BlockLinks_mbr {"FEXMem_BlockLinks"} {
+@@ -39,7 +41,16 @@
+   // We need one pointer per page of virtual memory
+   // At 64GB of virtual memory this will allocate 128MB of virtual memory space
+   PagePointer = reinterpret_cast<uintptr_t>(FEXCore::Allocator::VirtualAlloc(TotalCacheSize, false, false));
+-  LOGMAN_THROW_A_FMT(PagePointer != -1ULL, "Failed to allocate PagePointer");
++  // This must remain active in Release: deriving L1/L2 pointers from a failed
++  // mapping would otherwise let a new guest thread start with invalid caches.
++  if (PagePointer == 0 || PagePointer == ~uintptr_t {0}) {
++#ifdef _WIN32
++    ERROR_AND_DIE_FMT("FEX_LOOKUP_CACHE_ALLOCATION_FAILED size={:#x}", TotalCacheSize);
++#else
++    const int Error = errno;
++    ERROR_AND_DIE_FMT("FEX_LOOKUP_CACHE_ALLOCATION_FAILED size={:#x} errno={}", TotalCacheSize, Error);
++#endif
++  }
+ 
+   // Disable THP on the Lookup cache.
+   FEXCore::Allocator::VirtualTHPControl(reinterpret_cast<const void*>(PagePointer), TotalCacheSize, FEXCore::Allocator::THPControl::Disable);
+@@ -81,15 +92,15 @@
+ void LookupCache::ClearL2Cache(const FEXCore::LookupCacheBaseLockToken& lk) {
+   // Clear out the page memory
+   // PagePointer and PageMemory are sequential with each other. Clear both at once.
+-  FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer),
+-                                      ctx->Config.VirtualMemSize / FEXCore::Utils::FEX_PAGE_SIZE * 8 + CODE_SIZE, false);
++  FEXCore::Allocator::VirtualDiscardPrivatePages(reinterpret_cast<void*>(PagePointer),
++      ctx->Config.VirtualMemSize / FEXCore::Utils::FEX_PAGE_SIZE * 8 + CODE_SIZE);
+   AllocateOffset = 0;
+ }
+ 
+ void LookupCache::ClearThreadLocalCaches(const LookupCacheWriteLockToken&) {
+   // TODO: Preserve code cache entries?
+   // Clear L1 and L2 by clearing the full cache.
+-  FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer), TotalCacheSize, false);
++  FEXCore::Allocator::VirtualDiscardPrivatePages(reinterpret_cast<void*>(PagePointer), TotalCacheSize);
+ 
+   // TODO: Rename this member to avoid confusion with code caching
+   CachedCodePages.clear();
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.h b/FEXCore/Source/Interface/Core/LookupCache.h
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -257,7 +257,7 @@
+           // Madvise the entries that we are dropping. Gives the memory back to the OS.
+           LookupCacheEntry* FirstZeroL1Entry = &reinterpret_cast<LookupCacheEntry*>(L1Pointer)[CurrentL1Entries];
+           size_t ZeroMemorySize = (MAX_L1_ENTRIES - CurrentL1Entries) * sizeof(LookupCacheEntry);
+-          FEXCore::Allocator::VirtualDontNeed(FirstZeroL1Entry, ZeroMemorySize, false);
++          FEXCore::Allocator::VirtualDiscardPrivatePages(FirstZeroL1Entry, ZeroMemorySize);
+ 
+           // Update the thread's L1 pointer mask to increase how much cache it uses.
+           // Since we're in C-code, this is safe to update here.
 diff --git a/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp b/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
 --- a/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
 +++ b/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
@@ -540,11 +601,12 @@ diff --git a/FEXCore/Source/Utils/AllocatorHooks.cpp b/FEXCore/Source/Utils/Allo
  #include <sys/mman.h>
  #else
  #define NTDDI_VERSION 0x0A000005
-@@ -11,7 +13,11 @@
+@@ -11,7 +13,12 @@
  #endif
  
  #include <cstdint>
 +#ifdef __APPLE__
++#include <cerrno>
 +#include <malloc/malloc.h>
 +#else
  #include <malloc.h>
@@ -552,7 +614,7 @@ diff --git a/FEXCore/Source/Utils/AllocatorHooks.cpp b/FEXCore/Source/Utils/Allo
  #include <stdlib.h>
  #include <stdio.h>
  #include <string.h>
-@@ -107,10 +113,12 @@
+@@ -107,10 +114,12 @@
  #ifndef PR_SET_VMA_ANON_NAME
  #define PR_SET_VMA_ANON_NAME 0
  #endif
@@ -565,6 +627,45 @@ diff --git a/FEXCore/Source/Utils/AllocatorHooks.cpp b/FEXCore/Source/Utils/Allo
    }
  
    if (ptr == nullptr) {
+@@ -188,7 +197,19 @@
+   return ::calloc(n, size);
+ }
+ void* memalign(size_t align, size_t s) {
++#ifdef __APPLE__
++  if (align < sizeof(void*)) {
++    return ::malloc(s);
++  }
++  void* ptr = nullptr;
++  if (const int error = ::posix_memalign(&ptr, align, s); error != 0) {
++    errno = error;
++    return nullptr;
++  }
++  return ptr;
++#else
+   return ::memalign(align, s);
++#endif
+ }
+ void* valloc(size_t size) {
+   return ::valloc(size);
+@@ -203,10 +224,18 @@
+   return ::free(ptr);
+ }
+ size_t malloc_usable_size(void* ptr) {
++#ifdef __APPLE__
++  return ::malloc_size(ptr);
++#else
+   return ::malloc_usable_size(ptr);
++#endif
+ }
+ void* aligned_alloc(size_t a, size_t s) {
++#ifdef __APPLE__
++  return FEXCore::Allocator::memalign(a, s);
++#else
+   return ::aligned_alloc(a, s);
++#endif
+ }
+ void aligned_free(void* ptr) {
+   return ::free(ptr);
 diff --git a/FEXCore/Source/Utils/Profiler.cpp b/FEXCore/Source/Utils/Profiler.cpp
 --- a/FEXCore/Source/Utils/Profiler.cpp
 +++ b/FEXCore/Source/Utils/Profiler.cpp
@@ -614,20 +715,23 @@ diff --git a/FEXCore/include/FEXCore/Debug/InternalThreadState.h b/FEXCore/inclu
 diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
 --- a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
 +++ b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
-@@ -6,7 +6,12 @@
+@@ -6,7 +6,15 @@
  
  #ifndef _WIN32
  #include <stdlib.h>
 +#ifdef __APPLE__
++#include <cerrno>
++#include <unistd.h>
 +#include <malloc/malloc.h>
 +#include <pthread.h>
++#include <TargetConditionals.h>
 +#else
  #include <malloc.h>
 +#endif
  #include <sys/mman.h>
  #else
  #define NTDDI_VERSION 0x0A000005
-@@ -16,6 +21,7 @@
+@@ -16,6 +24,7 @@
  #include <new>
  #include <cstddef>
  #include <cstdint>
@@ -635,12 +739,12 @@ diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FE
  #include <sys/types.h>
  
  namespace FEXCore::Allocator {
-@@ -31,6 +37,36 @@
+@@ -31,6 +40,36 @@
    Enable,
    Disable,
  };
 +
-+#ifdef __APPLE__
++#if defined(__APPLE__) && !TARGET_OS_IPHONE
 +// MAP_JIT permissions are selected per thread on Darwin. Compilation can be
 +// nested through Custom-IR and cache-management paths, so only the outermost
 +// scope opens and closes the write window.
@@ -672,7 +776,7 @@ diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FE
  
  #ifndef _WIN32
  FEX_DEFAULT_VISIBILITY void SetupHooks(size_t PageSize);
-@@ -114,18 +150,39 @@
+@@ -114,18 +153,39 @@
  // All commit parameters are ignored here, they are unnecessary as Linux supports overcommit
  
  inline void* VirtualAlloc(size_t Size, bool Execute = false, bool Commit = true) {
@@ -714,7 +818,7 @@ diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FE
  }
  inline bool VirtualProtect(void* Ptr, size_t Size, ProtectOptions options) {
    int prot {PROT_NONE};
-@@ -143,7 +200,13 @@
+@@ -143,11 +203,42 @@
  }
  
  inline void VirtualTHPControl(const void* Ptr, size_t Size, THPControl Control) {
@@ -728,6 +832,35 @@ diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FE
  }
  
  #endif
+ 
++// Only for exclusively owned, private anonymous, nonexecutable mappings.
++// Keep JIT/code mappings on VirtualDontNeed: remapping would break their
++// executable permissions or shared writable aliases.
++inline void VirtualDiscardPrivatePages(void* Ptr, size_t Size) {
++#ifdef __APPLE__
++  if (Size == 0) return;
++  const auto PageSize = ::sysconf(_SC_PAGESIZE);
++  const auto Address = reinterpret_cast<uintptr_t>(Ptr);
++  if (PageSize <= 0 || Ptr == nullptr || Size > UINTPTR_MAX - Address ||
++      Address % static_cast<size_t>(PageSize) != 0 || Size % static_cast<size_t>(PageSize) != 0) {
++    ERROR_AND_DIE_FMT("FEX_DARWIN_PRIVATE_DISCARD_FAILED invalid-range address={:#x} size={:#x}", Address, Size);
++  }
++  // One fixed replacement keeps the owned VA reserved while dropping dirty
++  // pages. The new anonymous object supplies zeros on demand instead of
++  // materializing hundreds of MiB of sparse lookup cache with memset.
++  auto* Result = ::mmap(Ptr, Size, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  if (Result != Ptr) {
++    const int Error = errno;
++    ERROR_AND_DIE_FMT("FEX_DARWIN_PRIVATE_DISCARD_FAILED remap address={:#x} size={:#x} errno={}", Address, Size, Error);
++  }
++#else
++  VirtualDontNeed(Ptr, Size, false);
++#endif
++}
++
+ // Memory allocation routines to be defined externally.
+ // This allows to use jemalloc for emulation while using the normal allocator
+ // for host tools without building FEXCore twice.
 diff --git a/FEXCore/include/FEXCore/Utils/InterruptableConditionVariable.h b/FEXCore/include/FEXCore/Utils/InterruptableConditionVariable.h
 --- a/FEXCore/include/FEXCore/Utils/InterruptableConditionVariable.h
 +++ b/FEXCore/include/FEXCore/Utils/InterruptableConditionVariable.h
@@ -1217,3 +1350,29 @@ diff --git a/Source/Common/HostFeatures.cpp b/Source/Common/HostFeatures.cpp
 +#endif
  }
  } // namespace FEX
+diff --git a/FEXCore/Source/Utils/Allocator/IntrusiveArenaAllocator.h b/FEXCore/Source/Utils/Allocator/IntrusiveArenaAllocator.h
+--- a/FEXCore/Source/Utils/Allocator/IntrusiveArenaAllocator.h
++++ b/FEXCore/Source/Utils/Allocator/IntrusiveArenaAllocator.h
+@@ -11,7 +11,9 @@
+ #include <cstddef>
+ #include <memory_resource>
+ namespace fex_pmr = std::pmr;
++#ifndef __APPLE__
+ #include <sys/user.h>
++#endif
+ 
+ #include <mutex>
+ 
+diff --git a/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp b/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
+--- a/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
++++ b/FEXCore/Source/Utils/Allocator/64BitAllocator.cpp
+@@ -24,7 +24,9 @@
+ #include <new>
+ #include <sys/mman.h>
+ #include <sys/utsname.h>
++#ifndef __APPLE__
+ #include <sys/user.h>
++#endif
+ #include <type_traits>
+ #include <utility>
+ 

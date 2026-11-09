@@ -122,6 +122,12 @@ public:
 
     template <class Rep, class Period>
     bool try_acquire_for(const std::chrono::duration<Rep, Period>& rel_time) {
+#if defined(LUMEN_GEN4_ENABLE_FEX_GUEST_CPU) && !defined(_WIN64)
+        using Clock = std::chrono::steady_clock;
+        const auto start = Clock::now();
+        const auto max_delay = Clock::time_point::max() - start;
+        const auto deadline = rel_time >= max_delay ? Clock::time_point::max() : start + rel_time;
+#endif
 #ifdef _WIN64
         auto rel_time_ms = std::chrono::ceil<std::chrono::milliseconds>(rel_time);
         do {
@@ -141,7 +147,6 @@ public:
         return false;
 #elif defined(__APPLE__)
 #ifdef LUMEN_GEN4_ENABLE_FEX_GUEST_CPU
-        const auto deadline = std::chrono::steady_clock::now() + rel_time;
         if (rel_time <= rel_time.zero()) {
             const bool acquired = try_acquire();
             Core::Fex::FlushPendingGuestOrbisSignal();
@@ -168,7 +173,6 @@ public:
 #endif
 #else
 #ifdef LUMEN_GEN4_ENABLE_FEX_GUEST_CPU
-        const auto deadline = std::chrono::steady_clock::now() + rel_time;
         // Handle non-positive duration: immediate try then flush.
         {
             const auto now = std::chrono::steady_clock::now();

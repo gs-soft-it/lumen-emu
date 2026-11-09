@@ -6,6 +6,7 @@
 #include <memory>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -86,10 +87,8 @@ public:
         return &gds_buffer;
     }
 
-    /// Retrieves the device local DBA page table buffer.
-    [[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept {
-        return &bda_pagetable_buffer;
-    }
+    /// Allocates and populates the BDA page table on the first DMA shader binding.
+    [[nodiscard]] Buffer* GetBdaPageTableBuffer();
 
     /// Retrieves the fault buffer.
     [[nodiscard]] Buffer* GetFaultBuffer() noexcept {
@@ -225,6 +224,8 @@ private:
     template <bool insert>
     void ChangeRegister(BufferId buffer_id);
 
+    void PublishBdaMappings(const Buffer& buffer);
+
     bool SynchronizeBuffer(Buffer& buffer, VAddr device_addr, u32 size, bool is_written,
                            bool is_texel_buffer);
 
@@ -274,7 +275,7 @@ private:
     StreamBuffer download_buffer;
     StreamBuffer device_buffer;
     Buffer gds_buffer;
-    Buffer bda_pagetable_buffer;
+    std::optional<Buffer> bda_pagetable_buffer;
     Common::SlotVector<Buffer> slot_buffers;
 
     /// Mode C/D: independent host-visible buffers for full-res image uploads.

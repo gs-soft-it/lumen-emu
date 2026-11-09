@@ -1228,7 +1228,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		descriptor_stages[stage_count++] = &*bindings.pixel;
 	}
 	const auto stages = std::span {descriptor_stages.data(), stage_count};
-	PrepareGraphicsBindings(stages, std::span {state.color_info, state.color_count});
+	PrepareGraphicsBindings(stages, std::span {state.color_info, state.color_count},
+	                        state.depth_info);
 	PreparedVertexBuffers vertex_bindings;
 	PreparedIndexBuffer   index_binding;
 	std::unique_ptr<Buffer> canonical_index_upload;
@@ -1329,6 +1330,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	} else {
 		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
 	}
+#if defined(LUMEN_PS5_NATIVE_METAL)
+	m_context.GetBufferCache().CommitReadOnlyBufferSnapshot();
+#endif
 	if (canonical_index_upload) {
 		// Defer on the tick containing the recorded draw, never an earlier
 		// preparation tick that resource readback might have already completed.

@@ -1,5 +1,5 @@
-// GPU stage contracts use software vertex fetch, as Gen5 shaders do. The same
-// pipeline, descriptors, images and buffers serve several draws in one submission.
+// GPU stage contracts cover Gen5 software fetch and Gen4 fixed vertex input.
+// The same pipeline, descriptors, images and buffers serve several draws in one submission.
 #include "NativeMetalPrimitiveShaders.inc"
 
 namespace PrimitiveContract {
@@ -55,7 +55,7 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
     const std::vector<u32> &indices, std::span<const PrimitiveContractDraw> draws,
     vk::PrimitiveTopology topology, vk::Format color_format,
     const CompiledShader *fragment_resources, std::span<const u32> fragment_constants,
-    const Image *fragment_texture, vk::Sampler fragment_sampler) {
+    const Image *fragment_texture, vk::Sampler fragment_sampler, bool fixed_vertex_input) {
   using namespace PrimitiveContract;
   const bool tessellated = !control.empty();
   const bool fragment_buffer = fragment_resources != nullptr;
@@ -143,7 +143,12 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
   std::vector<u32> guarded_vertices(4, Guard);
   guarded_vertices.insert(guarded_vertices.end(), vertices.begin(), vertices.end());
   guarded_vertices.insert(guarded_vertices.end(), 4, Guard);
-  auto vertex_buffer = CreateStorageBuffer(name, guarded_vertices, guarded_vertices.size());
+  auto vertex_buffer = fixed_vertex_input
+      ? CreateHostBuffer(name, guarded_vertices.size() * sizeof(u32),
+                         vk::BufferUsageFlagBits::eVertexBuffer |
+                             vk::BufferUsageFlagBits::eStorageBuffer,
+                         guarded_vertices)
+      : CreateStorageBuffer(name, guarded_vertices, guarded_vertices.size());
   std::vector<u32> guarded_indices(4, Guard);
   guarded_indices.insert(guarded_indices.end(), indices.begin(), indices.end());
   guarded_indices.insert(guarded_indices.end(), 4, Guard);
@@ -244,6 +249,28 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
       vk::ImageUsageFlagBits::eColorAttachment, {}, words_per_pixel, vk::ImageLayout::eGeneral,
       vk::ImageType::e2D, vk::ImageViewType::e2D, 1);
   vk::PipelineVertexInputStateCreateInfo vertex_input{};
+  const vk::VertexInputBindingDescription vertex_binding{0, 8 * sizeof(u32),
+                                                        vk::VertexInputRate::eVertex};
+  const std::array vertex_attributes{
+      vk::VertexInputAttributeDescription{0, 0, vk::Format::eR32G32B32A32Sfloat, 0},
+      vk::VertexInputAttributeDescription{1, 0, vk::Format::eR32G32B32A32Sfloat, 4 * sizeof(u32)}};
+  const bool dynamic_stride = fixed_vertex_input && std::ranges::any_of(
+      draws, [](const auto &draw) { return draw.vertex_stride.has_value(); });
+  const bool dynamic_cull = std::ranges::any_of(
+      draws, [](const auto &draw) { return draw.raster_cull_mode.has_value(); });
+  std::vector<vk::DynamicState> dynamic_states;
+  if (dynamic_stride) dynamic_states.push_back(vk::DynamicState::eVertexInputBindingStride);
+  if (dynamic_cull) dynamic_states.push_back(vk::DynamicState::eCullMode);
+  const vk::PipelineDynamicStateCreateInfo dynamic_state{
+      .dynamicStateCount = static_cast<u32>(dynamic_states.size()),
+      .pDynamicStates = dynamic_states.data(),
+  };
+  if (fixed_vertex_input) {
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &vertex_binding;
+    vertex_input.vertexAttributeDescriptionCount = static_cast<u32>(vertex_attributes.size());
+    vertex_input.pVertexAttributeDescriptions = vertex_attributes.data();
+  }
   vk::PipelineInputAssemblyStateCreateInfo assembly{};
   assembly.topology = tessellated ? vk::PrimitiveTopology::ePatchList : topology;
   vk::PipelineTessellationStateCreateInfo tessellation{};
@@ -281,6 +308,7 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
   pipeline_info.pRasterizationState = &raster;
   pipeline_info.pMultisampleState = &samples;
   pipeline_info.pColorBlendState = &blend;
+  pipeline_info.pDynamicState = dynamic_states.empty() ? nullptr : &dynamic_state;
   pipeline_info.layout = layout;
   vk::Pipeline pipeline{};
   RequireVk(name, "graphics pipeline", m_device.createGraphicsPipelines(nullptr, 1,
@@ -318,6 +346,18 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
         vk::AccessFlagBits::eColorAttachmentWrite, 1, 1);
     cmd.beginRendering(&rendering);
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+    if (dynamic_cull) {
+      cmd.setCullMode(draw.raster_cull_mode.value_or(vk::CullModeFlagBits::eNone));
+    }
+    const vk::DeviceSize vertex_stride = draw.vertex_stride.value_or(vertex_binding.stride);
+    if (fixed_vertex_input) {
+      const vk::DeviceSize offset = 4 * sizeof(u32);
+      if (dynamic_stride) {
+        cmd.bindVertexBuffers2(0, 1, &vertex_buffer.buffer, &offset, nullptr, &vertex_stride);
+      } else {
+        cmd.bindVertexBuffers(0, 1, &vertex_buffer.buffer, &offset);
+      }
+    }
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 0, 1, &set, 0, nullptr);
     cmd.pushConstants(layout, push_stages, 0, sizeof(draw.push), draw.push.data());
     if (fragment_buffer) {
@@ -333,7 +373,8 @@ std::vector<std::vector<u32>> VulkanHarness::RenderPrimitiveContract(
       cmd.drawIndexed(draw.vertex_count, draw.instance_count, draw.first_index,
                       draw.vertex_offset, draw.first_instance);
     } else {
-      Require(name, "vertex range", (draw.first_vertex + draw.vertex_count) * 8 <= vertices.size(),
+      Require(name, "vertex range",
+              (draw.first_vertex + draw.vertex_count) * vertex_stride <= vertices.size() * sizeof(u32),
               "direct fixture references unavailable vertices");
       cmd.draw(draw.vertex_count, draw.instance_count, draw.first_vertex, draw.first_instance);
     }
@@ -469,6 +510,69 @@ void VulkanHarness::CheckNativeTessellation() {
   Solid("TessellationIndexedBaseVertex", offset_pixels[1], Color);
   Solid("TessellationInstances", offset_pixels[2], {Color[0], Color[1], Color[2] + 0.125f, 1});
   Solid("TessellationDrawStateReuse", offset_pixels[3], Color);
+
+  const auto fixed_vertex = AssembleNativeMetalContract(PrimitiveContractSpv::FixedVertexInput);
+  // The quad TES maps the default upper-left domain directly to framebuffer
+  // axes. Its declared CW winding must match the explicit CW triangle pair.
+  auto cull_front = quad_draw;
+  cull_front.raster_cull_mode = vk::CullModeFlagBits::eFront;
+  auto cull_back = quad_draw;
+  cull_back.raster_cull_mode = vk::CullModeFlagBits::eBack;
+  const std::array quad_cull_draws{cull_front, cull_back};
+  cull_front.indexed = cull_back.indexed = true;
+  cull_front.vertex_count = cull_back.vertex_count = 6;
+  const std::array triangle_cull_draws{cull_front, cull_back};
+  const auto square_vertices = Vertices(square);
+  const auto triangle_cull_pixels = RenderPrimitiveContract("TriangleFaceCull", fixed_vertex, {},
+      {}, fragment, 0, square_vertices, {0, 1, 2, 1, 3, 2}, triangle_cull_draws,
+      vk::PrimitiveTopology::eTriangleList, vk::Format::eR32G32B32A32Sfloat,
+      nullptr, {}, nullptr, nullptr, true);
+  Solid("TriangleCullFront", triangle_cull_pixels[0], Color);
+  Solid("TriangleCullBack", triangle_cull_pixels[1], {});
+  const auto quad_cull_pixels = RenderPrimitiveContract("TessellationFaceCull", fixed_vertex,
+      control4, quad, fragment, 4, square_vertices, {}, quad_cull_draws,
+      vk::PrimitiveTopology::eTriangleList, vk::Format::eR32G32B32A32Sfloat,
+      nullptr, {}, nullptr, nullptr, true);
+  Solid("TessellationCullFront", quad_cull_pixels[0], Color);
+  Solid("TessellationCullBack", quad_cull_pixels[1], {});
+
+  const auto render_fixed = [&](const std::vector<u32> &data,
+                                std::span<const PrimitiveContractDraw> fixed_draws) {
+    return RenderPrimitiveContract("TessellationFixedVertexInput", fixed_vertex, control3,
+        triangle, fragment, 3, data, {1, 0, 1, 2, 2, 3, 4}, fixed_draws,
+        vk::PrimitiveTopology::eTriangleList, vk::Format::eR32G32B32A32Sfloat,
+        nullptr, {}, nullptr, nullptr, true);
+  };
+  auto negative_base = indexed;
+  negative_base.first_index = 4;
+  negative_base.vertex_offset = -1;
+  const std::array fixed_draws{direct, indexed, negative_base};
+  const auto fixed_pixels = render_fixed(offset_vertices, fixed_draws);
+  Solid("TessellationFixedFirstVertex", fixed_pixels[0], Color);
+  Solid("TessellationFixedIndexedBaseVertex", fixed_pixels[1], Color);
+  Solid("TessellationFixedIndexedNegativeBaseVertex", fixed_pixels[2], Color);
+
+  auto strided_vertices = offset_vertices;
+  auto wide_color = Color;
+  wide_color[0] = 0.875f;
+  for (size_t first_word = 8; first_word < offset_vertices.size(); first_word += 8) {
+    const auto start = offset_vertices.begin() + first_word;
+    strided_vertices.insert(strided_vertices.end(), start, start + 8);
+    strided_vertices[strided_vertices.size() - 4] = std::bit_cast<u32>(wide_color[0]);
+    strided_vertices.insert(strided_vertices.end(), 8, Guard);
+  }
+  auto wide = Draw();
+  wide.first_vertex = 2;
+  wide.vertex_stride = 16 * sizeof(u32);
+  auto constant = direct;
+  constant.vertex_stride = 0;
+  const std::array stride_draws{direct, wide, constant, indexed, direct};
+  const auto stride_pixels = render_fixed(strided_vertices, stride_draws);
+  Solid("TessellationFixedInitialStride", stride_pixels[0], Color);
+  Solid("TessellationFixedWiderStride", stride_pixels[1], wide_color);
+  Solid("TessellationFixedConstantStride", stride_pixels[2], {});
+  Solid("TessellationFixedRestoredIndexedStride", stride_pixels[3], Color);
+  Solid("TessellationFixedRestoredDirectStride", stride_pixels[4], Color);
 
   constexpr std::array<std::array<float, 2>, 6> patch_positions{{
       {-1, -1}, {0, -1}, {-1, 1}, {0, -1}, {1, -1}, {1, 1}}};

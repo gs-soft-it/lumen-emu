@@ -2,9 +2,9 @@
 # The complete direct Gen5 graph owns one C13 translator, including the same
 # verified Darwin overlay and configuration closure used by native Gen4.
 include_guard(GLOBAL)
-if(NOT APPLE OR CMAKE_CROSSCOMPILING OR
+if(NOT APPLE OR (CMAKE_CROSSCOMPILING AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS") OR
    NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64" OR NOT LUMEN_PS5_DIRECT_FEX)
-  message(FATAL_ERROR "Gen5 direct FEX requires native macOS arm64")
+  message(FATAL_ERROR "Gen5 direct FEX requires native macOS or iOS arm64")
 endif()
 if(TARGET fmt::fmt OR TARGET FEXCore OR TARGET lumen_macos_fexcore_runtime)
   message(FATAL_ERROR "The Gen5 direct runtime must own an isolated CPU/dependency graph")

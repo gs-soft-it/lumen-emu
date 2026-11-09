@@ -24,11 +24,21 @@ target_include_directories(lumen_ps5_native_metal PRIVATE
   "${metal_repository}/source/3rdparty/vulkan/include")
 target_link_libraries(lumen_ps5_native_metal PRIVATE
   Lumen::SpirvCrossMsl Vulkan::Headers)
-foreach(framework IN ITEMS Metal QuartzCore Foundation AppKit)
+set(metal_frameworks Metal QuartzCore Foundation)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  list(APPEND metal_frameworks UIKit)
+else()
+  list(APPEND metal_frameworks AppKit)
+endif()
+foreach(framework IN LISTS metal_frameworks)
   find_library(LUMEN_PS5_${framework}_FRAMEWORK NAMES "${framework}" REQUIRED)
   target_link_libraries(lumen_ps5_native_metal PUBLIC "${LUMEN_PS5_${framework}_FRAMEWORK}")
 endforeach()
 # Keep the engine's static dispatch entry point in the executable.
 target_link_options(lumen_ps5_native_metal INTERFACE
-  "LINKER:-u,_vkGetInstanceProcAddr" "LINKER:-exported_symbol,_vkGetInstanceProcAddr")
+  "LINKER:-u,_vkGetInstanceProcAddr")
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  target_link_options(lumen_ps5_native_metal INTERFACE
+    "LINKER:-exported_symbol,_vkGetInstanceProcAddr")
+endif()
 message(STATUS "Gen5 graphics: native Metal (source-owned static backend)")

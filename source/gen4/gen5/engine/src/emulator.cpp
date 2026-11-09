@@ -31,13 +31,19 @@
 #include <cstdlib>
 #include <filesystem>
 #include <thread>
+#if defined(LUMEN_IOS_FEX_MODULE)
+extern "C" [[noreturn]] void LumenIOSFexModuleParkV1();
+extern "C" void LumenIOSFexModuleExecutionStartedV1();
+#endif
 
 namespace Emulator {
 
 static void PrintSystemInfo() {
 	const Common::SystemInfo info = Common::GetSystemInfo();
 
-#if defined(__APPLE__)
+#if defined(LUMEN_IOS_FEX_MODULE)
+	static constexpr auto platform_name = "iOS";
+#elif defined(__APPLE__)
 	static constexpr auto platform_name = "macOS";
 #elif KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	static constexpr auto platform_name = "Windows";
@@ -175,6 +181,9 @@ static void LoadElf(const std::filesystem::path& elf, bool dbg_print_reloc = fal
 }
 
 static void Execute(const std::filesystem::path& game_patch) {
+#if defined(LUMEN_IOS_FEX_MODULE)
+	LumenIOSFexModuleExecutionStartedV1();
+#endif
 	auto           patch_path = game_patch;
 	Common::Thread guest_thread(
 	    [](void* param) {
@@ -183,7 +192,11 @@ static void Execute(const std::filesystem::path& game_patch) {
 	    },
 	    &patch_path);
 	Libs::Graphics::WindowRun();
+#if defined(LUMEN_IOS_FEX_MODULE)
+	LumenIOSFexModuleParkV1();
+#else
 	std::quick_exit(0);
+#endif
 }
 
 void Run(const RunOptions& options) {

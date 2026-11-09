@@ -3,6 +3,7 @@
 #include "common/logging/log.h"
 #include "common/path_util.h"
 #include "core/emulator_settings.h"
+#include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/posix_error.h"
 #include "core/libraries/kernel/threads/pthread.h"
 #include "core/libraries/kernel/threads/sleepq.h"
@@ -15,8 +16,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <pthread.h>
+#include <string_view>
 #include <thread>
 #include <unistd.h>
 
@@ -28,6 +31,11 @@ namespace Libraries::Kernel {
 s32 PS4_SYSV_ABI posix_pthread_mutex_init(PthreadMutexT*, const PthreadMutexAttrT*);
 s32 PS4_SYSV_ABI posix_pthread_mutex_destroy(PthreadMutexT*);
 s32 PS4_SYSV_ABI posix_pthread_mutex_lock(PthreadMutexT*);
+struct PthreadSem;
+s32 PS4_SYSV_ABI posix_sem_init(PthreadSem**, s32, u32);
+s32 PS4_SYSV_ABI posix_sem_destroy(PthreadSem**);
+s32 PS4_SYSV_ABI posix_sem_timedwait(PthreadSem**, const OrbisKernelTimespec*);
+s32 PS4_SYSV_ABI posix_sem_post(PthreadSem**);
 }
 
 namespace Core {
@@ -238,6 +246,44 @@ void CheckRelativeRetryDeadline() {
     waiter.join();
 }
 
+void CheckSemTimedWaitCarry() {
+    const char* selector = std::getenv("LUMEN_EXPERIMENTAL_POSIX_SEM_TIMEDWAIT_CARRY");
+    const bool carry_enabled = selector == nullptr || std::string_view{selector} != "0";
+    constexpr s64 NanosecondsPerSecond = 1'000'000'000;
+    const OrbisKernelTimespec exact{0, NanosecondsPerSecond};
+    PthreadSem* sem{};
+    CHECK(posix_sem_init(&sem, 0, 1) == 0);
+    *__Error() = POSIX_EPERM;
+    CHECK(posix_sem_timedwait(&sem, &exact) == 0);
+    CHECK(*__Error() == POSIX_EPERM);
+    CHECK(posix_sem_timedwait(&sem, &exact) == -1);
+    CHECK(*__Error() == (carry_enabled ? POSIX_ETIMEDOUT : POSIX_EINVAL));
+    CHECK(exact.tv_sec == 0 && exact.tv_nsec == NanosecondsPerSecond);
+
+    for (const auto invalid : {OrbisKernelTimespec{0, -1},
+                               OrbisKernelTimespec{0, NanosecondsPerSecond + 1},
+                               OrbisKernelTimespec{std::numeric_limits<s64>::max(),
+                                                    NanosecondsPerSecond}}) {
+        CHECK(posix_sem_timedwait(&sem, &invalid) == -1);
+        CHECK(*__Error() == POSIX_EINVAL);
+    }
+    if (carry_enabled) {
+        OrbisKernelTimespec now{};
+        CHECK(posix_clock_gettime(ORBIS_CLOCK_REALTIME, &now) == 0);
+        for (const s64 seconds : {now.tv_sec + 1, std::numeric_limits<s64>::max() - 1}) {
+            const OrbisKernelTimespec future{seconds, NanosecondsPerSecond};
+            std::thread poster([&] {
+                std::this_thread::sleep_for(10ms);
+                CHECK(posix_sem_post(&sem) == 0);
+            });
+            CHECK(posix_sem_timedwait(&sem, &future) == 0);
+            poster.join();
+            CHECK(future.tv_sec == seconds && future.tv_nsec == NanosecondsPerSecond);
+        }
+    }
+    CHECK(posix_sem_destroy(&sem) == 0);
+}
+
 enum class CancelAt { BeforeWait, DuringWait, ChainUnlock };
 struct CancelContext {
     ThreadRecord record;
@@ -332,8 +378,9 @@ int main() {
     CheckClock(ClockId::Monotonic);
     CheckFifoAndSignals();
     CheckRelativeRetryDeadline();
+    CheckSemTimedWaitCarry();
     for (const auto at : {CancelAt::BeforeWait, CancelAt::DuringWait, CancelAt::ChainUnlock})
         CheckCancellation(at);
     alarm(0);
-    std::puts("direct-thread-sync=PASS production clock/FIFO/broadcast/deferred-wake/relative-retry/mutex/cancel-relock/chain-guard; target registry, guest exit, native signal delivery, translated execution and GC excluded");
+    std::puts("direct-thread-sync=PASS production clock/FIFO/broadcast/deferred-wake/relative-retry/semaphore-deadline/mutex/cancel-relock/chain-guard; target registry, guest exit, native signal delivery, translated execution and GC excluded");
 }

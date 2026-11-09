@@ -73,6 +73,11 @@ UniqueBuffer::~UniqueBuffer() {
 
 void UniqueBuffer::Create(const vk::BufferCreateInfo& buffer_ci, MemoryUsage usage,
                           VmaAllocationInfo* out_alloc_info) {
+    Create(buffer_ci, usage, out_alloc_info, false);
+}
+
+bool UniqueBuffer::Create(const vk::BufferCreateInfo& buffer_ci, MemoryUsage usage,
+                          VmaAllocationInfo* out_alloc_info, bool allow_failure) {
     const bool with_bda = bool(buffer_ci.usage & vk::BufferUsageFlagBits::eShaderDeviceAddress);
     const VmaAllocationCreateFlags bda_flag =
         with_bda ? VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT : 0;
@@ -89,8 +94,34 @@ void UniqueBuffer::Create(const vk::BufferCreateInfo& buffer_ci, MemoryUsage usa
     VkBuffer unsafe_buffer{};
     VkResult result = vmaCreateBuffer(allocator, &buffer_ci_unsafe, &alloc_ci, &unsafe_buffer,
                                       &allocation, out_alloc_info);
-    ASSERT_MSG(result == VK_SUCCESS, "Failed allocating buffer with error {}",
-               vk::to_string(vk::Result{result}));
+    if (result != VK_SUCCESS) {
+        if (allow_failure) {
+            return false;
+        }
+        const VkPhysicalDeviceMemoryProperties* memory_properties = nullptr;
+        vmaGetMemoryProperties(allocator, &memory_properties);
+        u32 preferred_type = ~0u;
+        const VkResult type_result = vmaFindMemoryTypeIndexForBufferInfo(
+            allocator, &buffer_ci_unsafe, &alloc_ci, &preferred_type);
+        u32 heap_index = ~0u;
+        if (type_result == VK_SUCCESS && preferred_type < memory_properties->memoryTypeCount) {
+            heap_index = memory_properties->memoryTypes[preferred_type].heapIndex;
+        }
+        VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+        vmaGetHeapBudgets(allocator, budgets);
+        const bool heap_known = heap_index < memory_properties->memoryHeapCount;
+        const VmaBudget budget = heap_known ? budgets[heap_index] : VmaBudget{};
+        const VkDeviceSize heap_size = heap_known ? memory_properties->memoryHeaps[heap_index].size : 0;
+        ASSERT_MSG(false,
+                   "Failed allocating buffer with error {} size={:#x} flags={:#x} memory_usage={} "
+                   "preferred_type={} type_result={} heap={} heap_size={:#x} budget={:#x} "
+                   "usage={:#x} block_bytes={:#x} allocation_bytes={:#x}",
+                   vk::to_string(vk::Result{result}), buffer_ci.size,
+                   static_cast<VkBufferUsageFlags>(buffer_ci.usage), BufferTypeName(usage),
+                   preferred_type, vk::to_string(vk::Result{type_result}), heap_index, heap_size,
+                   budget.budget, budget.usage, budget.statistics.blockBytes,
+                   budget.statistics.allocationBytes);
+    }
     buffer = vk::Buffer{unsafe_buffer};
 
     if (with_bda) {
@@ -101,10 +132,15 @@ void UniqueBuffer::Create(const vk::BufferCreateInfo& buffer_ci, MemoryUsage usa
         ASSERT_MSG(bda_result != 0, "Failed to get buffer device address");
         bda_addr = bda_result;
     }
+    return true;
 }
 
 Buffer::Buffer(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_, MemoryUsage usage_,
                VAddr cpu_addr_, vk::BufferUsageFlags flags, u64 size_bytes_)
+    : Buffer{instance_, scheduler_, usage_, cpu_addr_, flags, size_bytes_, false} {}
+
+Buffer::Buffer(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_, MemoryUsage usage_,
+               VAddr cpu_addr_, vk::BufferUsageFlags flags, u64 size_bytes_, bool allow_failure)
     : cpu_addr{cpu_addr_}, size_bytes{size_bytes_}, instance{&instance_}, scheduler{&scheduler_},
       usage{usage_}, buffer{instance->GetDevice(), instance->GetAllocator()} {
     // Create buffer object.
@@ -113,7 +149,9 @@ Buffer::Buffer(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
         .usage = flags,
     };
     VmaAllocationInfo alloc_info{};
-    buffer.Create(buffer_ci, usage, &alloc_info);
+    if (!buffer.Create(buffer_ci, usage, &alloc_info, allow_failure)) {
+        return;
+    }
 
     const auto device = instance->GetDevice();
     Vulkan::SetObjectName(device, Handle(), "Buffer {:#x}:{:#x}", cpu_addr, size_bytes);
@@ -191,12 +229,30 @@ constexpr u64 WATCHES_RESERVE_CHUNK = 0x1000;
 
 StreamBuffer::StreamBuffer(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
                            MemoryUsage usage, u64 size_bytes)
-    : Buffer{instance, scheduler, usage, 0, AllFlags, size_bytes} {
+    : StreamBuffer{instance, scheduler, usage, size_bytes, false} {}
+
+StreamBuffer::StreamBuffer(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
+                           MemoryUsage usage, u64 size_bytes, bool allow_failure)
+    : Buffer{instance, scheduler, usage, 0, AllFlags, size_bytes, allow_failure} {
+    if (!Handle()) {
+        return;
+    }
     ReserveWatches(current_watches, WATCHES_INITIAL_RESERVE);
     ReserveWatches(previous_watches, WATCHES_INITIAL_RESERVE);
     const auto device = instance.GetDevice();
     Vulkan::SetObjectName(device, Handle(), "StreamBuffer({}):{:#x}", BufferTypeName(usage),
                           size_bytes);
+}
+
+std::unique_ptr<StreamBuffer> StreamBuffer::TryCreateCoherent(const Vulkan::Instance& instance,
+                                                             Vulkan::Scheduler& scheduler,
+                                                             u64 size_bytes) {
+    auto stream = std::unique_ptr<StreamBuffer>{
+        new StreamBuffer{instance, scheduler, MemoryUsage::Stream, size_bytes, true}};
+    if (!stream->is_coherent || stream->mapped_data.empty()) {
+        return {};
+    }
+    return stream;
 }
 
 std::pair<u8*, u64> StreamBuffer::Map(u64 size, u64 alignment, bool allow_wait) {

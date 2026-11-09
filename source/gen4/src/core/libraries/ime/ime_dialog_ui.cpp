@@ -784,22 +784,11 @@ void ImeDialogUi::Draw() {
     const float scale_y = viewport.scale_y;
     const float ui_scale = viewport.ui_scale;
 
-    ImVec2 window_size;
-    const bool has_panel_size = (has_layout && layout.width > 0 && layout.height > 0) ||
-                                (state->panel_req_width > 0 && state->panel_req_height > 0);
-    if (has_layout && layout.width > 0 && layout.height > 0) {
-        window_size = {layout.width * scale_x, layout.height * scale_y};
-    } else if (state->panel_req_width > 0 && state->panel_req_height > 0) {
-        window_size = {static_cast<float>(state->panel_req_width) * scale_x,
-                       static_cast<float>(state->panel_req_height) * scale_y};
-    } else {
-        window_size = {std::min(std::max(0.0f, viewport_size.x - 40.0f), 640.0f),
-                       std::min(std::max(0.0f, viewport_size.y - 40.0f), 420.0f)};
-    }
-    if (!has_panel_size) {
-        window_size.x = std::max(window_size.x, 320.0f);
-        window_size.y = std::max(window_size.y, 240.0f);
-    }
+    const bool has_layout_size = has_layout && layout.width > 0 && layout.height > 0;
+    const u32 panel_req_w = has_layout_size ? layout.width : state->panel_req_width;
+    const u32 panel_req_h = has_layout_size ? layout.height : state->panel_req_height;
+    const ImVec2 window_size =
+        Libraries::Ime::ComputeImePanelSize(viewport, panel_req_w, panel_req_h);
 
     const float panel_w = window_size.x;
     const float panel_h = window_size.y;
@@ -1195,17 +1184,13 @@ void ImeDialogUi::Draw() {
         if (first_render) {
             const auto game_res = DebugState.game_resolution;
             const auto out_res = DebugState.output_resolution;
-            const float req_w = has_layout ? static_cast<float>(layout.width)
-                                           : static_cast<float>(state->panel_req_width);
-            const float req_h = has_layout ? static_cast<float>(layout.height)
-                                           : static_cast<float>(state->panel_req_height);
             LOG_INFO(Lib_ImeDialog,
                      "ImeDialog UI metrics: game_res={}x{}, out_res={}x{}, viewport_pos=({}, {}), "
                      "viewport_size=({}, {}), base={}x{}, scale=({:.4f}, {:.4f}), "
                      "panel_req=({}, {}), panel_scaled=({}, {})",
                      game_res.first, game_res.second, out_res.first, out_res.second,
                      viewport_offset.x, viewport_offset.y, viewport_size.x, viewport_size.y,
-                     viewport.base_w, viewport.base_h, scale_x, scale_y, req_w, req_h,
+                     viewport.base_w, viewport.base_h, scale_x, scale_y, panel_req_w, panel_req_h,
                      window_size.x, window_size.y);
         }
 

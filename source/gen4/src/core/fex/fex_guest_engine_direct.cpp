@@ -2,6 +2,7 @@
 
 #include "fex_guest_engine.h"
 #include "host_mapping_snapshot.h"
+#include "darwin_jit.h"
 
 // Ucontext layout only — do not include pthread.h here. pthread → semaphore →
 // assert → log → spdlog, which the FEXCore-only guest harness does not provide.
@@ -26,7 +27,9 @@
 #endif
 #if defined(__APPLE__)
 #include <mach/mach.h>
+#if !TARGET_OS_IPHONE
 #include <mach/mach_vm.h>
+#endif
 #include <FEXCore/Utils/AllocatorHooks.h>
 #endif
 
@@ -80,6 +83,14 @@ constexpr uint64_t kInvalidationInitial = 0x0123'4567'89ab'cdefULL;
 constexpr uint64_t kInvalidationUpdated = 0xfedc'ba98'7654'3210ULL;
 
 std::atomic_uint32_t FexBlockTraceCount {};
+
+void FlushInstructionCache(void* begin, std::size_t size) {
+#if defined(__APPLE__)
+  sys_icache_invalidate(begin, size);
+#else
+  __builtin___clear_cache(static_cast<char*>(begin), static_cast<char*>(begin) + size);
+#endif
+}
 
 #if defined(__aarch64__)
 std::uintptr_t HostProgramCounter(const ucontext_t* context) noexcept {
@@ -141,10 +152,14 @@ bool IsHostAlignmentFault(const siginfo_t* info, const ucontext_t* context) noex
 
 FEXCore::Core::InternalThreadState* CreateNativeThread(FEXCore::Context::Context& context,
                                                        std::uintptr_t rip, std::uintptr_t rsp) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+  return FEXCore::Allocator::WithJITWriteProtection([&] { return context.CreateThread(rip, rsp); });
+#else
 #if defined(__APPLE__)
   FEXCore::Allocator::ScopedJITWriteProtection writableJit;
 #endif
   return context.CreateThread(rip, rsp);
+#endif
 }
 
 // Forward-declare so ActiveFexExecution can hold the HLE bridge for deferred flush.
@@ -294,14 +309,27 @@ bool RangesOverlap(const GuestExecutionRange& lhs, const GuestExecutionRange& rh
 EngineResult<std::vector<detail::HostMapping>> CaptureHostMappings() {
 #if defined(__APPLE__)
   std::vector<detail::HostMapping> mappings;
+#if TARGET_OS_IPHONE
+  vm_address_t cursor = 0;
+#else
   mach_vm_address_t cursor = 0;
+#endif
   for (;;) {
+#if TARGET_OS_IPHONE
+    vm_address_t begin = cursor;
+    vm_size_t size = 0;
+#else
     mach_vm_address_t begin = cursor;
     mach_vm_size_t size = 0;
+#endif
     vm_region_basic_info_data_64_t information {};
     mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
     mach_port_t object = MACH_PORT_NULL;
+#if TARGET_OS_IPHONE
+    const auto result = vm_region_64(mach_task_self(), &begin, &size,
+#else
     const auto result = mach_vm_region(mach_task_self(), &begin, &size,
+#endif
         VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&information), &count, &object);
     if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
     if (result == KERN_INVALID_ADDRESS && !mappings.empty()) return mappings;
@@ -500,6 +528,11 @@ public:
   }
 
   [[nodiscard]] EngineResult<bool> Protect(int protection) {
+#if defined(__APPLE__)
+    // These mappings contain x86 decoder input or guest data. Native ARM64
+    // instructions live in FEX's MAP_JIT allocator, not these sealed pages.
+    protection &= ~PROT_EXEC;
+#endif
     if (mprotect(Address, Size, protection) != 0) {
       return Failure(EngineStage::Mapping, errno);
     }
@@ -1160,6 +1193,17 @@ bool LumenHostQueryGuestRipSyscall(uint64_t* out_rip, uint64_t* out_syscall) noe
   return true;
 }
 
+bool LumenHostQueryGuestRipFromHostPc(std::uintptr_t host_pc, std::uint64_t* guest_rip) noexcept {
+  const auto& exec = ActiveFexExecution;
+  if (guest_rip == nullptr || exec.Context == nullptr || exec.Thread == nullptr ||
+      exec.Thread->CurrentFrame == nullptr ||
+      !exec.Context->IsAddressInCodeBuffer(exec.Thread, host_pc)) {
+    return false;
+  }
+  *guest_rip = exec.Context->RestoreRIPFromHostPC(exec.Thread, host_pc);
+  return true;
+}
+
 void FlushPendingGuestOrbisSignal() {
   // Called from blocking HLE waits (semaphore/cond) to deliver a queued Orbis
   // guest signal at a safe point on the parked guest thread. Runs the guest
@@ -1268,9 +1312,18 @@ bool HandleGuestSignal(int signal, siginfo_t* info, void* rawContext) noexcept {
 #if defined(__APPLE__)
   FEXCore::Allocator::ScopedJITWriteProtection writableJit;
 #endif
-  const auto adjustment = FEXCore::ArchHelpers::Arm64::HandleUnalignedAccess(
+  const auto adjustment =
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+      FEXCore::Allocator::WithJITWriteProtection([&] {
+        return FEXCore::ArchHelpers::Arm64::HandleUnalignedAccess(
+          ActiveFexExecution.Thread,
+          FEXCore::ArchHelpers::Arm64::UnalignedHandlerType::HalfBarrier, pc, registers.data());
+      });
+#else
+      FEXCore::ArchHelpers::Arm64::HandleUnalignedAccess(
       ActiveFexExecution.Thread,
       FEXCore::ArchHelpers::Arm64::UnalignedHandlerType::HalfBarrier, pc, registers.data());
+#endif
   if (!adjustment.has_value()) {
     return false;
   }
@@ -1319,7 +1372,7 @@ public:
     Mapping code {PageSize, PROT_READ | PROT_WRITE};
     if (!code.IsValid()) return Failure(EngineStage::Mapping, code.Error());
     std::memcpy(code.Get(), guest.Bytes.data(), guest.Bytes.size());
-    __builtin___clear_cache(reinterpret_cast<char*>(code.Get()), reinterpret_cast<char*>(code.Get()) + PageSize);
+    FlushInstructionCache(code.Get(), PageSize);
     const auto codeProtection = code.Protect(PROT_READ);
     if (const auto* error = std::get_if<EngineFailure>(&codeProtection)) return *error;
 
@@ -1434,7 +1487,7 @@ public:
       const auto writable = code.Protect(PROT_READ | PROT_WRITE);
       if (const auto* error = std::get_if<EngineFailure>(&writable)) return *error;
       std::memcpy(invalidationImmediate, &kInvalidationUpdated, sizeof(kInvalidationUpdated));
-      __builtin___clear_cache(reinterpret_cast<char*>(code.Get()), reinterpret_cast<char*>(code.Get()) + PageSize);
+      FlushInstructionCache(code.Get(), PageSize);
       const auto executable = code.Protect(PROT_READ);
       if (const auto* error = std::get_if<EngineFailure>(&executable)) return *error;
       Context->InvalidateCodeBuffersCodeRange(invalidationRip, 11);
@@ -1534,9 +1587,11 @@ GuestEngine::~GuestEngine() {
 EngineResult<std::unique_ptr<GuestEngine>> GuestEngine::Create(GuestBridge& bridge) {
   const auto pageSize = sysconf(_SC_PAGESIZE);
 #if defined(__APPLE__)
-  if (pageSize != 16384 || !pthread_jit_write_protect_supported_np())
-    return Failure(EngineStage::Mapping, ENOTSUP);
+  if (const int error = ProbeDarwinJit(); error != 0)
+    return Failure(EngineStage::Mapping, error);
+#if !TARGET_OS_IPHONE
   pthread_jit_write_protect_np(1);
+#endif
 #else
   if (pageSize != kRequiredPageSize) return Failure(EngineStage::Mapping, ENOTSUP);
 #endif
@@ -1563,8 +1618,7 @@ EngineResult<std::unique_ptr<GuestEngine>> GuestEngine::Create(GuestBridge& brid
     return fail(Failure(EngineStage::Mapping, impl->FunctionReturn->Error()));
   }
   *static_cast<uint8_t*>(impl->FunctionReturn->Get()) = 0xf4;
-  __builtin___clear_cache(static_cast<char*>(impl->FunctionReturn->Get()),
-                          static_cast<char*>(impl->FunctionReturn->Get()) + impl->PageSize);
+  FlushInstructionCache(impl->FunctionReturn->Get(), impl->PageSize);
   const auto functionProtection = impl->FunctionReturn->Protect(PROT_READ | PROT_EXEC);
   if (const auto* failure = std::get_if<EngineFailure>(&functionProtection)) {
     return fail(*failure);
@@ -1578,8 +1632,7 @@ EngineResult<std::unique_ptr<GuestEngine>> GuestEngine::Create(GuestBridge& brid
   auto* callbackReturn = static_cast<uint8_t*>(impl->CallbackReturn->Get());
   callbackReturn[0] = 0x0f;
   callbackReturn[1] = 0x3e;
-  __builtin___clear_cache(static_cast<char*>(impl->CallbackReturn->Get()),
-                          static_cast<char*>(impl->CallbackReturn->Get()) + impl->PageSize);
+  FlushInstructionCache(impl->CallbackReturn->Get(), impl->PageSize);
   const auto callbackProtection = impl->CallbackReturn->Protect(PROT_READ | PROT_EXEC);
   if (const auto* failure = std::get_if<EngineFailure>(&callbackProtection)) {
     return fail(*failure);
@@ -1591,10 +1644,14 @@ EngineResult<std::unique_ptr<GuestEngine>> GuestEngine::Create(GuestBridge& brid
   impl->Context->SetSyscallHandler(impl->Syscalls.get());
   impl->Context->EnableExitOnHLT();
   const bool initialized = [&] {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    return FEXCore::Allocator::WithJITWriteProtection([&] { return impl->Context->InitCore(); });
+#else
 #if defined(__APPLE__)
     FEXCore::Allocator::ScopedJITWriteProtection writableJit;
 #endif
     return impl->Context->InitCore();
+#endif
   }();
   if (!initialized) {
     return fail(Failure(EngineStage::Context, EIO));

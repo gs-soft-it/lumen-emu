@@ -206,6 +206,12 @@ struct BufferCacheTestAccess {
                       MemoryUsage::Upload, size);
   }
 
+  static void SetUnusedBdaPageTableSize(BufferCache &cache, uint64_t size) {
+    std::destroy_at(&cache.m_bda_pagetable_buffer);
+    std::construct_at(&cache.m_bda_pagetable_buffer, cache.m_graphics,
+                      cache.m_scheduler, MemoryUsage::DeviceLocal, 0, AllFlags, size);
+  }
+
   static bool SynchronizeBufferFromImage(BufferCache &cache, Buffer &buffer,
                                          uint64_t address, uint64_t size) {
     return cache.SynchronizeBufferFromImage(buffer, address, size);
@@ -464,14 +470,14 @@ struct RenderExecutorTestAccess {
       stages[1] = &*result.pixel;
     }
     executor.PrepareGraphicsBindings(
-        std::span{stages.data(), pixel_active ? 2u : 1u}, {});
+        std::span{stages.data(), pixel_active ? 2u : 1u}, {}, {});
     return result;
   }
 
   static void PrepareGraphicsBindings(RenderExecutor &executor,
                                       std::span<PreparedBindings *const> stages,
                                       std::span<RenderColorInfo> colors) {
-    executor.PrepareGraphicsBindings(stages, colors);
+    executor.PrepareGraphicsBindings(stages, colors, {});
   }
 
   static PipelineCache::Pipeline
@@ -1403,7 +1409,9 @@ struct TestCase {
   std::vector<u32> storage_buffer_offsets;
   std::vector<std::pair<u32, u32>> storage_buffer_ranges;
   std::vector<BdaMapping> bda_mappings;
-  std::optional<uint64_t> fault_free_address;
+  uint64_t bda_page_table_range = 0;
+  std::vector<std::pair<uint64_t, u32>> bda_fault_words;
+  bool bounded_bda_pagetable = false;
   bool expand_shader_data_storage = false;
   bool expected_force_point_sampler = false;
   float expected_float_tolerance = 0.0f;
@@ -1476,6 +1484,8 @@ struct PrimitiveContractDraw {
   bool indexed = false;
   u32 first_index = 0;
   int32_t vertex_offset = 0;
+  std::optional<vk::DeviceSize> vertex_stride;
+  std::optional<vk::CullModeFlags> raster_cull_mode;
 };
 
 std::array<u32, 64> MakeNativeUserData(const std::array<u32, 64> *source) {
@@ -1751,6 +1761,7 @@ CompiledShader CompileCase(const TestCase &test, u32 host_subgroup_size = 64) {
   ShaderRecompiler::CompileOptions options;
   options.stage = ShaderType::Compute;
   options.maintenance8_enabled = true;
+  if (test.bounded_bda_pagetable) options.bounded_bda_pagetable = true;
   options.dump_ir = true;
   auto compute_info = test.compute_info;
   compute_info.host_subgroup_size = host_subgroup_size;
@@ -2103,7 +2114,8 @@ public:
       vk::Format color_format = vk::Format::eR32G32B32A32Sfloat,
       const CompiledShader *fragment_resources = nullptr,
       std::span<const u32> fragment_constants = {},
-      const Image *fragment_texture = nullptr, vk::Sampler fragment_sampler = nullptr);
+      const Image *fragment_texture = nullptr, vk::Sampler fragment_sampler = nullptr,
+      bool fixed_vertex_input = false);
   explicit VulkanHarness(Profile profile = Profile::FullShaderSuite) : m_profile(profile) { Init(); }
   ~VulkanHarness() { Destroy(); }
 
@@ -5963,7 +5975,14 @@ public:
     constexpr uintptr_t base = 0x0000000207b00000ull;
     constexpr uint64_t page = BufferCache::CACHING_PAGESIZE;
     constexpr std::array<uint64_t, 3> page_counts{2, 521, 525};
-    constexpr uint64_t result_entries = page_counts[0] + page_counts[1] + page_counts[2];
+    constexpr uint64_t table_limit = base + (page_counts.back() + 1) * page;
+    constexpr auto table_size = BufferCache::BdaPageTableSizeForGuestLimit(table_limit);
+    constexpr uint64_t result_entries = page_counts[0] + page_counts[1] + page_counts[2] + 1;
+    static_assert(BufferCache::BdaPageTableSizeForGuestLimit(0x8000000000ull) == 256ull * 1024 * 1024);
+    static_assert(BufferCache::BdaPageTableSizeForGuestLimit(
+        LibKernel::Memory::kExtendedMemoryBase + LibKernel::Memory::kExtendedMemorySize) ==
+        BufferCache::BDA_PAGETABLE_SIZE);
+    static_assert(table_size / sizeof(vk::DeviceAddress) == BufferCache::PageIndex(table_limit));
     EnsureRuntimeContext();
     RenderContext context(m_runtime_context);
     auto &scheduler = context.GetCommandScheduler();
@@ -5974,6 +5993,7 @@ public:
     auto &cache = context.GetBufferCache();
     // A small real ring exercises chunking and waits for same-command-buffer reuse.
     BufferCacheTestAccess::SetUnusedStagingBufferSize(cache, 4096);
+    BufferCacheTestAccess::SetUnusedBdaPageTableSize(cache, table_size);
     auto &table = *cache.GetBdaPageTableBuffer();
     const auto table_offset = BufferCache::PageIndex(base) * sizeof(vk::DeviceAddress);
     auto readback = CreateHostBuffer(name, result_entries * sizeof(vk::DeviceAddress),
@@ -5999,6 +6019,18 @@ public:
                   (pages == page_counts.front() || scheduler.CurrentTick() > previous_tick),
               "BDA registration failed to replace its owner or wait for staging-ring reuse");
     }
+    // Extending an overlapping stream at the final admitted page must not
+    // prefetch past the shortened table, even when the stream score is high.
+    cache.GetBuffer(cache.FindBuffer(base, page_counts.back() * page)).IncreaseStreamScore(17);
+    const auto &last = cache.GetBuffer(cache.FindBuffer(table_limit - 2 * page, 2 * page));
+    Require(name, "bounded stream growth",
+            last.CpuAddress() == base && last.Size() == table_limit - base,
+            "stream growth crossed the shortened BDA table");
+    const vk::BufferCopy last_copy{table.Size() - sizeof(vk::DeviceAddress),
+                                  expected.size() * sizeof(vk::DeviceAddress),
+                                  sizeof(vk::DeviceAddress)};
+    expected.push_back(last.BufferDeviceAddress() + last.Offset(table_limit - page));
+    scheduler.Current().Handle().copyBuffer(table.Handle(), readback.buffer, 1, &last_copy);
     vk::BufferMemoryBarrier barrier{};
     barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
     barrier.dstAccessMask = vk::AccessFlagBits::eHostRead;
@@ -6495,6 +6527,39 @@ public:
                   wide_download != nullptr && wide_download_offset % 16 == 0,
               "wide/block image readback was not aligned to its texel block");
       resources.MapMemory(base, allocation_size);
+
+#if defined(LUMEN_PS5_NATIVE_METAL)
+      if (Common::UniformMetadata::Enabled()) {
+        auto &buffers = resources.GetBufferCache();
+        constexpr uint64_t guest_offset = 0x2900000;
+        constexpr uint64_t size = 2 * BufferCache::CACHING_PAGESIZE;
+        const auto address = base + guest_offset;
+        std::memset(memory + guest_offset, 0x37, size);
+        const auto id = buffers.FindBuffer(address, size);
+        const auto alignment = m_runtime_context.StorageMinAlignment();
+        const auto tick = scheduler.CurrentTick();
+        const auto [snapshot, offset] =
+            buffers.TrySnapshotReadOnlyBuffer(address, size, alignment, id);
+        Require(name, "coherent read-only snapshot",
+                snapshot != nullptr && snapshot != &buffers.GetBuffer(id) &&
+                    snapshot->IsCoherent() && offset % alignment == 0 &&
+                    scheduler.CurrentTick() == tick &&
+                    std::memcmp(snapshot->Mapped().data() + offset,
+                                memory + guest_offset, size) == 0,
+                "large CPU-owned buffer was not snapshotted without submission");
+        scheduler.Flush();
+        buffers.CommitReadOnlyBufferSnapshot();
+        Require(name, "read-only snapshot reuse",
+                buffers.TrySnapshotReadOnlyBuffer(address, size, alignment, id).first == nullptr,
+                "static input was snapshotted again before its canonical upload");
+        const auto [canonical, canonical_offset] = buffers.ObtainBuffer(address, size, false);
+        Require(name, "read-only snapshot canonical fallback",
+                canonical == &buffers.GetBuffer(id) &&
+                    canonical_offset == canonical->Offset(address) &&
+                    !buffers.IsRegionCpuModified(address, size),
+                "canonical fallback did not synchronize the snapshotted range");
+      }
+#endif
 
       auto sampled =
           MakeLinearDesc(base, sizeof(initial), vk::Format::eR8G8B8A8Srgb,
@@ -17897,8 +17962,11 @@ public:
             "BDA page table and fault buffer must be bound together");
     if (uses_bda) {
       EnsureBdaBuffers(test.name);
+      Require(test.name, "dispatch", test.bda_page_table_range <= m_bda_pagetable_buffer.size,
+              "BDA descriptor range exceeds its backing buffer");
       bda_pagetable_info = {m_bda_pagetable_buffer.buffer, 0,
-                            m_bda_pagetable_buffer.size};
+                            test.bda_page_table_range != 0 ? test.bda_page_table_range
+                                                           : m_bda_pagetable_buffer.size};
       fault_buffer_info = {m_fault_buffer.buffer, 0, m_fault_buffer.size};
       const std::array special_buffers{
           std::pair{Kind::BdaPagetable, &bda_pagetable_info},
@@ -18080,6 +18148,7 @@ public:
     if (test.null_descriptor_fallback) Renderer().GetCommandScheduler().Finish();
 
     vk::CommandBuffer cmd = BeginCommands(test.name, "dispatch");
+    Buffer bda_upload;
     if (uses_bda) {
       Require(test.name, "dispatch", buffer.device_address != 0,
               "BDA test backing has no device address");
@@ -18105,6 +18174,8 @@ public:
       cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
                           vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr,
                           1, barriers.data(), 0, nullptr);
+      std::vector<u32> entry_words;
+      std::vector<vk::BufferCopy> entry_copies;
       for (const auto &[guest_base, backing] : test.bda_mappings) {
         const auto page_offset = guest_base &
                                  (BufferCache::CACHING_PAGESIZE - 1);
@@ -18116,14 +18187,20 @@ public:
             (bytes + BufferCache::CACHING_PAGESIZE - 1) /
             BufferCache::CACHING_PAGESIZE;
         auto address = buffer.device_address + backing - page_offset;
-        auto page = BufferCache::PageIndex(guest_base);
+        const auto page = BufferCache::PageIndex(guest_base);
         for (uint64_t mapped = 0; mapped < pages; mapped++) {
-          cmd.updateBuffer(m_bda_pagetable_buffer.buffer,
-                           (page + mapped) * sizeof(vk::DeviceAddress),
-                           sizeof(address), &address);
+          entry_copies.push_back({entry_words.size() * sizeof(u32),
+                                  (page + mapped) * sizeof(vk::DeviceAddress),
+                                  sizeof(address)});
+          entry_words.push_back(static_cast<u32>(address));
+          entry_words.push_back(static_cast<u32>(address >> 32u));
           address += BufferCache::CACHING_PAGESIZE;
         }
       }
+      bda_upload = CreateHostBuffer(test.name, entry_words.size() * sizeof(u32),
+                                    vk::BufferUsageFlagBits::eTransferSrc, entry_words);
+      cmd.copyBuffer(bda_upload.buffer, m_bda_pagetable_buffer.buffer,
+                     static_cast<u32>(entry_copies.size()), entry_copies.data());
       barriers[0].dstAccessMask = vk::AccessFlagBits::eShaderRead;
       cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
                           vk::PipelineStageFlagBits::eComputeShader, {}, 0,
@@ -18173,27 +18250,36 @@ public:
                           &barrier, 0, nullptr);
     }
     Buffer fault_result;
-    if (test.fault_free_address) {
+    if (!test.bda_fault_words.empty()) {
       Require(test.name, "fault check", uses_bda, "fault check requires BDA");
-      fault_result = CreateHostBuffer(test.name, sizeof(u32),
+      fault_result = CreateHostBuffer(test.name, test.bda_fault_words.size() * sizeof(u32),
                                      vk::BufferUsageFlagBits::eTransferDst, {});
       const vk::MemoryBarrier ready{
           .srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite,
           .dstAccessMask = vk::AccessFlagBits::eTransferRead};
       cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer,
                           vk::PipelineStageFlagBits::eTransfer, {}, 1, &ready, 0, nullptr, 0, nullptr);
-      const vk::BufferCopy region{(BufferCache::PageIndex(*test.fault_free_address) >> 5u) * sizeof(u32),
-                                   0, sizeof(u32)};
-      cmd.copyBuffer(m_fault_buffer.buffer, fault_result.buffer, 1, &region);
+      for (size_t index = 0; index < test.bda_fault_words.size(); ++index) {
+        const vk::BufferCopy region{
+            (BufferCache::PageIndex(test.bda_fault_words[index].first) >> 5u) * sizeof(u32),
+            index * sizeof(u32), sizeof(u32)};
+        Require(test.name, "fault check", region.srcOffset + region.size <= m_fault_buffer.size,
+                "BDA fault word exceeds the fixture bitmap");
+        cmd.copyBuffer(m_fault_buffer.buffer, fault_result.buffer, 1, &region);
+      }
       const vk::MemoryBarrier readable{.srcAccessMask = vk::AccessFlagBits::eTransferWrite,
                                         .dstAccessMask = vk::AccessFlagBits::eHostRead};
       cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost,
                           {}, 1, &readable, 0, nullptr, 0, nullptr);
     }
     EndSubmitAndFree(test.name, "dispatch", cmd);
-    if (test.fault_free_address) {
-      Require(test.name, "fault check", ReadBuffer(test.name, fault_result, 1)[0] == 0u,
-              "suppressed formatted access touched an unmapped page");
+    DestroyBuffer(&bda_upload);
+    if (!test.bda_fault_words.empty()) {
+      const auto words = ReadBuffer(test.name, fault_result, test.bda_fault_words.size());
+      for (size_t index = 0; index < words.size(); ++index) {
+        Require(test.name, "fault check", words[index] == test.bda_fault_words[index].second,
+                "BDA fault bitmap word differs from the requested pages");
+      }
       DestroyBuffer(&fault_result);
     }
     for (const auto view : sampled_mip_views) {
@@ -22458,7 +22544,7 @@ private:
     m_bda_pagetable_buffer =
         CreateDeviceBuffer(shader_name, BufferCache::BDA_PAGETABLE_SIZE, usage);
     m_fault_buffer = CreateDeviceBuffer(
-        shader_name, BufferCache::CACHING_NUMPAGES / 8, usage | vk::BufferUsageFlagBits::eTransferSrc);
+        shader_name, BufferCache::BDA_FAULT_BUFFER_SIZE, usage | vk::BufferUsageFlagBits::eTransferSrc);
   }
 
   Buffer CreateHostBuffer(const char *shader_name, vk::DeviceSize size,
@@ -33653,7 +33739,7 @@ TestCase BufferLoadGpuSelectedDescriptors(u32 wave, ShaderOpcode load) {
   code.push_back(EncodeSopp(0x05, loop - static_cast<u32>(code.size()) - 1u));
   AppendEnd(&code);
   test.bda_mappings = {{GuestBase, 0}};
-  test.fault_free_address = GuestBase + 0x100000u;
+  test.bda_fault_words = {{GuestBase + 0x100000u, 0}};
   test.compute_info.threads_num[0] = 1;
   test.compute_info.threads_num[1] = test.compute_info.threads_num[2] = 1;
   test.compute_info.wave_size = wave;
@@ -36082,6 +36168,42 @@ TestCase FlatVirtualAddressRebasesGuestAllocation() {
   test.initial = {0xfeedfaceu, 0xcafebabeu, 0, 0x12345678u};
   test.expected = {0x12345678u, 0x12345678u, 0, 0xcafebabeu};
   test.bda_mappings = {{GuestBase, 8}, {ExtendedBase, 0}};
+  test.opcodes = {O::V_MOV_B32, O::FLAT_LOAD_DWORD, O::BUFFER_STORE_DWORD,
+                  O::S_ENDPGM};
+  return test;
+}
+
+TestCase FlatVirtualAddressHonorsTrimmedBdaTable() {
+  using O = ShaderOpcode;
+  constexpr uint64_t page = BufferCache::CACHING_PAGESIZE;
+  constexpr uint64_t last_valid = page;
+  constexpr uint64_t first_excluded = 2 * page;
+  constexpr uint64_t invalid_address = LibKernel::Memory::kExtendedMemoryBase -
+      Libs::Graphics::LOWER_ADDRESS_SIZE + (uint64_t{1} << (32 + BufferCache::CACHING_PAGEBITS)) + last_valid;
+  constexpr auto invalid_fault_address = BufferCache::GuestAddress(
+      BufferCache::BDA_INVALID_FAULT_PAGE * page);
+  constexpr u32 value = 0x12345678u;
+  TestCase test;
+  test.name = "FlatVirtualAddressHonorsTrimmedBdaTable";
+  const std::array addresses{last_valid, first_excluded, invalid_address};
+  for (u32 index = 0; index < addresses.size(); ++index) {
+    AppendVMovLiteral(&test.code, 20, static_cast<u32>(addresses[index]));
+    AppendVMovLiteral(&test.code, 21, static_cast<u32>(addresses[index] >> 32u));
+    test.code.push_back(EncodeFlat0(0x0c, 0, 0));
+    test.code.push_back(EncodeFlat1(index, 0x7d, 0, 20));
+    AppendStoreVgpr(&test.code, index, index);
+  }
+  AppendEnd(&test.code);
+  test.initial = {0, 0, 0, value};
+  test.expected = {value, 0, 0, value};
+  // Populate the first excluded physical entry as well. The shader can only
+  // see it by exceeding the bound descriptor, even though the buffer is larger.
+  test.bda_mappings = {{last_valid, 12}, {first_excluded, 12}};
+  test.bda_page_table_range = 2 * sizeof(vk::DeviceAddress);
+  test.bounded_bda_pagetable = true;
+  test.bda_fault_words = {{first_excluded, 1u << BufferCache::PageIndex(first_excluded)},
+                          {invalid_fault_address, 1}};
+  test.required_spirv = {"get_bda_pointer", "OpArrayLength"};
   test.opcodes = {O::V_MOV_B32, O::FLAT_LOAD_DWORD, O::BUFFER_STORE_DWORD,
                   O::S_ENDPGM};
   return test;
@@ -51571,6 +51693,7 @@ int main(int argc, char **argv) {
     VulkanHarness vulkan(VulkanHarness::Profile::MemoryTransfers);
     vulkan.CheckBdaPageTableUploads();
     vulkan.CheckBdaSyncUploads();
+    RunCase(&vulkan, FlatVirtualAddressHonorsTrimmedBdaTable());
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--native-frame-publication-only") == 0) {

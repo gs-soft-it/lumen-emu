@@ -10,7 +10,50 @@
 #define REQUIRE(condition) do { if (!(condition)) { std::fprintf(stderr, "line %d: %s\n", __LINE__, #condition); std::abort(); } } while (false)
 #define SUCCESS(call) REQUIRE((call) == VK_SUCCESS)
 
-static void CheckDelayedEventCompletion(VkDevice device, VkQueue queue, VkCommandBuffer command,
+@interface LumenMetalAutoreleaseProbe : NSObject
+- (instancetype)initWithFlag:(std::atomic<bool>*)flag;
+@end
+
+@implementation LumenMetalAutoreleaseProbe {
+    std::atomic<bool>* _destroyed;
+}
+- (instancetype)initWithFlag:(std::atomic<bool>*)flag {
+    self = [super init];
+    if (self != nil) _destroyed = flag;
+    return self;
+}
+- (void)dealloc {
+    _destroyed->store(true, std::memory_order_release);
+}
+@end
+
+static void CheckSubmitAutorelease(VkQueue queue, VkCommandBuffer command) {
+    std::atomic<bool> destroyed{false};
+    const VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    SUCCESS(vkBeginCommandBuffer(command, &begin));
+    command->operations.push_back({"autorelease-probe", [&destroyed](auto&) {
+        // Force an actual autorelease instead of relying on the optimized ARC
+        // return convention for autoreleased Objective-C method results.
+        CFAutorelease(CFBridgingRetain([[LumenMetalAutoreleaseProbe alloc] initWithFlag:&destroyed]));
+        return VK_SUCCESS;
+    }});
+    SUCCESS(vkEndCommandBuffer(command));
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &command;
+    std::thread worker([&] {
+        SUCCESS(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE));
+        // Check before leaving the worker thread, which has no outer pool.
+        REQUIRE(destroyed.load(std::memory_order_acquire));
+    });
+    worker.join();
+    SUCCESS(vkQueueWaitIdle(queue));
+    SUCCESS(vkResetCommandBuffer(command, 0));
+    std::puts("native Metal command replay autorelease drained on worker before submit returns: PASS");
+}
+
+static void CheckDelayedEventCompletion(VkDevice device, VkQueue queue, VkQueue peer,
+                                       VkCommandBuffer command, VkCommandBuffer tail,
                                        const VkDependencyInfo& dependency) {
     struct CallbackGate {
         std::mutex mutex;
@@ -33,8 +76,8 @@ static void CheckDelayedEventCompletion(VkDevice device, VkQueue queue, VkComman
             SUCCESS(vkResetCommandBuffer(command, 0));
             VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             SUCCESS(vkBeginCommandBuffer(command, &begin));
-            // Delay CPU notification while the real GPU timeline is free to
-            // advance. This models a descheduled Metal completion callback.
+            // Delay CPU notification while GPU execution advances. This
+            // models a descheduled Metal completion callback.
             command->operations.push_back({"delay-event-notification", [gate](auto& context) {
                 [context.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
                     std::unique_lock lock(gate->mutex);
@@ -48,26 +91,64 @@ static void CheckDelayedEventCompletion(VkDevice device, VkQueue queue, VkComman
             if (sync2) vkCmdSetEvent2(command, event, &dependency);
             else vkCmdSetEvent(command, event, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
             SUCCESS(vkEndCommandBuffer(command));
+            SUCCESS(vkBeginCommandBuffer(tail, &begin));
+            id<MTLSharedEvent> gpuFinished = [device->metalDevice newSharedEvent];
+            REQUIRE(gpuFinished != nil);
+            tail->operations.push_back({"observe-gpu-completion", [gpuFinished](auto& context) {
+                [context.commandBuffer encodeSignalEvent:gpuFinished value:1];
+                return VK_SUCCESS;
+            }});
+            SUCCESS(vkEndCommandBuffer(tail));
             // Reset after recording is valid; generation is captured at submit.
             SUCCESS(vkResetEvent(device, event));
             ++tick;
             VkTimelineSemaphoreSubmitInfo timelineInfo{VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
             timelineInfo.signalSemaphoreValueCount = 1;
             timelineInfo.pSignalSemaphoreValues = &tick;
+            const std::array submitted{command, tail};
             VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO, &timelineInfo};
-            submit.commandBufferCount = 1;
-            submit.pCommandBuffers = &command;
+            submit.commandBufferCount = submitted.size();
+            submit.pCommandBuffers = submitted.data();
             submit.signalSemaphoreCount = 1;
             submit.pSignalSemaphores = &timeline;
+            VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            VkFence fence{};
+            SUCCESS(vkCreateFence(device, &fenceInfo, nullptr, &fence));
             SUCCESS(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE));
+            SUCCESS(vkQueueSubmit(queue, 0, nullptr, fence));
+
+            const uint64_t peerTick = tick + 1;
+            VkTimelineSemaphoreSubmitInfo peerTimeline{VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+            peerTimeline.waitSemaphoreValueCount = 1;
+            peerTimeline.pWaitSemaphoreValues = &tick;
+            peerTimeline.signalSemaphoreValueCount = 1;
+            peerTimeline.pSignalSemaphoreValues = &peerTick;
+            const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+            VkSubmitInfo peerSubmit{VK_STRUCTURE_TYPE_SUBMIT_INFO, &peerTimeline};
+            peerSubmit.waitSemaphoreCount = 1;
+            peerSubmit.pWaitSemaphores = &timeline;
+            peerSubmit.pWaitDstStageMask = &waitStage;
+            peerSubmit.signalSemaphoreCount = 1;
+            peerSubmit.pSignalSemaphores = &timeline;
+            SUCCESS(vkQueueSubmit(peer, 1, &peerSubmit, VK_NULL_HANDLE));
             {
                 std::unique_lock lock(gate->mutex);
                 REQUIRE(gate->condition.wait_for(lock, std::chrono::seconds(5),
                                                  [&] { return gate->entered; }));
             }
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (gpuFinished.signaledValue < 1 &&
+                   std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+            REQUIRE(gpuFinished.signaledValue == 1);
             uint64_t completed{};
             SUCCESS(vkGetSemaphoreCounterValue(device, timeline, &completed));
-            REQUIRE(completed == tick);
+            REQUIRE(completed == tick - 1);
+            VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+            wait.semaphoreCount = 1;
+            wait.pSemaphores = &timeline;
+            wait.pValues = &peerTick;
+            REQUIRE(vkWaitSemaphores(device, &wait, 0) == VK_TIMEOUT);
+            REQUIRE(vkGetFenceStatus(device, fence) == VK_NOT_READY);
             REQUIRE(vkGetEventStatus(device, event) == VK_EVENT_RESET);
             if (destroyBeforeCallback) vkDestroyEvent(device, event, nullptr);
             else SUCCESS(vkResetEvent(device, event));
@@ -76,7 +157,16 @@ static void CheckDelayedEventCompletion(VkDevice device, VkQueue queue, VkComman
                 gate->release = true;
                 gate->condition.notify_all();
             }
-            SUCCESS(vkQueueWaitIdle(queue));
+            SUCCESS(vkWaitSemaphores(device, &wait, 5'000'000'000));
+            SUCCESS(vkGetSemaphoreCounterValue(device, timeline, &completed));
+            REQUIRE(completed == peerTick);
+            for (const auto buffer : submitted) {
+                std::lock_guard lock(buffer->mutex);
+                REQUIRE(buffer->state == Lumen::MetalVulkan::CommandBufferState::Executable);
+            }
+            SUCCESS(vkWaitForFences(device, 1, &fence, VK_TRUE, 5'000'000'000));
+            vkDestroyFence(device, fence, nullptr);
+            tick = peerTick;
             if (!destroyBeforeCallback) {
                 // An old callback must not republish SET after the reset.
                 REQUIRE(vkGetEventStatus(device, event) == VK_EVENT_RESET);
@@ -88,10 +178,11 @@ static void CheckDelayedEventCompletion(VkDevice device, VkQueue queue, VkComman
                 vkDestroyEvent(device, event, nullptr);
             }
             SUCCESS(vkResetCommandBuffer(command, 0));
+            SUCCESS(vkResetCommandBuffer(tail, 0));
         }
     }
     vkDestroySemaphore(device, timeline, nullptr);
-    std::puts("native Metal delayed event callback reset, replay and destruction: PASS");
+    std::puts("native Metal delayed callbacks, cross-queue timeline retirement, fence and event lifetime: PASS");
 }
 
 int main() {
@@ -106,18 +197,20 @@ int main() {
         VkPhysicalDevice physical{};
         SUCCESS(vkEnumeratePhysicalDevices(instance, &count, &physical));
         REQUIRE(physical != VK_NULL_HANDLE);
-        const float priority = 1;
+        const std::array priorities{1.0f, 1.0f};
         VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-        queueInfo.queueCount = 1;
-        queueInfo.pQueuePriorities = &priority;
+        queueInfo.queueCount = priorities.size();
+        queueInfo.pQueuePriorities = priorities.data();
         VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         deviceInfo.queueCreateInfoCount = 1;
         deviceInfo.pQueueCreateInfos = &queueInfo;
         VkDevice device{}, otherDevice{};
         SUCCESS(vkCreateDevice(physical, &deviceInfo, nullptr, &device));
         SUCCESS(vkCreateDevice(physical, &deviceInfo, nullptr, &otherDevice));
-        VkQueue queue{};
+        VkQueue queue{}, peer{};
         vkGetDeviceQueue(device, 0, 0, &queue);
+        vkGetDeviceQueue(device, 0, 1, &peer);
+        REQUIRE(queue != VK_NULL_HANDLE && peer != VK_NULL_HANDLE && queue != peer);
 
         const auto resetPool = reinterpret_cast<PFN_vkResetDescriptorPool>(
             vkGetDeviceProcAddr(device, "vkResetDescriptorPool"));
@@ -196,9 +289,10 @@ int main() {
         SUCCESS(vkCreateCommandPool(device, &commandPoolInfo, nullptr, &commands));
         VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         commandInfo.commandPool = commands;
-        commandInfo.commandBufferCount = 1;
-        VkCommandBuffer command{};
-        SUCCESS(vkAllocateCommandBuffers(device, &commandInfo, &command));
+        std::array<VkCommandBuffer, 2> commandBuffers{};
+        commandInfo.commandBufferCount = commandBuffers.size();
+        SUCCESS(vkAllocateCommandBuffers(device, &commandInfo, commandBuffers.data()));
+        const auto command = commandBuffers[0];
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         VkEventCreateInfo eventInfo{VK_STRUCTURE_TYPE_EVENT_CREATE_INFO};
         VkEvent event{}, foreignEvent{};
@@ -236,7 +330,8 @@ int main() {
             SUCCESS(vkResetCommandBuffer(command, 0));
         }
 
-        CheckDelayedEventCompletion(device, queue, command, dependency);
+        CheckSubmitAutorelease(queue, command);
+        CheckDelayedEventCompletion(device, queue, peer, command, commandBuffers[1], dependency);
 
         // Padding stays within Metal's 4096-byte inline-buffer limit, including
         // partial updates at the last word; overflowing writes fail at recording.

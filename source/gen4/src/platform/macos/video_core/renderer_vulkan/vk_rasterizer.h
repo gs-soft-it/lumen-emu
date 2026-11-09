@@ -119,7 +119,8 @@ private:
     bool FilterDraw();
 
     void BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
-                     Shader::PushData& push_data);
+                     Shader::PushData& push_data, bool can_snapshot_buffers);
+    bool CanSnapshotGraphicsBuffers(const Pipeline& pipeline) const;
     void BindImageTable(const Shader::Info& stage, const Shader::ImageResource& image_desc);
     void BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding);
     bool BindResources(const Pipeline* pipeline);

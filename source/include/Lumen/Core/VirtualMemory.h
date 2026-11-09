@@ -135,8 +135,8 @@ bool BindFreshGuestMappingToSharedBacking(uint64_t address, uint64_t bytes, int 
     uint64_t backing_offset, Mode mode) noexcept;
 #endif
 
-#if LUMEN_PLATFORM == LUMEN_PLATFORM_OSX || LUMEN_PLATFORM == LUMEN_PLATFORM_ANDROID
-// True while this thread owns a guest-data VM lease (or a Mac code-read lease).
+#if LUMEN_PLATFORM == LUMEN_PLATFORM_OSX || LUMEN_PLATFORM == LUMEN_PLATFORM_IOS || LUMEN_PLATFORM == LUMEN_PLATFORM_ANDROID
+// True while this thread owns a guest-data VM lease (or an Apple code-read lease).
 // Android includes retained HLE, native and mutation-owner data borrows. Mac
 // host waits must retain their FEX reader while the VM lease blocks a writer.
 bool CurrentThreadHasMemoryLease() noexcept;

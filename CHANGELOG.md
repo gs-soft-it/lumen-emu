@@ -1,5 +1,18 @@
 # Changelog
 
+## iOS / iPadOS 0.1.0 (build 3) — development preview
+
+9 November 2026 · [iOS requirements](README.md#ios-and-ipados)
+
+- Experimental ARM64 iOS/iPadOS app with FEX JIT and native Metal for PS4 and PS5. The minimum deployment version is iOS/iPadOS 17.4.
+- Updated PS4 and PS5 runtime sources, including Metal shader and tessellation fixes, FEX memory handling, and PS4 audio and world-creation fixes.
+- **Playable in developer testing on iPhone 15 Pro** — Super Meat Boy (PS4), Brotato (PS4) and Dreaming Sarah (PS5).
+- Other titles are pending compatibility testing. 3D game compatibility and performance need further fixes.
+
+These playability reports come from development builds on the developer's device. The integrated JIT path was exercised with development signing on iOS 27.2.
+
+The IPA is pending distribution review. The current build links components with open licence compatibility issues described in [LICENSES.md](LICENSES.md#unresolved-release-issues).
+
 ## 0.1.7-spike-fexlab — Android version code 10
 
 4 November 2026 · [Release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.7-spike-fexlab)

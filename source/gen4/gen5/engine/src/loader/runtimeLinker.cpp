@@ -49,7 +49,7 @@
 #else
 #if defined(__APPLE__)
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include "gen4/src/core/darwin_vm.h"
 #elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 #include <sys/uio.h>
 #include <unistd.h>
@@ -488,12 +488,12 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 	// re-enters the signal handler and wedges the reporting thread.
 	uint64_t current = addr;
 	while (current < end) {
-		mach_vm_address_t              region_addr = current;
-		mach_vm_size_t                 region_size = 0;
+		Lumen::DarwinVM::Address              region_addr = current;
+		Lumen::DarwinVM::Size                 region_size = 0;
 		vm_region_basic_info_data_64_t info {};
 		mach_msg_type_number_t         count       = VM_REGION_BASIC_INFO_COUNT_64;
 		mach_port_t                    object_name = MACH_PORT_NULL;
-		if (mach_vm_region(mach_task_self(), &region_addr, &region_size, VM_REGION_BASIC_INFO_64,
+		if (Lumen::DarwinVM::Region(mach_task_self(), &region_addr, &region_size, VM_REGION_BASIC_INFO_64,
 		                   reinterpret_cast<vm_region_info_t>(&info), &count,
 		                   &object_name) != KERN_SUCCESS ||
 		    region_addr > current || (info.protection & VM_PROT_READ) == 0) {

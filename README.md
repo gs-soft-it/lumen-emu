@@ -6,11 +6,12 @@
 
 <p align="center"><strong>Console worlds. New horizons.</strong></p>
 
-Experimental **PS4 and PS5 emulation for Android**, with a **macOS (Apple Silicon) version in development**, by **GS-Soft**. This page presents the full Lumen Emu application, including its dashboard, alongside the public emulator-core sources.
+Experimental **PS4 and PS5 emulation for Android and iOS/iPadOS**, with a **macOS (Apple Silicon) version in development**, by **GS-Soft**. This page presents the full Lumen Emu application, including its dashboard, alongside the public emulator-core sources.
 
 <p align="center">
   <a href="https://lumen-emu.com"><strong>Official website</strong></a> ·
   <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.7-spike-fexlab/lumenemu-0.1.7-spike-fexlab-v10-github.apk"><strong>Download Android APK</strong></a> ·
+  <a href="#ios-and-ipados"><strong>iOS requirements and compatibility</strong></a> ·
   <a href="https://lumen-emu.com/support/"><strong>Support development</strong></a> ·
   <a href="#compatibility"><strong>Compatibility list</strong></a> ·
   <a href="#prepare-the-source"><strong>Build the cores</strong></a>
@@ -32,7 +33,7 @@ Lumen Emu brings PS4 and PS5 software into one Android library. Its dashboard pr
 
 Development now includes **experimental Mali GPU support**, alongside the existing Snapdragon/Adreno work. The Android package includes **JimVulkan PanVK r8**, selected automatically on detected compatible Mali devices unless the user has saved a different valid choice. The system driver remains available as a manual option. On supported Snapdragon/Adreno 8xx devices, the recommended configuration uses **Turnip Mojo/Bionic for PS4** and the bundled **Turnip Banners for PS5**; either Turnip driver can also be selected explicitly. Custom-driver support depends on the GPU, Android version and kernel driver interface. A custom-driver loading failure stops startup rather than silently selecting another driver. See the [GPU compatibility notes](#gpu-and-device-compatibility) below.
 
-**The macOS (Apple Silicon) application remains in development.** No Mac or iOS application binary is offered by this repository. iOS is outside the active development and release plan; its retained legacy source build exposes CPU/VM components, as described below.
+**The macOS (Apple Silicon) application remains in development.**
 
 ### App preview
 
@@ -138,7 +139,7 @@ A contribution does not guarantee a requested feature, game or device compatibil
 
 ## Public source scope
 
-The emulator-core sources are public at [gs-soft-it/lumen-emu](https://github.com/gs-soft-it/lumen-emu), starting from a snapshot exported on 23 October 2026 without the original project's Git history, and updated on **4 November 2026** from source revision `81861cfa` plus the current NGS2 audio changes recorded in `SOURCE_SNAPSHOT.json`. **Documenting and showing the full application above does not include its dashboard or application-shell sources in this repository.**
+The emulator-core sources are public at [gs-soft-it/lumen-emu](https://github.com/gs-soft-it/lumen-emu), starting from a snapshot exported on 23 October 2026 without the original project's Git history. The **9 November 2026** source update includes the iOS runtime changes described in [SOURCE_SNAPSHOT.json](SOURCE_SNAPSHOT.json).
 
 Included: emulator engines, CPU translation and virtual memory, rendering, native host bridges, build scripts, dependency locks, local patches, tests and licence records. Runtime input, IME and in-game guest dialogs remain part of the core.
 
@@ -170,6 +171,26 @@ APK SHA-256:
 ```text
 0dc2aa834c03458a63474b8713717386e2a30bc3c4042edb52a17e2263da5e15
 ```
+
+## iOS and iPadOS
+
+The experimental iOS app targets **ARM64 iPhone and iPad devices** and has a minimum deployment version of **iOS/iPadOS 17.4**. It uses **FEX with JIT** for PS4 and PS5 CPU emulation and **native Metal** for graphics. The dashboard includes touch controls and the SUCCI benchmark. In Settings, use **Choose library folder…** to select a folder in Files containing your extracted games. Lumen reads them in place.
+
+Gameplay requires an iOS process with JIT access. The integrated JIT setup was exercised on an **iPhone 15 Pro running iOS 27.2** with Developer Mode, development signing with `get-task-allow`, the phone's pairing file imported under **Settings → On-device JIT**, and LocalDevVPN connected on the phone over Wi-Fi. JIT access is needed again after the app restarts. The deployment minimum alone does not establish JIT or game compatibility on other OS versions or devices.
+
+The IPA is pending distribution review. The planned sideload route uses an installer that imports and re-signs an IPA, such as AltStore Classic, which supports JIT. Apple's alternative marketplace channel requires notarization and a separate distribution package. AltStore PAL currently lacks the JIT access Lumen requires. [AltStore distribution options](https://developer.altstore.io/) · [Apple alternative distribution](https://developer.apple.com/help/app-store-connect/managing-alternative-distribution/submit-for-notarization/)
+
+### iPhone 15 Pro game reports
+
+The developer reported these games playable in hands-on iOS testing.
+
+| Game | Console | Status |
+| --- | --- | --- |
+| Super Meat Boy | PS4 | Playable |
+| Brotato | PS4 | Playable |
+| Dreaming Sarah | PS5 | Playable |
+
+Other titles are pending compatibility testing. 3D game compatibility and performance need further fixes. [iOS changelog](CHANGELOG.md#ios--ipados-010-build-3--development-preview)
 
 ## Prepare the source
 
@@ -234,11 +255,26 @@ cmake --build build/android-arm64 \
 
 The PS4 library is staged at `build/android-arm64/gen4-stage/arm64-v8a/liblumen_android_gen4.so`; the PS5 target produces `liblumen_android_ps5.so` in its CMake output tree. Additional JNI glue is available as `lumen_android_spike`. These libraries alone are not an Android application. Optional AdrenoTools support needs the separately prepared, verified source closure described by [prepare-ps5-adrenotools.py](android/scripts/prepare-ps5-adrenotools.py).
 
-### iOS ARM64: retained legacy CPU/VM components only
+### iOS ARM64 components
 
-The retained iOS entry point builds standalone CPU and virtual-memory components. It does **not** build a complete PS4/PS5 iOS emulator or an IPA. `LUMEN_WITH_IOS_RUNTIME=ON` is explicitly rejected because the required application shell is excluded; the PS5 FEX embedding supports macOS/Android ARM64 only.
+The public iOS entry point provides the PS4 and PS5 FEX runtime frameworks and separate CPU and virtual-memory components. The frameworks require a host application to provide lifecycle and JIT setup. Building the complete app and packaging an IPA requires the UIKit shell and packaging inputs described in the [source scope](#public-source-scope).
 
-On macOS with the iPhoneOS SDK:
+The framework build requires CMake 3.25+, Ninja, Xcode with the iPhoneOS SDK, and Python 3.12+. Prepare the pinned Gen4 dependencies and use the iPhoneOS FFmpeg package produced by the [iOS FFmpeg build script](source/gen4/gen5/tools/BuildIOSFfmpeg.py). Set the FFmpeg path to the resulting `install` directory.
+
+```sh
+python3 source/gen4/tools/prepare_dependencies.py --platform macos
+cmake -S . -B build/ios-frameworks -G Ninja \
+  -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.4 \
+  -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+  -DCMAKE_BUILD_TYPE=Release -DLUMEN_WITH_IOS_RUNTIME=ON \
+  -DLUMEN_IOS_FFMPEG_PREBUILT_DIR=/absolute/path/ffmpeg-ios/install
+cmake --build build/ios-frameworks --target lumen_ios_fex_frameworks
+```
+
+This produces `LumenPS4Runtime.framework` in `build/ios-frameworks/ios-ps4-fex` and `LumenPS5Runtime.framework` in `build/ios-frameworks/ios-ps5-fex`. For Simulator, use a separate build directory and an `iphonesimulator` FFmpeg package and SDK.
+
+For the standalone CPU and VM components on macOS with the iPhoneOS SDK:
 
 ```sh
 cmake -S source -B build/ios-core -G Ninja \
@@ -267,7 +303,7 @@ The example uses POSIX line continuation; in PowerShell put the configure comman
 
 ## Validation and limitations
 
-The initial export recorded CMake parsing, the native Metal build graph, source-manifest paths and dependency-bootstrap checks. The 4 November update preserves the core-only adaptations and records its source-selection and integrity checks in [SOURCE_SNAPSHOT.json](SOURCE_SNAPSHOT.json). A full clean compilation and game execution were **not** repeated for this public source export. The separately built Android package has its own checks and limitations in the [changelog](CHANGELOG.md). Platform support, runtime correctness and individual game compatibility need separate validation on the target hardware.
+The initial export recorded CMake parsing, the native Metal build graph, source-manifest paths and dependency-bootstrap checks. [SOURCE_SNAPSHOT.json](SOURCE_SNAPSHOT.json) records the current export and its verification scope. The [changelog](CHANGELOG.md) distinguishes the separate Android package and iOS development checks.
 
 [CONTENTS.sha256](CONTENTS.sha256) records exported file bytes. Check it with `sha256sum -c CONTENTS.sha256` where available, or `shasum -a 256 -c CONTENTS.sha256` on macOS. This is an integrity check, not a build test; line-ending conversion or local edits can change hashes. The separately downloaded sources are checked by the dependency bootstrap.
 

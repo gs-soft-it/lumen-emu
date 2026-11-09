@@ -285,7 +285,25 @@ if (NOT TARGET libusb::usb)
         # no you cant vendor this libusb, its builtin on freebsd
         find_package(libusb)
     else()
+        if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+            # CheckFunctionExists cannot link when TRY_COMPILE is a static
+            # archive. Force APIs absent from the public iOS SDK to false.
+            foreach(feature HAVE_EVENTFD HAVE_PIPE2 HAVE_TIMERFD HAVE_PTHREAD_CONDATTR_SETCLOCK)
+                set(${feature} "" CACHE INTERNAL "Unavailable public iOS API" FORCE)
+            endforeach()
+        endif()
         add_subdirectory("${LUMEN_GEN4_DEPS_DIR}/libusb" "${CMAKE_CURRENT_BINARY_DIR}/libusb")
+        if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+            # iOS has no public host USB passthrough API. Keep libusb's real
+            # descriptor/transfer API with its upstream empty-device backend.
+            get_target_property(ios_usb_sources usb-1.0 SOURCES)
+            list(FILTER ios_usb_sources EXCLUDE REGEX "/os/darwin_usb\\.[ch]$")
+            set_property(TARGET usb-1.0 PROPERTY SOURCES "${ios_usb_sources}")
+            target_sources(usb-1.0 PRIVATE "${LUMEN_GEN4_DEPS_DIR}/libusb/libusb/os/null_usb.c")
+            target_sources(usb-1.0 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/host/IOSUsbClock.c")
+            set_property(TARGET usb-1.0 PROPERTY LINK_LIBRARIES "")
+            set_property(TARGET usb-1.0 PROPERTY INTERFACE_LINK_LIBRARIES "")
+        endif()
         add_library(libusb::usb ALIAS usb-1.0)
     endif()
 endif()
@@ -307,6 +325,11 @@ endif()
 
 # hwinfo
 set(HWINFO_STATIC ON)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    foreach(component BATTERY DISK MAINBOARD GPU NETWORK)
+        set(HWINFO_${component} OFF CACHE BOOL "Unavailable host telemetry on iOS" FORCE)
+    endforeach()
+endif()
 add_subdirectory("${LUMEN_GEN4_DEPS_DIR}/hwinfo" "${CMAKE_CURRENT_BINARY_DIR}/hwinfo")
 
 if (APPLE OR ${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD")
@@ -362,8 +385,27 @@ add_library(minimp3 INTERFACE)
 target_include_directories(minimp3 INTERFACE "${LUMEN_GEN4_DEPS_DIR}/minimp3")
 
 # ImGuiFileDialog
-add_library(ImGuiFileDialog ${LUMEN_GEN4_DEPS_DIR}/ImGuiFileDialog/ImGuiFileDialog.cpp)
+set(igfd_source "${LUMEN_GEN4_DEPS_DIR}/ImGuiFileDialog/ImGuiFileDialog.cpp")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # The pinned file dialog uses a shell for mkdir -p on POSIX. iOS has no
+    # system(); generate a checked overlay using the equivalent filesystem API.
+    file(READ "${igfd_source}" igfd_text)
+    set(igfd_mkdir "                char buffer[PATH_MAX] = {};\n                snprintf(buffer, PATH_MAX, \"mkdir -p \\\"%s\\\"\", vName.c_str());\n                const int dir_err = std::system(buffer);\n                if (dir_err != -1) {\n                    res = true;\n                }")
+    string(FIND "${igfd_text}" "${igfd_mkdir}" igfd_mkdir_offset)
+    if(igfd_mkdir_offset EQUAL -1)
+        message(FATAL_ERROR "Pinned ImGuiFileDialog mkdir adapter anchor changed")
+    endif()
+    string(REPLACE "${igfd_mkdir}"
+        "                std::error_code error;\n                res = std::filesystem::create_directories(vName, error);\n                if (!res && !error) res = std::filesystem::is_directory(vName, error);\n                res = res && !error;"
+        igfd_text "${igfd_text}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${igfd_source}")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ios-overlays")
+    set(igfd_source "${CMAKE_CURRENT_BINARY_DIR}/ios-overlays/ImGuiFileDialog.cpp")
+    file(WRITE "${igfd_source}" "${igfd_text}")
+endif()
+add_library(ImGuiFileDialog "${igfd_source}")
 target_compile_definitions(ImGuiFileDialog PRIVATE USE_STD_FILESYSTEM)
+target_include_directories(ImGuiFileDialog PRIVATE "${LUMEN_GEN4_DEPS_DIR}/ImGuiFileDialog")
 target_include_directories(ImGuiFileDialog INTERFACE ${LUMEN_GEN4_DEPS_DIR}/ImGuiFileDialog/)
 target_link_libraries(ImGuiFileDialog PRIVATE Dear_ImGui)
 
@@ -398,6 +440,11 @@ set(ALSOFT_BACKEND_NULL ON CACHE BOOL "" FORCE)
 
 # Static build
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # iOS libc++/Clang provide the used atomics; no separate libatomic exists.
+    # A static-library try_compile cannot detect that a link library is absent.
+    set(HAVE_LIBATOMIC "" CACHE INTERNAL "No standalone libatomic on iOS" FORCE)
+endif()
 
 add_subdirectory("${LUMEN_GEN4_DEPS_DIR}/openal-soft" "${CMAKE_CURRENT_BINARY_DIR}/openal-soft" EXCLUDE_FROM_ALL)
 endif()
@@ -418,6 +465,12 @@ endif()
 # cpp-httplib
 add_library(Cpp_Httplib INTERFACE)
 target_include_directories(Cpp_Httplib INTERFACE ${LUMEN_GEN4_DEPS_DIR}/cpp-httplib/)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # SecTrustCopyAnchorCertificates is macOS-only. Keep TLS and certificate
+    # verification enabled; an unavailable CA store remains a transport error.
+    target_compile_definitions(Cpp_Httplib INTERFACE
+        CPPHTTPLIB_DISABLE_MACOSX_AUTOMATIC_ROOT_CERTIFICATES)
+endif()
 
 if (TARGET ZLIB::ZLIB)
     target_link_libraries(Cpp_Httplib INTERFACE ZLIB::ZLIB)

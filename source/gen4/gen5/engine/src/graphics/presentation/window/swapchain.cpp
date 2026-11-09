@@ -6,6 +6,7 @@
 #include "common/profiler.h"
 #include "common/renderTiming.h"
 #include "common/threads.h"
+#include "gen4/gen5/desktopWindowInfo.h"
 #include "gpu_blit_shaders/gpu_blit_fs_triangle_spv.h"
 #include "gpu_blit_shaders/gpu_video_out_overlay_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -1110,8 +1111,9 @@ void Presenter::Impl::Present(bool guest_submission) {
 		// present_mutex owns the prepared frames and this scheduler. Only queue submission
 		// is shared with rendering, and it has its own queue_mutex.
 		auto&      command = present_scheduler.BeginCommand();
-		const bool draw_system_overlay = (overlay_visual.active || PerformanceOverlayEnabled()) &&
-		                                 swapchain.PrepareSystemOverlay();
+		const bool draw_system_overlay =
+		    (overlay_visual.active || PerformanceOverlayEnabled() ||
+		     (guest_submission && DesktopWindowInfo::FpsEnabled())) && swapchain.PrepareSystemOverlay();
 		swapchain.RecordPresentCommands(command, layers[0].frame, layers[1],
 		                                draw_system_overlay);
 		const auto tick = swapchain.Submit(present_scheduler);
@@ -1127,7 +1129,6 @@ void Presenter::Impl::Present(bool guest_submission) {
 		}
 
 		presented_overlay_revision.store(overlay_visual.revision, std::memory_order_release);
-		window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);
 		if (guest_submission) {
 			presented_guest_frames.fetch_add(1, std::memory_order_relaxed);
 			using Counter = Common::RenderTiming::Counter;

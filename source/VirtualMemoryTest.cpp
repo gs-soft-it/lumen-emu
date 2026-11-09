@@ -2554,6 +2554,7 @@ int main(int argc, char** argv)
 	bool guest_data_snapshot_preflight_only = false;
 	bool guest_data_continuity_only = false;
 	bool memory_handoff_only = false;
+	bool lease_state_only = false;
 	if (argc == 2 && std::strcmp(argv[1], "--snapshot-selector-enabled") == 0)
 	{
 		selector_oracle = VirtualMemory::IsImmutableRegionSnapshotEnabled();
@@ -2575,6 +2576,9 @@ int main(int argc, char** argv)
 	} else if (argc == 2 && std::strcmp(argv[1], "--memory-handoff") == 0)
 	{
 		memory_handoff_only = true;
+	} else if (argc == 2 && std::strcmp(argv[1], "--lease-state") == 0)
+	{
+		lease_state_only = true;
 	} else if (argc != 1)
 	{
 		return 2;
@@ -2586,6 +2590,30 @@ int main(int argc, char** argv)
 		return 1;
 	}
 	const uint64_t page_size = static_cast<uint64_t>(host_page_size);
+	if (lease_state_only)
+	{
+		VirtualMemory::Init();
+		bool ok = !VirtualMemory::CurrentThreadHasMemoryLease();
+		const uint64_t mapping = VirtualMemory::Alloc(0, page_size, VirtualMemory::Mode::ReadWrite);
+		if (mapping == 0) return 1;
+		VirtualMemory::GuestDataLease data;
+		ok = VirtualMemory::TryAcquireGuestDataLease(mapping, 8, VirtualMemory::Mode::ReadWrite, &data) && ok;
+		ok = VirtualMemory::CurrentThreadHasMemoryLease() && ok;
+		bool foreign = true;
+		std::thread worker([&] { foreign = VirtualMemory::CurrentThreadHasMemoryLease(); });
+		worker.join();
+		ok = !foreign && ok;
+		VirtualMemory::ReleaseGuestDataLease(&data);
+		ok = !VirtualMemory::CurrentThreadHasMemoryLease() && ok;
+		ok = VirtualMemory::Protect(mapping, page_size, VirtualMemory::Mode::ExecuteRead) && ok;
+		VirtualMemory::CodeReadLease code;
+		ok = VirtualMemory::TryAcquireCodeReadLease(mapping, 8, &code) && ok;
+		ok = VirtualMemory::CurrentThreadHasMemoryLease() && ok;
+		VirtualMemory::ReleaseCodeReadLease(&code);
+		ok = !VirtualMemory::CurrentThreadHasMemoryLease() && VirtualMemory::Free(mapping) && ok;
+		std::printf("virtual-memory lease-state=%s\n", ok ? "ok" : "fail");
+		return ok ? 0 : 1;
+	}
 	if (memory_handoff_only)
 	{
 		VirtualMemory::Init();

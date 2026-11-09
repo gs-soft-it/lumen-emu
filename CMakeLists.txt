@@ -7,8 +7,17 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
   set(CMAKE_AR "${CMAKE_CURRENT_LIST_DIR}/source/tools/macos-ar.sh"
     CACHE FILEPATH "Archiver wrapper for macOS" FORCE)
 endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "17.4" CACHE STRING "Minimum iOS version for public FEX JIT callbacks")
+endif()
 project(Lumen LANGUAGES C CXX)
 include(CTest)
+
+# Native iOS framework and CPU/VM targets use the SDK-specific core graph.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  add_subdirectory(source ios)
+  return()
+endif()
 
 option(LUMEN_BUILD_PS4 "Build the PS4 runtime" ON)
 set(LUMEN_GEN4_FULL_BUILD_DIR "${CMAKE_BINARY_DIR}/gen4" CACHE PATH "Independent PS4 build directory")

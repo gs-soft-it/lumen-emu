@@ -105,11 +105,14 @@ HleVeneerResult HleVeneerAllocator::Allocate(const HleCallAdapter& adapter) {
     std::memcpy(code + 14, &dispatch, sizeof(dispatch));
     code[22] = 0xff; code[23] = 0xe0; code[24] = 0xcc;
 #endif
+#if !defined(__APPLE__)
     __builtin___clear_cache(reinterpret_cast<char*>(code), reinterpret_cast<char*>(code + veneer_size));
-#ifdef LUMEN_GEN4_DIRECT_FEX
+#endif
+#if defined(LUMEN_GEN4_DIRECT_FEX) && !defined(__APPLE__)
     constexpr int veneer_protection = PROT_READ | PROT_EXEC;
 #else
-    // The shared host runtime exposes guest instructions as readable data.
+    // FEX reads these x86 guest instructions as data. Apple must not grant
+    // native execute permission to a plain anonymous guest-data mapping.
     constexpr int veneer_protection = PROT_READ;
 #endif
     if (mprotect(page, size, veneer_protection) != 0) {
