@@ -1,5 +1,56 @@
 # Changelog
 
+## Android 0.1.8-spike-fexlab (build 12) — 21 November 2026
+
+Google Play received build 12 for review. The GitHub direct-access APK is in preparation. The latest public Android download is listed in the [README](https://github.com/gs-soft-it/lumen-emu#android-download).
+
+### Starting a game and returning to the library
+
+- The PS4 runtime checks the selected Vulkan loader, GPU, driver version and required features before creating the renderer. Optional features are enabled only when supported. If the driver cannot run the game, the library shows the cause and offers **Graphics driver** and **Close**. PS4 rendering requires Vulkan 1.3.
+- A game can now start on additional Android surfaces, including ones without transfer support and additional 10-bit SDR formats. The renderer keeps the window alive during setup, briefly retries transient failures and handles surface changes during play or after resuming. If presentation cannot recover, the session reports the error to the library.
+- The PS4 runtime reserves about 7.8 MiB less host heap before creating the Vulkan device. Android draws the dashboard and overlay with a software canvas to avoid the system EGL failures seen in crash reports. The game still renders through Vulkan.
+- An unsupported guest CPU callback now ends the affected PS4 session and reports the reason. Error details retain the execution stage, operation and guest service when known. Selecting a console filter with zero matching games now leaves the list empty safely.
+
+### Settings, drivers and the game library
+
+- Choose **1080p** or **720p** and turn game audio on or off in the library. PS4, PS5 and the bundled Succi demo use the settings on the next launch. The defaults are 1080p and audio on. The 720p mode scales supported render passes while preserving guest image dimensions. Muting keeps the emulated audio clock running.
+- **Turnip Banners Standard** is available as a manual choice on supported Adreno 6xx and 7xx devices. Driver loading, Vulkan device creation and rendering were checked on Adreno 730. On eligible Mali devices where the kernel hides the GPU model, the system driver can now identify the GPU so the user can select experimental PanVK.
+- The mobile PS5 runtime validates, saves and applies twelve global performance settings before startup. The existing defaults are preserved.
+- The GitHub APK continues to read extracted PS4 and PS5 games in their selected folder. Grant Android’s all-files access and select the parent folder in Lumen. Upgrades retain the existing library, settings and saves. The Google Play edition uses its separate folder-import workflow.
+
+### CPU, memory and graphics
+
+- PS4 virtual memory now leaves more address space for the host. The core uses the system allocator on Android, allocates page-tracking tables on demand, reclaims unused flexible-memory backing and bounds temporary file-read buffers. Smaller staging and GPU scratch allocations reduce pressure during loading.
+- The PS4 core fixes guest C runtime handling, NP Matching2 context lifetimes and guest heap and semaphore behaviour. These changes cover startup, world creation and save loading in tested titles.
+- PS4 shaders now handle additional subgroup and lane operations, indirect addressing, and resource-dependent variants. The renderer corrects texture mip and tiling handling, custom sampler border colours and mipmap filter decoding before recording GPU commands.
+- Fixes to stencil and read-only depth passes, vertex fetch and buffer presentation remove flicker in tested scenes. GPU resources and shader stages stay alive until the work that uses them completes. The renderer also avoids redundant waits, lookups and copies.
+- The graphics runtime recognises valid embedded GNM pixel and vertex shaders. This restores startup in the tested PS4 build of Brotato.
+
+### Android compatibility reports
+
+| PS4 game | Result on Xiaomi 12, Android 15 |
+| --- | --- |
+| **ABZÛ** · 01.00 · CUSA03364 | **Playable.** A saved game resumed. The diver swam, turned and reached the seabed during 4 minutes 23 seconds of underwater play. |
+| **The Pathless** · 01.00 · CUSA14330 | **Playable.** Continue loaded the saved beach scene. The runtime kept presenting frames during the 129-second observation and the previous mipmap crash did not recur. |
+| **Minecraft: PlayStation 4 Edition** | The tutorial world accepted movement for 5 minutes 35 seconds. The two previously observed failures did not recur in that run. |
+| **Brotato** | The PS4 version reached the menu after the embedded shader fix. |
+
+The ABZÛ and The Pathless gameplay checks used the 20 November development build. Both games now appear as **Playable** in the Android dashboard and the [device-specific compatibility table](https://github.com/gs-soft-it/lumen-emu#compatibility).
+
+### Android dependency changes
+
+- The PS4 core uses Mbed TLS for HTTPS and asks Android to verify the certificate chain and hostname. Tests covered trusted hosts, a mismatched hostname and an untrusted certificate.
+- The PS5 core calls standalone Khronos programs to validate Vulkan 1.3 shaders and disassemble them for diagnostics. A shader that failed Vulkan's semantic rules was rejected on Android. The core uses the Khronos grammar to identify operand references.
+
+### Device checks
+
+On Xiaomi 12 (Android 15), the first direct-access build 12 candidate updated an existing build 10 installation with all nine games and the selected folder intact. Cancelling Lumen’s folder picker returned to the same library. On an Android 16 test device, the PS4 runtime resumed Succi on Vulkan 1.3 and returned to the library with an explanatory message on Vulkan 1.2.
+
+### Related platform work since the previous Android release
+
+- The separate iOS/iPadOS preview added native FEX and Metal runtimes for PS4 and PS5, on-device JIT pairing, game library and save management, touch controls and the Succi demo. Subsequent work improved game audio, keyboard input, world creation and reload, memory headroom, and Metal tessellation. The previously published build 5 added FFmpeg AAC and HTTPS with Apple trust verification. [iOS build 5 release](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.0-ios-build5)
+- Work on the macOS application improved library scanning, launching and closing the two runtimes, and the window title and FPS display. The shared Apple renderer improved quad drawing, tessellation and resource lifetime. Worms W.M.D reached the menu and Super Meat Boy reached its title screen in development tests.
+
 ## iOS and iPadOS preview 0.1.0 build 5
 
 9 November 2026 · [IPA and corresponding source](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.0-ios-build5)
