@@ -2,7 +2,7 @@
 
 ## Android 0.1.8-spike-fexlab (build 12) — 21 November 2026
 
-Google Play received build 12 for review. The GitHub direct-access APK is in preparation. The latest public Android download is listed in the [README](https://github.com/gs-soft-it/lumen-emu#android-download).
+Google Play received build 12 for review. The direct-folder edition described here is a local build. The [Android download](https://github.com/gs-soft-it/lumen-emu#android-download) points to the latest public GitHub APK.
 
 ### Starting a game and returning to the library
 
