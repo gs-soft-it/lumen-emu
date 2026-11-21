@@ -37,14 +37,18 @@ Google Play received build 12 for review. The direct-folder edition described he
 
 The ABZÛ and The Pathless gameplay checks used the 20 November development build. Both games now appear as **Playable** in the Android dashboard and the [device-specific compatibility table](https://github.com/gs-soft-it/lumen-emu#compatibility).
 
-### Android dependency changes
+### Dependency changes in the local APK
+
+The direct-folder APK was rebuilt after the Google Play submission with the following changes.
 
 - The PS4 core uses Mbed TLS for HTTPS and asks Android to verify the certificate chain and hostname. Tests covered trusted hosts, a mismatched hostname and an untrusted certificate.
 - The PS5 core calls standalone Khronos programs to validate Vulkan 1.3 shaders and disassemble them for diagnostics. A shader that failed Vulkan's semantic rules was rejected on Android. The core uses the Khronos grammar to identify operand references.
 
 ### Device checks
 
-On Xiaomi 12 (Android 15), the first direct-access build 12 candidate updated an existing build 10 installation with all nine games and the selected folder intact. Cancelling Lumen’s folder picker returned to the same library. On an Android 16 test device, the PS4 runtime resumed Succi on Vulkan 1.3 and returned to the library with an explanatory message on Vulkan 1.2.
+On Xiaomi 12 (Android 15), the first direct-access candidate updated build 10 in place. The final signed APK also updated that installation in place. The dashboard kept all nine games and the selected folder. Cancelling the direct folder picker returned to the same library. The bundled Succi PS4 demo presented frames and exited through the game menu. The installed APK matched the delivery file byte for byte.
+
+The final build passed the native package checks and 206 JVM tests, with three existing skips. The PS5 shader validation and disassembly were checked on Android with test shaders. The gameplay reports above identify the earlier builds used for each game. On Android 16, the PS4 runtime was also tested on Vulkan 1.3 for resume and Vulkan 1.2 for the unsupported-driver message.
 
 ### Related platform work since the previous Android release
 
