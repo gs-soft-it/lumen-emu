@@ -2,7 +2,7 @@
 
 ## Android 0.1.8-spike-fexlab (build 12) — 21 November 2026
 
-Google Play received build 12 for review. The direct-folder edition described here is a local build. The [Android download](https://github.com/gs-soft-it/lumen-emu#android-download) points to the latest public GitHub APK.
+The signed GitHub APK includes the dashboard and opens extracted game folders directly. Google Play received its separate build 12 through the store workflow. [GitHub release and APK](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.8-spike-fexlab) · [Written source offer](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.8-spike-fexlab/SOURCE-OFFER.txt)
 
 ### Starting a game and returning to the library
 
@@ -37,7 +37,7 @@ Google Play received build 12 for review. The direct-folder edition described he
 
 The ABZÛ and The Pathless gameplay checks used the 20 November development build. Both games now appear as **Playable** in the Android dashboard and the [device-specific compatibility table](https://github.com/gs-soft-it/lumen-emu#compatibility).
 
-### Dependency changes in the local APK
+### Dependency changes in the GitHub APK
 
 The direct-folder APK was rebuilt after the Google Play submission with the following changes.
 

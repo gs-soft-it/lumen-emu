@@ -10,7 +10,7 @@ Experimental **PS4 and PS5 emulation for Android and iOS/iPadOS**, with a **macO
 
 <p align="center">
   <a href="https://lumen-emu.com"><strong>Official website</strong></a> ·
-  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.7-spike-fexlab/lumenemu-0.1.7-spike-fexlab-v10-github.apk"><strong>Download Android APK</strong></a> ·
+  <a href="https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.8-spike-fexlab/lumenemu-0.1.8-spike-fexlab-v12-github.apk"><strong>Download Android APK</strong></a> ·
   <a href="#ios-and-ipados"><strong>iOS requirements and compatibility</strong></a> ·
   <a href="https://lumen-emu.com/support/"><strong>Support development</strong></a> ·
   <a href="#compatibility"><strong>Compatibility list</strong></a> ·
@@ -68,7 +68,7 @@ The Android package includes **SUCCI** to test the phone's performance. Its indi
 
 The application reads **already-extracted ROMs**; it does not open, extract or install PKG files. Prepare content you are legally authorised to use before selecting its library folder. No commercial games, firmware, BIOS files or keys are provided. See the [content requirements and responsible-use information](https://lumen-emu.com/legal/).
 
-The **GitHub 0.1.7 APK** uses **direct filesystem reads for local game folders**, shared by the PS4 and PS5 runtimes. Grant Android's **all-files access**, then use Lumen's quick folder browser to select the parent folder containing your extracted games. Files are used in place, without a mandatory private copy. The selected folder, settings and saves from earlier direct-access GitHub releases are preserved.
+The **GitHub 0.1.8 APK** uses **direct filesystem reads for local game folders**, shared by the PS4 and PS5 runtimes. Grant Android's **all-files access**, then use Lumen's quick folder browser to select the parent folder containing your extracted games. Files are used in place, without a mandatory private copy. The selected folder, settings and saves from earlier direct-access GitHub releases are preserved.
 
 The **Google Play channel** uses a separate storage flow: choose a source with Android's folder picker, select the games to add, then copy or move them into the app's private library. Content verification and source deletion are separate options, initially off. Existing games are not overwritten. Keep a backup: uninstalling the app removes games stored in its private space. The GitHub APK linked here uses direct folder access.
 
@@ -162,19 +162,21 @@ The Lumen dashboard, game-library UI, Android Java/resources/Gradle application,
 
 ## Android download
 
-**Latest update — 0.1.7-spike-fexlab (version code 10), 4 November 2026:** Quick direct folder selection for GitHub, preservation of existing library settings, PS4 audio fixes, an English dashboard and updated core sources. The compatibility table now includes all 17 website reports plus West of Dead 01.00, reported playable by the developer on realme GT 8 Pro. See the [changelog](CHANGELOG.md) for details and verification limits.
+**[Download Lumen Emu 0.1.8 for Android](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.8-spike-fexlab/lumenemu-0.1.8-spike-fexlab-v12-github.apk)** · [Release notes](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.8-spike-fexlab)
 
-**[Download the Android APK](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.7-spike-fexlab/lumenemu-0.1.7-spike-fexlab-v10-github.apk)** ([experimental release 0.1.7-spike-fexlab](https://github.com/gs-soft-it/lumen-emu/releases/tag/v0.1.7-spike-fexlab)). Requires **Android 13/API 33 or newer** and an ARM64 device (`arm64-v8a`); target API 36. This non-debuggable FEX Release package uses the existing public signing certificate and can update earlier public GitHub APKs. The latest native-runtime, signing and packaging checks passed, with 84 passing JVM tests and 3 existing skips. A new gameplay or device-upgrade trial was not run on this exact APK.
+Build 12 includes the full dashboard and the PS4 and PS5 runtimes. It runs on ARM64 devices with Android 13 (API 33) or later and targets API 36. Grant all-files access and choose the folder containing your extracted games. The app reads them in place.
 
-The package includes Mojo/Bionic, Turnip Banners `20261018-r3-astro` and experimental PanVK, with the established driver selection. It includes the full application, while this repository publishes the updated emulator cores and native integration only: the instructions below do not reconstruct the complete APK. The separate Google Play AAB is not part of this GitHub release.
+This release improves PS4 startup and crash recovery, adds 720p/1080p and game-audio settings, and lists ABZÛ and The Pathless as Playable on Android. On Xiaomi 12 with Android 15, an in-place update preserved all nine games and the selected folder. The bundled Succi demo rendered frames and exited to the library. [Full changelog](CHANGELOG.md)
 
-[Complete changelog](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.7-spike-fexlab/CHANGELOG.txt) · [Download checksums](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.7-spike-fexlab/SHA256SUMS.txt)
+The public repository contains the core snapshot described above. Anyone may request the complete corresponding source for this APK, including its Android dashboard, from GS-Soft under the [written source offer](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.8-spike-fexlab/SOURCE-OFFER.txt).
 
-APK SHA-256:
+APK SHA-256
 
 ```text
-0dc2aa834c03458a63474b8713717386e2a30bc3c4042edb52a17e2263da5e15
+0965bd56f85a2f657ab4bd2042fa15d5a437b19636d465dd8875de1dcdde824a
 ```
+
+[Download checksums](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.8-spike-fexlab/SHA256SUMS.txt) · [Download the changelog](https://github.com/gs-soft-it/lumen-emu/releases/download/v0.1.8-spike-fexlab/CHANGELOG.txt)
 
 ## iOS and iPadOS
 
