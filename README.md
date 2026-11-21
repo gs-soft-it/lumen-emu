@@ -90,12 +90,13 @@ Initial development tests on the Mali-G57 device, using a Debug build, reached t
 
 ### Game reports
 
-**18 reported games · 14 playable · 2 almost playable · 2 boots only**
+**20 Android game reports · 16 playable · 2 almost playable · 2 boots only**
 
-Updated 4 November 2026. This table includes all 17 games in the [official compatibility list](https://lumen-emu.com/compatibility/) and adds our developer report for West of Dead, game version `01.00`, tested on the realme GT 8 Pro (RMX5210). These reports cover different Lumen versions and devices; they are not a complete retest of version 0.1.7.
+Updated 21 November 2026. The 17 games recorded from the [official compatibility list](https://lumen-emu.com/compatibility/) on 4 November appear alongside three developer reports covering West of Dead on realme GT 8 Pro, and ABZÛ and The Pathless on Xiaomi 12. Each row identifies the device and build used when available.
 
 | Game | Platform | Game version | Title ID | Reported status | Test device | Tested Lumen version | Report source |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| ABZÛ | PS4 | `01.00` | `CUSA03364` | 🟢 Playable | Xiaomi 12 · Android 15 | 20 Nov development build | Developer · 20 November 2026 |
 | Anglerfish | PS5 | `02.000.000` | `PPSA19779` | 🟢 Playable | OnePlus Ace 3 Pro | `0.1.6-spike-fexlab` · code 7 | Community |
 | Astro Bot | PS5 | `01.018.000` | `PPSA21564` | 🔴 Boots only | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
 | Balatro | PS5 | `01.015.000` | `PPSA21402` | 🟢 Playable | OnePlus Ace 3 Pro | `0.1.6-spike-fexlab` · code 7 | Community |
@@ -112,6 +113,7 @@ Updated 4 November 2026. This table includes all 17 games in the [official compa
 | Minecraft | PS5 | `01.044.000` | `PPSA17221` | 🔴 Boots only | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
 | Minecraft: PlayStation 4 Edition | PS4 | `01.00` | `CUSA00265` | 🟢 Playable | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
 | Super Meat Boy | PS4 | `01.02` | `CUSA03454` | 🟢 Playable | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
+| The Pathless | PS4 | `01.00` | `CUSA14330` | 🟢 Playable | Xiaomi 12 · Android 15 | 20 Nov development build | Developer · 20 November 2026 |
 | West of Dead | PS4 | `01.00` | `CUSA16142` | 🟢 Playable | realme GT 8 Pro (RMX5210) | Not specified in latest report | Developer · 4 November 2026 |
 | Worms W.M.D. | PS4 | `01.11` | `CUSA04022` | 🟢 Playable | realme GT 8 Pro (RMX5210) | `0.1.0-spike-fexlab` · code 1 | Developer |
 
@@ -120,6 +122,8 @@ The original eight developer reports use Lumen `0.1.0-spike-fexlab` (version cod
 The seven community reports added on 4 November use a OnePlus Ace 3 Pro with Snapdragon 8 Gen 3 and Lumen `0.1.6-spike-fexlab` (version code 7). Brotato is an earlier community report on the same phone model with Android 16; its emulator version code and title ID were not supplied. God of War Sons of Sparta is a developer report on the realme GT 8 Pro (RMX5210), Android 16, with Lumen `0.1.6-spike-fexlab` (version code 7); its exact game version and title ID were not supplied. [Watch the God of War test](https://youtu.be/V7MtZf0P_Dw).
 
 West of Dead is developer-reported playable on the realme GT 8 Pro (RMX5210), Android 16, as confirmed on 4 November 2026. The latest playability report does not identify an exact emulator build.
+
+On Xiaomi 12, **ABZÛ** resumed a saved game and ran for 4 minutes 23 seconds of swimming, diving and turning. In **The Pathless**, Continue loaded the beach and frames continued to appear during a 129-second observation. Both games exited through the in-game menu.
 
 - **Playable:** reported playable in the submitted test. Issues may remain; completion and flawless performance are not guaranteed.
 - **Almost playable:** runs with noticeable slowdown and is not yet comfortably playable.
